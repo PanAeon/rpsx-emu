@@ -18,6 +18,11 @@ impl Bios {
 
         }
     }
+    pub fn load8(&self, offset: u32) -> u8 {
+        let offset = offset as usize;
+
+        self.data[offset + 0]
+    }
 
     pub fn load32(&self, offset: u32) -> u32 {
         let offset = offset as usize;

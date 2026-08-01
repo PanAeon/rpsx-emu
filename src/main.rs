@@ -3,16 +3,22 @@ use std::io;
 use std::path::Path;
 
 use crate::bios::Bios;
+use crate::dma::Dma;
+use crate::gpu::Gpu;
 use crate::ram::Ram;
 mod bios;
 mod ram;
 mod cpu;
 mod memory_bus;
+mod dma;
+mod gpu;
 
 fn main() -> io::Result<()>{
 
     let bios = Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
     let ram = Ram::new();
+    let dma: Dma = Dma::new();
+    let gpu = Gpu::new();
 
     // let bytes = fs::read("/foo/SCPH1001.BIN")?;
     for i in (0..40).step_by(4) {
@@ -23,7 +29,7 @@ fn main() -> io::Result<()>{
         println!();
     }
 
-    let memory_bus = memory_bus::MemoryBus::new(bios, ram);
+    let memory_bus = memory_bus::MemoryBus::new(bios, ram, dma, gpu);
     let mut cpu = cpu::Cpu::new(memory_bus);
     loop {
         cpu.run_next_instruction();

@@ -1,3 +1,5 @@
+use crate::memory_bus::{AccessWidth, Addressable};
+
 pub struct Gpu {
     // Texture page base X coordinate (4 bits, 64 byte increment)
     page_base_x: u8,
@@ -48,7 +50,8 @@ pub struct Gpu {
     gp0_command: CommandBuffer,
     gp0_words_remaining: u32,
     gp0_command_method: fn(&mut Gpu),
-    gp0_mode: Gp0Mode
+    gp0_mode: Gp0Mode,
+    vram: Box<[u8]>
 }
 
 impl Gpu {
@@ -94,7 +97,8 @@ impl Gpu {
             gp0_command: CommandBuffer::new(),
             gp0_words_remaining: 0,
             gp0_command_method: Gpu::gp0_nop,
-            gp0_mode: Gp0Mode::Command
+            gp0_mode: Gp0Mode::Command,
+            vram: vec![0; 2 * 1024 * 512].into_boxed_slice(),
         }
     }
 
@@ -385,6 +389,28 @@ impl Gpu {
         r |= dma_request << 25;
 
         r
+    }
+    pub fn load<T:Addressable>(&self, offset: u32) -> T {
+        if T::width() != AccessWidth::Word {
+            panic!("Unhandled {:?} GPU load", T::width());
+        }
+        let r =  match offset {
+                4 => self.status(),// 0x1c000000,
+                0 => self.read(),
+                _ => panic!("Unhandled GPU read {offset}")
+        };
+        T::from_u32(r)
+    }
+    pub fn store<T:Addressable>(&mut self, offset: u32, value: T) {
+        if T::width() != AccessWidth::Word {
+            panic!("Unhandled {:?} GPU load", T::width());
+        }
+        let val = value.as_u32();
+        match offset {
+                0 => self.gp0(val),
+                4 => self.gp1(val),
+                _ => panic!("GPU write {}: {:08X}", offset, val)
+        };
     }
 }
 

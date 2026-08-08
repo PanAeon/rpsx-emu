@@ -1,4 +1,4 @@
-use crate::memory_bus::MemoryBus;
+use crate::memory_bus::{Addressable, MemoryBus};
 
 #[derive(Clone, Copy)]
 pub struct Instruction(u32);
@@ -76,7 +76,7 @@ pub struct Cpu {
     sr: u32,
     cause: u32,
     epc: u32,
-    out_regs: [u32; 32],
+    // out_regs: [u32; 32],
     load: (u32, u32), // load initiated by the current instruction
     branch: bool, // set by the current instruction if the branch occurred
     delay_slot:bool, // set if the current instruction executes in the delay slot
@@ -97,14 +97,14 @@ impl Cpu {
             sr: 0,
             cause: 0,
             epc: 0,
-            out_regs: regs,
+            // out_regs: regs,
             load: (0, 0),
             branch: false,
             delay_slot: false,
         }
     }
     pub fn run_next_instruction(&mut self) {
-        let instr = Instruction(self.load32(self.pc));
+        let instr = Instruction(self.load::<u32>(self.pc));
         self.current_pc = self.pc;
         if self.current_pc % 4 != 0 {
             return self.exception(Exception::LoadAddressError);
@@ -117,32 +117,44 @@ impl Cpu {
         self.delay_slot = self.branch;
         self.branch = false;
         self.decode_and_execute(instr);
-        self.regs = self.out_regs;
+        // self.regs = self.out_regs;
     }
 
-    pub fn load32(&self, address: u32) -> u32 {
-        self.memory_bus.load32(address)
-    }
-    pub fn load16(&self, address: u32) -> u16 {
-        self.memory_bus.load16(address)
-    }
-    pub fn load8(&self, address: u32) -> u8 {
-        self.memory_bus.load8(address)
+    pub fn load<T:Addressable>(&self, address: u32) -> T {
+        self.memory_bus.load(address)
     }
 
-    pub fn store32(&mut self, address: u32, value: u32) {
-        self.memory_bus.store32(address, value);
+    pub fn store<T:Addressable>(&mut self, address: u32, value: T) {
+        if self.sr & 0x10000 != 0 {
+            println!("Ignoring store while cache is isolated");
+            return;
+        }
+        self.memory_bus.store(address, value)
     }
-    pub fn store16(&mut self, address: u32, value: u16) {
-        self.memory_bus.store16(address, value);
-    }
-    pub fn store8(&mut self, address: u32, value: u8) {
-        self.memory_bus.store8(address, value);
-    }
+    //
+    // pub fn load32(&self, address: u32) -> u32 {
+    //     self.memory_bus.load32(address)
+    // }
+    // pub fn load16(&self, address: u32) -> u16 {
+    //     self.memory_bus.load16(address)
+    // }
+    // pub fn load8(&self, address: u32) -> u8 {
+    //     self.memory_bus.load8(address)
+    // }
+    //
+    // pub fn store32(&mut self, address: u32, value: u32) {
+    //     self.memory_bus.store32(address, value);
+    // }
+    // pub fn store16(&mut self, address: u32, value: u16) {
+    //     self.memory_bus.store16(address, value);
+    // }
+    // pub fn store8(&mut self, address: u32, value: u8) {
+    //     self.memory_bus.store8(address, value);
+    // }
 
     pub fn set_reg(&mut self, index: u32, value: u32) {
-        self.out_regs[index as usize] = value;
-        self.out_regs[0] = 0;
+        self.regs[index as usize] = value;
+        self.regs[0] = 0;
     }
     pub fn reg(&mut self, index: u32) -> u32 {
         self.regs[index as usize]
@@ -226,6 +238,7 @@ impl Cpu {
     }
 
     pub fn op_illegal(&mut self, instr: Instruction) {
+        self.delayed_load();
              println!(
                 "Illegal instruction: {:X}, opcode: {:02X}",
                 instr.0,
@@ -233,81 +246,85 @@ impl Cpu {
         self.exception(Exception::IllegalInstruction);
     }
 
+    pub fn delayed_load(&mut self) {
+        let (reg, val) = self.load;
+        self.set_reg(reg, val);
+        self.load = (0, 0);
+    }
+
     pub fn op_lui(&mut self, instr: Instruction) {
         let v = instr.imm() << 16;
+        self.delayed_load();
         self.set_reg(instr.rt(), v);
     }
     pub fn op_ori(&mut self, instr: Instruction) {
         let v = instr.imm() | self.reg(instr.rs());
+        self.delayed_load();
         self.set_reg(instr.rt(), v);
     }
     pub fn op_andi(&mut self, instr: Instruction) {
         let v = instr.imm() & self.reg(instr.rs());
+        self.delayed_load();
         self.set_reg(instr.rt(), v);
     }
     pub fn op_or(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()) | self.reg(instr.rt());
+        self.delayed_load();
         self.set_reg(instr.rd(), v);
     }
     pub fn op_xor(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()) ^ self.reg(instr.rt());
+        self.delayed_load();
         self.set_reg(instr.rd(), v);
     }
     pub fn op_xori(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()) ^ instr.imm();
+        self.delayed_load();
         self.set_reg(instr.rt(), v);
     }
     pub fn op_nor(&mut self, instr: Instruction) {
         let v = !(self.reg(instr.rs()) | self.reg(instr.rt()));
+        self.delayed_load();
         self.set_reg(instr.rd(), v);
     }
     pub fn op_and(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()) & self.reg(instr.rt());
+        self.delayed_load();
         self.set_reg(instr.rd(), v);
     }
     pub fn op_sw(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
+        let v = self.reg(instr.rt());
         if addr % 4 != 0 {
+            self.delayed_load();
             return self.exception(Exception::StoreAddressError);
         }
-        if self.sr & 0x10000 != 0 {
-            println!("Cache is isolated, ignoring write to {:08x}", addr);
-            return;
-        }
-        let v = self.reg(instr.rt());
-        self.store32(addr, v);
+        self.delayed_load();
+        self.store::<u32>(addr, v);
     }
     pub fn op_sh(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
+        let v = self.reg(instr.rt());
+        self.delayed_load();
         if addr % 2 != 0 {
             return self.exception(Exception::StoreAddressError);
         }
-        if self.sr & 0x10000 != 0 {
-            println!("Cache is isolated, ignoring write to {:08x}", addr);
-            return;
-        }
-        let v = self.reg(instr.rt());
-        self.store16(addr, v as u16);
+        self.store::<u16>(addr, v as u16);
     }
     pub fn op_sb(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
-        if self.sr & 0x10000 != 0 {
-            println!("Cache is isolated, ignoring write to {:08x}", addr);
-            return;
-        }
         let v = self.reg(instr.rt());
-        self.store8(addr, v as u8);
+        self.delayed_load();
+        self.store::<u8>(addr, v as u8);
     }
     pub fn op_lh(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
         if addr % 2 != 0 {
+            self.delayed_load();
             return self.exception(Exception::LoadAddressError);
         }
-        if self.sr & 0x10000 != 0 {
-            println!("Cache is isolated, ignoring read to {:08x}", addr);
-            return;
-        }
-        let v = self.load16(addr) as i16;
+        let v = (self.load::<u16>(addr) as u16) as i16;
+        self.delayed_load();
         self.load = (instr.rt(), v as u32);
     }
     pub fn op_lhu(&mut self, instr: Instruction) {
@@ -315,11 +332,8 @@ impl Cpu {
         if addr % 2 != 0 {
             return self.exception(Exception::LoadAddressError);
         }
-        if self.sr & 0x10000 != 0 {
-            println!("Cache is isolated, ignoring read to {:08x}", addr);
-            return;
-        }
-        let v = self.load16(addr);
+        let v = self.load::<u16>(addr);
+        self.delayed_load();
         self.load = (instr.rt(), v as u32);
     }
     pub fn op_lw(&mut self, instr: Instruction) {
@@ -331,7 +345,8 @@ impl Cpu {
             println!("Cache is isolated, ignoring read to {:08x}", addr);
             return;
         }
-        let v = self.load32(addr);
+        let v = self.load::<u32>(addr);
+        self.delayed_load();
         self.load = (instr.rt(), v);
     }
     pub fn op_lwl(&mut self, instr: Instruction) {
@@ -340,9 +355,9 @@ impl Cpu {
             println!("Cache is isolated, ignoring read to {:08x}", addr);
             return;
         }
-        let cur_v = self.out_regs[instr.rt() as usize];
+        let cur_v = self.regs[instr.rt() as usize];
         let aligned_addr = addr & !3;
-        let aligned_word = self.load32(aligned_addr);
+        let aligned_word = self.load::<u32>(aligned_addr);
 
         let v = match addr & 3 {
             0 => (cur_v & 0x00ffffff) | (aligned_word << 24),
@@ -351,6 +366,7 @@ impl Cpu {
             3 => (cur_v & 0x00000000) | (aligned_word),
             _ => unreachable!()
         };
+        self.delayed_load(); // FIXME: delayed load chain?
         self.load = (instr.rt(), v);
     }
     pub fn op_swl(&mut self, instr: Instruction) {
@@ -361,7 +377,7 @@ impl Cpu {
         }
         let v = self.reg(instr.rt());
         let aligned_addr = addr & !3;
-        let cur_mem = self.load32(aligned_addr);
+        let cur_mem = self.load::<u32>(aligned_addr);
 
         let mem = match addr & 3 {
             0 => (cur_mem & 0xffffff00) | (v >> 24),
@@ -370,7 +386,8 @@ impl Cpu {
             3 => (cur_mem & 0x00000000) | (v),
             _ => unreachable!()
         };
-        self.store32(aligned_addr, mem);
+        self.delayed_load();
+        self.store::<u32>(aligned_addr, mem);
     }
     pub fn op_swr(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
@@ -380,7 +397,7 @@ impl Cpu {
         }
         let v = self.reg(instr.rt());
         let aligned_addr = addr & !3;
-        let cur_mem = self.load32(aligned_addr);
+        let cur_mem = self.load::<u32>(aligned_addr);
 
         let mem = match addr & 3 {
             0 => (cur_mem & 0x00000000) | (v),
@@ -389,7 +406,8 @@ impl Cpu {
             3 => (cur_mem & 0x00ffffff) | (v << 24),
             _ => unreachable!()
         };
-        self.store32(aligned_addr, mem);
+        self.delayed_load();
+        self.store::<u32>(aligned_addr, mem);
     }
     pub fn op_lwr(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
@@ -397,9 +415,9 @@ impl Cpu {
             println!("Cache is isolated, ignoring read to {:08x}", addr);
             return;
         }
-        let cur_v = self.out_regs[instr.rt() as usize];
+        let cur_v = self.regs[instr.rt() as usize];
         let aligned_addr = addr & !3;
-        let aligned_word = self.load32(aligned_addr);
+        let aligned_word = self.load::<u32>(aligned_addr);
 
         let v = match addr & 3 {
             0 => (cur_v & 0x00000000) | (aligned_word),
@@ -408,6 +426,7 @@ impl Cpu {
             3 => (cur_v & 0xffffff00) | (aligned_word >> 24),
             _ => unreachable!()
         };
+        self.delayed_load();
         self.load = (instr.rt(), v);
     }
     pub fn op_lb(&mut self, instr: Instruction) {
@@ -416,7 +435,8 @@ impl Cpu {
             println!("Cache is isolated, ignoring read to {:08x}", addr);
             return;
         }
-        let v = self.load8(addr) as i8;
+        let v = (self.load::<u8>(addr) as u8) as i8;
+        self.delayed_load();
         self.load = (instr.rt(), v as u32);
     }
     pub fn op_lbu(&mut self, instr: Instruction) {
@@ -425,36 +445,43 @@ impl Cpu {
             println!("Cache is isolated, ignoring read to {:08x}", addr);
             return;
         }
-        let v = self.load8(addr);
+        let v = self.load::<u8>(addr);
+        self.delayed_load();
         self.load = (instr.rt(), v as u32);
         // self.set_reg(instr.rt(), v);
     }
     pub fn op_sll(&mut self, instr: Instruction) {
         let i = instr.imm5();
         let v = self.reg(instr.rt()) << i;
+        self.delayed_load();
         self.set_reg(instr.rd(), v);
     }
     pub fn op_sllv(&mut self, instr: Instruction) {
         let v = self.reg(instr.rt()) << (self.reg(instr.rs()) & 0x1f);
+        self.delayed_load();
         self.set_reg(instr.rd(), v);
     }
     pub fn op_sra(&mut self, instr: Instruction) {
         let i = instr.imm5();
         let v = (self.reg(instr.rt()) as i32) >> i;
+        self.delayed_load();
         self.set_reg(instr.rd(), v as u32);
     }
     // shift right arithmetic variable
     pub fn op_srav(&mut self, instr: Instruction) {
         let v = (self.reg(instr.rt()) as i32) >> (self.reg(instr.rs()) & 0x1f);
+        self.delayed_load();
         self.set_reg(instr.rd(), v as u32);
     }
     pub fn op_srlv(&mut self, instr: Instruction) {
         let v = (self.reg(instr.rt())) >> (self.reg(instr.rs()) & 0x1f);
+        self.delayed_load();
         self.set_reg(instr.rd(), v);
     }
     pub fn op_srl(&mut self, instr: Instruction) {
         let i = instr.imm5();
         let v = (self.reg(instr.rt())) >> i;
+        self.delayed_load();
         self.set_reg(instr.rd(), v);
     }
     pub fn op_add(&mut self, instr: Instruction) {
@@ -464,6 +491,7 @@ impl Cpu {
             Some(v) => v as u32,
             None => return self.exception(Exception::Overflow),
         };
+        self.delayed_load();
         self.set_reg(instr.rd(), v)
     }
     pub fn op_addi(&mut self, instr: Instruction) {
@@ -473,13 +501,16 @@ impl Cpu {
             Some(v) => v as u32,
             None => return self.exception(Exception::Overflow),
         };
+        self.delayed_load();
         self.set_reg(instr.rt(), v)
     }
     pub fn op_addu(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()).wrapping_add(self.reg(instr.rt()));
+        self.delayed_load();
         self.set_reg(instr.rd(), v)
     }
     pub fn op_sub(&mut self, instr: Instruction) {
+        self.delayed_load(); // FIXME: wrong!1
         match (self.reg(instr.rs()) as i32).checked_sub(self.reg(instr.rt()) as i32) {
             Some(v) => self.set_reg(instr.rd(), v as u32),
             None => self.exception(Exception::Overflow),
@@ -487,24 +518,30 @@ impl Cpu {
     }
     pub fn op_subu(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()).wrapping_sub(self.reg(instr.rt()));
+        self.delayed_load();
         self.set_reg(instr.rd(), v)
     }
     pub fn op_addiu(&mut self, instr: Instruction) {
         let i = instr.imm_se();
         let v = self.reg(instr.rs()).wrapping_add(i);
+        self.delayed_load();
         self.set_reg(instr.rt(), v)
     }
     // TODO: stalls if division is not yet complete
     pub fn op_mflo(&mut self, instr: Instruction) {
+        self.delayed_load();
         self.set_reg(instr.rd(), self.lo);
     }
     pub fn op_mtlo(&mut self, instr: Instruction) {
+        self.delayed_load();
         self.lo = self.reg(instr.rs());
     }
     pub fn op_mthi(&mut self, instr: Instruction) {
+        self.delayed_load();
         self.hi = self.reg(instr.rs());
     }
     pub fn op_mfhi(&mut self, instr: Instruction) {
+        self.delayed_load();
         self.set_reg(instr.rd(), self.hi);
     }
     pub fn op_mult(&mut self, instr: Instruction) {
@@ -512,6 +549,7 @@ impl Cpu {
         let b = (self.reg(instr.rt()) as i32) as i64;
 
         let v = (a * b) as u64;
+        self.delayed_load();
 
         self.hi = (v >> 32) as u32;
         self.lo = v as u32;
@@ -522,6 +560,7 @@ impl Cpu {
 
         let v = a * b;
 
+        self.delayed_load();
         self.hi = (v >> 32) as u32;
         self.lo = v as u32;
     }
@@ -531,6 +570,7 @@ impl Cpu {
 
         let n = self.reg(s) as i32;
         let d = self.reg(t) as i32;
+        self.delayed_load();
 
         if d == 0 {
             self.hi = n as u32;
@@ -553,6 +593,7 @@ impl Cpu {
 
         let n = self.reg(s);
         let d = self.reg(t);
+        self.delayed_load();
 
         if d == 0 {
             self.hi = n as u32;
@@ -564,28 +605,33 @@ impl Cpu {
     }
     pub fn op_j(&mut self, instr: Instruction) {
         self.next_pc = (self.pc & 0xf0000000) | (instr.imm26() << 2);
+        self.delayed_load();
         self.branch = true;
     }
     pub fn op_jal(&mut self, instr: Instruction) {
         let ra = self.next_pc;
         self.set_reg(31, ra);
         self.next_pc = (self.pc & 0xf0000000) | (instr.imm26() << 2);
+        self.delayed_load();
         self.branch = true;
     }
     pub fn op_jr(&mut self, instr: Instruction) {
         self.next_pc = self.reg(instr.rs());
+        self.delayed_load();
         self.branch = true;
     }
 
     pub fn op_jalr(&mut self, instr: Instruction) {
         self.set_reg(instr.rd(), self.next_pc);
         self.next_pc = self.reg(instr.rs());
+        self.delayed_load();
         self.branch = true;
     }
 
     pub fn branch(&mut self, offset: u32) {
         let offset = offset << 2;
         self.next_pc = self.pc.wrapping_add(offset);
+        self.delayed_load();
         self.branch = true;
     }
     pub fn op_bne(&mut self, instr: Instruction) {
@@ -624,6 +670,7 @@ impl Cpu {
 
         let test = (v < 0) as u32;
         let test = test ^ is_bgez;
+        self.delayed_load();
 
         if is_link {
             let ra = self.pc;
@@ -635,18 +682,22 @@ impl Cpu {
     }
     pub fn op_slt(&mut self, instr: Instruction) {
         let v = (self.reg(instr.rs()) as i32) < (self.reg(instr.rt()) as i32);
+        self.delayed_load();
         self.set_reg(instr.rd(), v as u32);
     }
     pub fn op_sltu(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()) < self.reg(instr.rt());
+        self.delayed_load();
         self.set_reg(instr.rd(), v as u32);
     }
     pub fn op_slti(&mut self, instr: Instruction) {
         let v = (self.reg(instr.rs()) as i32) < (instr.imm_se() as i32);
+        self.delayed_load();
         self.set_reg(instr.rt(), v as u32);
     }
     pub fn op_sltiu(&mut self, instr: Instruction) {
         let v = (self.reg(instr.rs())) < (instr.imm_se());
+        self.delayed_load();
         self.set_reg(instr.rt(), v as u32);
     }
 
@@ -667,35 +718,43 @@ impl Cpu {
     }
 
     pub fn op_syscall(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::SysCall);
     }
     pub fn op_break(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::Break);
     }
 
     pub fn op_lwc0(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
     pub fn op_lwc1(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
     pub fn op_lwc2(&mut self, instr: Instruction) {
         panic!("unhandled GTE LWC: {:x}", instr.0);
     }
     pub fn op_lwc3(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
 
     pub fn op_swc0(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
     pub fn op_swc1(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
     pub fn op_swc2(&mut self, instr: Instruction) {
         panic!("unhandled GTE SWC: {:x}", instr.0);
     }
     pub fn op_swc3(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
 
@@ -713,6 +772,7 @@ impl Cpu {
         }
     }
     pub fn op_cop1(&mut self, _: Instruction) {
+        self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
     pub fn op_cop2(&mut self, _: Instruction) {
@@ -728,10 +788,12 @@ impl Cpu {
             14 => self.epc,
             x => panic!("unhandled read from the cop0r{} register", x),
         };
+        self.delayed_load();
         self.load = (instr.rt(), v);
     }
     pub fn op_mtc0(&mut self, instr: Instruction) {
         let v = self.reg(instr.rt());
+        self.delayed_load();
         match instr.rd() {
             3 | 5 | 6 | 7 | 9 | 11 => {
                 // breakpoint registers
@@ -754,6 +816,7 @@ impl Cpu {
         if instr.0 & 0x3f != 0b010000 {
             panic!("Invalid cop0 instruction {:x}", instr.0);
         }
+        self.delayed_load();
         let mode = self.sr & 0x3f;
         self.sr &= !0x3f;
         self.sr |= mode >> 2;

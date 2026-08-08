@@ -1,5 +1,7 @@
 use std::{fs::File, io::{Error, Read}, path::Path};
 
+use crate::memory_bus::Addressable;
+
 
 pub struct Bios {
     pub data: Vec<u8>
@@ -18,22 +20,26 @@ impl Bios {
 
         }
     }
-    pub fn load8(&self, offset: u32) -> u8 {
-        let offset = offset as usize;
 
-        self.data[offset + 0]
+    pub fn load<T:Addressable>(&self, address: u32) -> T {
+        let width = T::width() as usize;
+        let addr = address as usize;
+        let mut buffer = [0u8;4];
+        buffer[..width].copy_from_slice(&self.data[addr..addr+width]);
+        T::from_u32(u32::from_le_bytes(buffer))
     }
 
-    pub fn load32(&self, offset: u32) -> u32 {
-        let offset = offset as usize;
 
-        let b0 = self.data[offset + 0] as u32;
-        let b1 = self.data[offset + 1] as u32;
-        let b2 = self.data[offset + 2] as u32;
-        let b3 = self.data[offset + 3] as u32;
-
-        b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-    }
+    // pub fn load32(&self, offset: u32) -> u32 {
+    //     let offset = offset as usize;
+    //
+    //     let b0 = self.data[offset + 0] as u32;
+    //     let b1 = self.data[offset + 1] as u32;
+    //     let b2 = self.data[offset + 2] as u32;
+    //     let b3 = self.data[offset + 3] as u32;
+    //
+    //     b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    // }
 
 
 }

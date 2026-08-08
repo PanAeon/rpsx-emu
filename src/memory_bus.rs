@@ -29,6 +29,55 @@ mod map {
     pub const GPU: Range = Range(0x1f801810, 8);
 }
 
+#[derive(PartialEq, Eq, Debug)]
+pub enum AccessWidth {
+    Byte = 1,
+    Halfword = 2,
+    Word = 4
+}
+
+pub trait Addressable {
+    fn width() -> AccessWidth;
+    fn from_u32(x:u32) -> Self;
+    fn as_u32(&self) -> u32;
+}
+
+impl Addressable for u8 {
+    fn width() -> AccessWidth {
+        AccessWidth::Byte
+    }
+    fn from_u32(x:u32) -> Self {
+        x as u8
+    }
+    fn as_u32(&self) -> u32 {
+       *self as u32 
+    }
+}
+
+impl Addressable for u16 {
+    fn width() -> AccessWidth {
+        AccessWidth::Halfword
+    }
+    fn from_u32(x:u32) -> Self {
+        x as u16
+    }
+    fn as_u32(&self) -> u32 {
+       *self as u32
+    }
+}
+
+impl Addressable for u32 {
+    fn width() -> AccessWidth {
+        AccessWidth::Word
+    }
+    fn from_u32(x:u32) -> Self {
+        x as u32
+    }
+    fn as_u32(&self) -> u32 {
+       *self as u32
+    }
+}
+
 pub struct MemoryBus {
     bios: Bios,
     ram: Ram,
@@ -52,106 +101,77 @@ impl MemoryBus {
     pub fn new(bios: Bios, ram: Ram, dma: Dma, gpu: Gpu) -> MemoryBus {
         MemoryBus { bios, ram, dma, gpu }
     }
-
-    pub fn load32(&self, addr: u32) -> u32 {
+    pub fn load<T:Addressable>(&self, addr: u32) -> T {
         let address = mask_region(addr);
-        if address % 4 != 0 {
-            panic!("unaligned load32 address: {:08x}", address)
+        if !address.is_multiple_of(T::width() as u32) {
+            panic!("unaligned load{:?} address: {:08x}", T::width(), address)
         }
         if let Some(offset) = map::RAM.contains(address) {
-            return self.ram.load32(offset);
+            return self.ram.load(offset);
         }
         if let Some(offset) = map::GPU.contains(address) {
-            return match offset {
-                4 => self.gpu.status(),// 0x1c000000,
-                0 => self.gpu.read(),
-                _ => panic!("Unhandled GPU read {offset}")
-            };
+            return  self.gpu.load(offset)
+        }
+        if let Some(offset) = map::SPU.contains(address) {
+            return T::from_u32(0);
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA read32 {:x}", addr);
-            return self.dma_reg(offset);
+            return T::from_u32(self.dma_reg(offset));
         }
         if let Some(offset) = map::IRQ_CONTROL.contains(address) {
             // TODO: should return proper value when interrupts are implemented
             println!("IRQ_CONTROL read {:x}", addr);
-            return 0;
+            return T::from_u32(0);
         }
         if let Some(offset) = map::TIMERS.contains(address) {
             println!("Unhandled read from TIMERS register {:x}", offset);
-            return 0;
+            return T::from_u32(0);
         }
         if let Some(offset) = map::BIOS.contains(address) {
-            return self.bios.load32(offset);
-        }
-        panic!("Unhandled load32 address: {:08x}", addr)
-    }
-    pub fn load8(&self, addr: u32) -> u8 {
-        let address = mask_region(addr);
-        if let Some(offset) = map::RAM.contains(address) {
-            return self.ram.load8(offset);
-        }
-        if let Some(offset) = map::BIOS.contains(address) {
-            return self.bios.load8(offset);
+            return self.bios.load(offset);
         }
         if let Some(offset) = map::EXPANSION_1.contains(address) {
-            return 0xff;
+            return T::from_u32(!0);
         }
-        panic!("Unhandled load8 address: {:08x}", addr)
+        panic!("Unhandled load{:?} address: {:08x}", T::width(), addr)
     }
 
-    pub fn load16(&self, addr: u32) -> u16 {
+    pub fn store<T:Addressable>(&mut self, addr: u32, value: T) {
         let address = mask_region(addr);
-        if let Some(offset) = map::RAM.contains(address) {
-            return self.ram.load16(offset);
-        }
-        if let Some(offset) = map::SPU.contains(address) {
-            return 0;
-        }
-        if let Some(offset) = map::IRQ_CONTROL.contains(address) {
-            println!("IRQ_CONTROL read16 {:x}", addr);
-            return 0;
-        }
-        // if let Some(offset) = map::EXPANSION_1.contains(address) {
-        //     return 0xff;
-        // }
-        panic!("Unhandled load16 address: {:08x}", addr)
-    }
-
-    pub fn store32(&mut self, addr: u32, value: u32) {
-        let address = mask_region(addr);
-        if address % 4 != 0 {
-            panic!("unaligned store32 address: {:08x}", address)
+        if !address.is_multiple_of(T::width() as u32) {
+            panic!("unaligned load{:?} address: {:08x}", T::width(), address)
         }
         if let Some(offset) = map::RAM.contains(address) {
-            return self.ram.store32(offset, value);
+            return self.ram.store(offset, value);
         }
         if let Some(offset) = map::GPU.contains(address) {
-            match offset {
-                0 => self.gpu.gp0(value),
-                4 => self.gpu.gp1(value),
-                _ => panic!("GPU write {}: {:08X}", offset, value)
-            }
+            self.gpu.store(offset, value);
             // println!("GPU store32 {:x} = {:x}", offset, value);
             return;
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA store32 {:x} = {:x}", addr, value);
-            return self.set_dma_reg(offset, value);
+            return self.set_dma_reg(offset, value.as_u32());
+        }
+        if let Some(offset) = map::SPU.contains(address) {
+            println!("Unhandled write to SPU register {:x}", addr);
+            return;
         }
         if let Some(offset) = map::TIMERS.contains(address) {
-            return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value);
+            return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
         }
         if let Some(offset) = map::MEM_CTRL.contains(address) {
+            let val = value.as_u32();
             match offset {
                 0 => {
-                    if value != 0x1f000000 {
-                        panic!("Bad expansion 1 base address 0x{:08X}", value);
+                    if val != 0x1f000000 {
+                        panic!("Bad expansion 1 base address 0x{:08X}", val);
                     }
                 }
                 4 => {
-                    if value != 0x1f802000 {
-                        panic!("Bad expansion 2 base address 0x{:08X}", value);
+                    if val != 0x1f802000 {
+                        panic!("Bad expansion 2 base address 0x{:08X}", val);
                     }
                 }
                 _ => {}
@@ -167,41 +187,162 @@ impl MemoryBus {
         if let Some(_) = map::IRQ_CONTROL.contains(address) {
             return println!("Unhandled write to IRQ_CONTROL register");
         }
-        panic!("Unhandled store32 address: {:08x}", address)
-    }
-    pub fn store16(&mut self, addr: u32, value: u16) {
-        let address = mask_region(addr);
-        if address % 2 != 0 {
-            panic!("unaligned store16 address: {:08x}", address)
-        }
-        if let Some(offset) = map::RAM.contains(address) {
-            return self.ram.store16(offset, value);
-        }
-        if let Some(offset) = map::SPU.contains(address) {
-            println!("Unhandled write to SPU register {:x}", addr);
-            return;
-        }
-        if let Some(offset) = map::IRQ_CONTROL.contains(address) {
-            println!("Unhandled write to IRQ_CONTROL register {:x} = {:x}", addr, value);
-            return;
-        }
-        if let Some(offset) = map::TIMERS.contains(address) {
-            println!("Unhandled write to TIMERS register {:x}", addr);
-            return;
-        }
-        panic!("Unhandled store16 address: {:08x}", address)
-    }
-    pub fn store8(&mut self, addr: u32, value: u8) {
-        let address = mask_region(addr);
-        if let Some(offset) = map::RAM.contains(address) {
-            return self.ram.store8(offset, value);
-        }
         if let Some(offset) = map::EXPANSION_2.contains(address) {
             println!("Unhandled write to expansion_2 register {:x}", addr);
             return;
         }
-        panic!("Unhandled store8 address: {:08x}", addr)
+        panic!("Unhandled store{:?} address: {:08x}", T::width(), address)
     }
+
+    // pub fn load32(&self, addr: u32) -> u32 {
+    //     let address = mask_region(addr);
+    //     if address % 4 != 0 {
+    //         panic!("unaligned load32 address: {:08x}", address)
+    //     }
+    //     if let Some(offset) = map::RAM.contains(address) {
+    //         return self.ram.load32(offset);
+    //     }
+    //     if let Some(offset) = map::GPU.contains(address) {
+    //         return match offset {
+    //             4 => self.gpu.status(),// 0x1c000000,
+    //             0 => self.gpu.read(),
+    //             _ => panic!("Unhandled GPU read {offset}")
+    //         };
+    //     }
+    //     if let Some(offset) = map::DMA.contains(address) {
+    //         // println!("DMA read32 {:x}", addr);
+    //         return self.dma_reg(offset);
+    //     }
+    //     if let Some(offset) = map::IRQ_CONTROL.contains(address) {
+    //         // TODO: should return proper value when interrupts are implemented
+    //         println!("IRQ_CONTROL read {:x}", addr);
+    //         return 0;
+    //     }
+    //     if let Some(offset) = map::TIMERS.contains(address) {
+    //         println!("Unhandled read from TIMERS register {:x}", offset);
+    //         return 0;
+    //     }
+    //     if let Some(offset) = map::BIOS.contains(address) {
+    //         return self.bios.load32(offset);
+    //     }
+    //     panic!("Unhandled load32 address: {:08x}", addr)
+    // }
+    // pub fn load8(&self, addr: u32) -> u8 {
+    //     let address = mask_region(addr);
+    //     if let Some(offset) = map::RAM.contains(address) {
+    //         return self.ram.load8(offset);
+    //     }
+    //     if let Some(offset) = map::BIOS.contains(address) {
+    //         return self.bios.load8(offset);
+    //     }
+    //     if let Some(offset) = map::EXPANSION_1.contains(address) {
+    //         return 0xff;
+    //     }
+    //     panic!("Unhandled load8 address: {:08x}", addr)
+    // }
+
+    // pub fn load16(&self, addr: u32) -> u16 {
+    //     let address = mask_region(addr);
+    //     if let Some(offset) = map::RAM.contains(address) {
+    //         return self.ram.load16(offset);
+    //     }
+    //     if let Some(offset) = map::SPU.contains(address) {
+    //         return 0;
+    //     }
+    //     if let Some(offset) = map::IRQ_CONTROL.contains(address) {
+    //         println!("IRQ_CONTROL read16 {:x}", addr);
+    //         return 0;
+    //     }
+    //     // if let Some(offset) = map::EXPANSION_1.contains(address) {
+    //     //     return 0xff;
+    //     // }
+    //     panic!("Unhandled load16 address: {:08x}", addr)
+    // }
+
+    // pub fn store32(&mut self, addr: u32, value: u32) {
+    //     let address = mask_region(addr);
+    //     if address % 4 != 0 {
+    //         panic!("unaligned store32 address: {:08x}", address)
+    //     }
+    //     if let Some(offset) = map::RAM.contains(address) {
+    //         return self.ram.store32(offset, value);
+    //     }
+    //     if let Some(offset) = map::GPU.contains(address) {
+    //         match offset {
+    //             0 => self.gpu.gp0(value),
+    //             4 => self.gpu.gp1(value),
+    //             _ => panic!("GPU write {}: {:08X}", offset, value)
+    //         }
+    //         // println!("GPU store32 {:x} = {:x}", offset, value);
+    //         return;
+    //     }
+    //     if let Some(offset) = map::DMA.contains(address) {
+    //         // println!("DMA store32 {:x} = {:x}", addr, value);
+    //         return self.set_dma_reg(offset, value);
+    //     }
+    //     if let Some(offset) = map::TIMERS.contains(address) {
+    //         return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value);
+    //     }
+    //     if let Some(offset) = map::MEM_CTRL.contains(address) {
+    //         match offset {
+    //             0 => {
+    //                 if value != 0x1f000000 {
+    //                     panic!("Bad expansion 1 base address 0x{:08X}", value);
+    //                 }
+    //             }
+    //             4 => {
+    //                 if value != 0x1f802000 {
+    //                     panic!("Bad expansion 2 base address 0x{:08X}", value);
+    //                 }
+    //             }
+    //             _ => {}
+    //         }
+    //         return println!("Unhandled write to MEM_CTRL register");
+    //     }
+    //     if let Some(_) = map::RAM_SIZE.contains(address) {
+    //         return println!("Unhandled write to RAM_SIZE register");
+    //     }
+    //     if let Some(_) = map::CACHE_CONTROL.contains(address) {
+    //         return println!("Unhandled write to CACHE_CONTROL register");
+    //     }
+    //     if let Some(_) = map::IRQ_CONTROL.contains(address) {
+    //         return println!("Unhandled write to IRQ_CONTROL register");
+    //     }
+    //     panic!("Unhandled store32 address: {:08x}", address)
+    // }
+    // pub fn store16(&mut self, addr: u32, value: u16) {
+    //     let address = mask_region(addr);
+    //     if address % 2 != 0 {
+    //         panic!("unaligned store16 address: {:08x}", address)
+    //     }
+    //     if let Some(offset) = map::RAM.contains(address) {
+    //         return self.ram.store16(offset, value);
+    //     }
+    //     if let Some(offset) = map::SPU.contains(address) {
+    //         println!("Unhandled write to SPU register {:x}", addr);
+    //         return;
+    //     }
+    //     if let Some(offset) = map::IRQ_CONTROL.contains(address) {
+    //         println!("Unhandled write to IRQ_CONTROL register {:x} = {:x}", addr, value);
+    //         return;
+    //     }
+    //     if let Some(offset) = map::TIMERS.contains(address) {
+    //         println!("Unhandled write to TIMERS register {:x}", addr);
+    //         return;
+    //     }
+    //     panic!("Unhandled store16 address: {:08x}", address)
+    // }
+    // pub fn store8(&mut self, addr: u32, value: u8) {
+    //     let address = mask_region(addr);
+    //     if let Some(offset) = map::RAM.contains(address) {
+    //         return self.ram.store8(offset, value);
+    //     }
+    //     if let Some(offset) = map::EXPANSION_2.contains(address) {
+    //         println!("Unhandled write to expansion_2 register {:x}", addr);
+    //         return;
+    //     }
+    //     panic!("Unhandled store8 address: {:08x}", addr)
+    // }
 
     pub fn dma_reg(&self, offset: u32) -> u32 {
         let major = (offset & 0x70) >> 4;
@@ -285,7 +426,7 @@ impl MemoryBus {
             let cur_addr = addr & 0x1ffffc;
             match channel.direction() {
                 Direction::FromRam => {
-                    let src_word = self.ram.load32(cur_addr);
+                    let src_word = self.ram.load::<u32>(cur_addr);
                     match port {
                         Port::Gpu => {
                             self.gpu.gp0(src_word);
@@ -302,7 +443,7 @@ impl MemoryBus {
                         },
                         _ => panic!("Unhandled DMA source port {}", port as u8)
                     };
-                    self.ram.store32(cur_addr, src_word);
+                    self.ram.store::<u32>(cur_addr, src_word);
                 }
             };
 
@@ -326,13 +467,13 @@ impl MemoryBus {
         }
 
         loop {
-            let header = self.ram.load32(addr);
+            let header = self.ram.load::<u32>(addr);
 
             let mut remsz = header >> 24;
 
             while remsz > 0 {
                 addr = (addr + 4) & 0x1ffffc;
-                let command = self.ram.load32(addr);
+                let command = self.ram.load::<u32>(addr);
 
                 // println!("GPU command: {:08X}", command);
                 self.gpu.gp0(command);

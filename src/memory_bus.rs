@@ -1,5 +1,5 @@
 
-use crate::{bios::Bios, dma::{Direction, Dma, Port, Step, Sync}, gpu::Gpu, ram::Ram};
+use crate::{bios::Bios, dma::{Direction, Dma, Port, Step, Sync}, gpu::Gpu, irq::InterruptController, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, spu::Spu, timers::Timers};
 
 mod map {
     pub struct Range(u32, u32);
@@ -20,6 +20,7 @@ mod map {
     pub const RAM_SIZE: Range = Range(0x1f801060, 4);
     pub const CACHE_CONTROL: Range = Range(0xfffe0130, 4);
     pub const RAM: Range = Range(0x0000_0000, 2 * 1024 * 1024);
+    pub const SCRATCHPAD: Range = Range(0x1f80_0000, 1024);
     pub const SPU: Range = Range(0x1f801c00, 640);
     pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
     pub const EXPANSION_2: Range = Range(0x1f802000, 66);
@@ -27,6 +28,7 @@ mod map {
     pub const TIMERS: Range = Range(0x1F801100, 0x30);
     pub const DMA: Range = Range(0x1f801080, 0x80);
     pub const GPU: Range = Range(0x1f801810, 8);
+    pub const JOYSTICK: Range = Range(0x1f801040, 16);
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -80,9 +82,14 @@ impl Addressable for u32 {
 
 pub struct MemoryBus {
     bios: Bios,
-    ram: Ram,
+    pub ram: Ram,
+    scratchpad: Scratchpad,
     dma: Dma,
-    gpu: Gpu,
+    pub gpu: Gpu,
+    pub spu: Spu,
+    pub irqctl: InterruptController,
+    pub scheduler: Scheduler,
+    pub timers: Timers,
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -98,10 +105,11 @@ pub fn mask_region(addr: u32) -> u32 {
 }
 
 impl MemoryBus {
-    pub fn new(bios: Bios, ram: Ram, dma: Dma, gpu: Gpu) -> MemoryBus {
-        MemoryBus { bios, ram, dma, gpu }
+    pub fn new(bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, gpu: Gpu, spu: Spu, irqctl: InterruptController,
+        scheduler: Scheduler, timers: Timers) -> MemoryBus {
+        MemoryBus { bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers }
     }
-    pub fn load<T:Addressable>(&self, addr: u32) -> T {
+    pub fn load<T:Addressable>(&mut self, addr: u32) -> T {
         let address = mask_region(addr);
         if !address.is_multiple_of(T::width() as u32) {
             panic!("unaligned load{:?} address: {:08x}", T::width(), address)
@@ -112,21 +120,29 @@ impl MemoryBus {
         if let Some(offset) = map::GPU.contains(address) {
             return  self.gpu.load(offset)
         }
-        if let Some(offset) = map::SPU.contains(address) {
+        if let Some(_) = map::SPU.contains(address) {
+            // return crate::spu::load(&self.spu, addr);
+            return self.spu.load(addr);
+            // return T::from_u32(0);
+        }
+        if let Some(offset) = map::JOYSTICK.contains(address) {
+            // println!("Unhandled read from Joystick register {:x}", addr);
             return T::from_u32(0);
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA read32 {:x}", addr);
-            return T::from_u32(self.dma_reg(offset));
+            return self.dma_reg(offset);
+        }
+        if let Some(offset) = map::SCRATCHPAD.contains(address) {
+            return self.scratchpad.load(offset);
         }
         if let Some(offset) = map::IRQ_CONTROL.contains(address) {
-            // TODO: should return proper value when interrupts are implemented
-            println!("IRQ_CONTROL read {:x}", addr);
-            return T::from_u32(0);
+            return self.irqctl.load(offset);
         }
         if let Some(offset) = map::TIMERS.contains(address) {
-            println!("Unhandled read from TIMERS register {:x}", offset);
-            return T::from_u32(0);
+            return crate::timers::load(self, offset);
+            // println!("Unhandled read from TIMERS register {:x}", offset);
+            // return T::from_u32(0);
         }
         if let Some(offset) = map::BIOS.contains(address) {
             return self.bios.load(offset);
@@ -134,7 +150,7 @@ impl MemoryBus {
         if let Some(offset) = map::EXPANSION_1.contains(address) {
             return T::from_u32(!0);
         }
-        panic!("Unhandled load{:?} address: {:08x}", T::width(), addr)
+        panic!("Unhandled load{:?} address: {:08x}", T::width(), address)
     }
 
     pub fn store<T:Addressable>(&mut self, addr: u32, value: T) {
@@ -152,14 +168,24 @@ impl MemoryBus {
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA store32 {:x} = {:x}", addr, value);
-            return self.set_dma_reg(offset, value.as_u32());
+            return self.set_dma_reg(offset, value);
         }
-        if let Some(offset) = map::SPU.contains(address) {
-            println!("Unhandled write to SPU register {:x}", addr);
+        if let Some(offset) = map::SCRATCHPAD.contains(address) {
+            return self.scratchpad.store(offset, value);
+        }
+        if let Some(_) = map::SPU.contains(address) {
+            // println!("Unhandled write to SPU register {:x}", addr);
+            // return;
+            // return crate::spu::store(&mut self.spu, address, value);
+            return self.spu.store(address, value);
+        }
+        if let Some(offset) = map::JOYSTICK.contains(address) {
+            println!("Unhandled write to Joystick register {:x}", addr);
             return;
         }
         if let Some(offset) = map::TIMERS.contains(address) {
-            return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
+            return crate::timers::store(self, offset, value);
+            // return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
         }
         if let Some(offset) = map::MEM_CTRL.contains(address) {
             let val = value.as_u32();
@@ -184,8 +210,8 @@ impl MemoryBus {
         if let Some(_) = map::CACHE_CONTROL.contains(address) {
             return println!("Unhandled write to CACHE_CONTROL register");
         }
-        if let Some(_) = map::IRQ_CONTROL.contains(address) {
-            return println!("Unhandled write to IRQ_CONTROL register");
+        if let Some(offset) = map::IRQ_CONTROL.contains(address) {
+            return self.irqctl.store(offset, value);
         }
         if let Some(offset) = map::EXPANSION_2.contains(address) {
             println!("Unhandled write to expansion_2 register {:x}", addr);
@@ -344,10 +370,13 @@ impl MemoryBus {
     //     panic!("Unhandled store8 address: {:08x}", addr)
     // }
 
-    pub fn dma_reg(&self, offset: u32) -> u32 {
+    pub fn dma_reg<T:Addressable>(&self, offset: u32) -> T {
+        if T::width() != AccessWidth::Word {
+            panic!("Unhandled {:?} DMA load", T::width())
+        }
         let major = (offset & 0x70) >> 4;
         let minor = offset & 0xf;
-        match major {
+        let r = match major {
             0..7 => {
                 let channel = self.dma.channel(Port::from_index(major as u8));
                 match minor {
@@ -365,9 +394,15 @@ impl MemoryBus {
                 }
             },
             _ => panic!("Unhandled DMA read at {:x} offset", offset)
-        }
+        };
+        T::from_u32(r)
     }
-    pub fn set_dma_reg(&mut self, offset: u32, value: u32) {
+
+    pub fn set_dma_reg<T:Addressable>(&mut self, offset: u32, val: T) {
+        if T::width() != AccessWidth::Word {
+            panic!("Unhandled {:?} DMA store", T::width())
+        }
+        let value = val.as_u32();
         let major = (offset & 0x70) >> 4;
         let minor = offset & 0xf;
         let active_port = match major {
@@ -431,6 +466,10 @@ impl MemoryBus {
                         Port::Gpu => {
                             self.gpu.gp0(src_word);
                             // println!("GPU data: {:08x}", src_word);
+                        },
+                        Port::Spu => {
+                            self.spu.ram_write::<4>(src_word);
+                            // println!("SPU data: {:08x}", src_word);
                         },
                         _ => panic!("Unhandled DMA destination port {}", port as u8)
                     }

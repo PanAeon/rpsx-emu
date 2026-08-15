@@ -17,9 +17,13 @@ let
 in pkgs.mkShell {
   buildInputs = with pkgs; [
     alsa-lib
+    udev
+    pipewire
+    # libclang
   ];
   nativeBuildInputs = with pkgs; [
     pkg-config
+    rustPlatform.bindgenHook
     # wgsl-analyzer
     # cargo
     # rustc

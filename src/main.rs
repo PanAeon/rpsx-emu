@@ -1,45 +1,11 @@
-// use std::fs;
-// use std::io;
-// use std::path::Path;
-//
-// use crate::bios::Bios;
-// use crate::dma::Dma;
-// use crate::gpu::Gpu;
-// use crate::ram::Ram;
-// mod bios;
-// mod ram;
-// mod cpu;
-// mod memory_bus;
-// mod dma;
-// mod gpu;
-//
-// fn main() -> io::Result<()>{
-//
-//     let bios = Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
-//     let ram = Ram::new();
-//     let dma: Dma = Dma::new();
-//     let gpu = Gpu::new();
-//
-//     // let bytes = fs::read("/foo/SCPH1001.BIN")?;
-//     for i in (0..40).step_by(4) {
-//         print!("0x{:02X}", bios.data[i+3]);
-//         print!("{:02X}", bios.data[i+2]);
-//         print!("{:02X}", bios.data[i+1]);
-//         print!("{:02X}", bios.data[i+0]);
-//         println!();
-//     }
-//
-//     let memory_bus = memory_bus::MemoryBus::new(bios, ram, dma, gpu);
-//     let mut cpu = cpu::Cpu::new(memory_bus);
-//     loop {
-//         cpu.run_next_instruction();
-//         // cpu.debug_print();
-//     }
-//     // Ok(())
-// }
 use cgmath::prelude::*;
+
+use cpal::traits::StreamTrait;
+use env_logger::init;
+// use env_logger::fmt::style::Color;
 use std::cmp::min;
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{BufWriter, Cursor, Read, Write};
 use std::{iter, sync::Arc};
 use wgpu::util::DeviceExt;
 use winit::dpi::LogicalSize;
@@ -63,6 +29,12 @@ mod dma;
 mod gpu;
 mod memory_bus;
 mod ram;
+mod spu;
+mod scratchpad;
+mod audio;
+mod irq;
+mod timers;
+mod scheduler;
 
 mod resources;
 
@@ -129,6 +101,14 @@ pub struct TextureBuffer {
     width: u32,
     height: u32,
 }
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct Color {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8
+}
 
 // #[derive(Clone)]
 pub struct State {
@@ -155,9 +135,15 @@ pub struct State {
     texture_params_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
     texture_bind_group: wgpu::BindGroup,
-    dimensions: (u32, u32),
-    image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    // dimensions: (u32, u32),
+    framebuffer: Vec<Color>,
+    // image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
     cpu: cpu::Cpu,
+    texture_size: wgpu::Extent3d,
+    audio_sender: crossbeam::channel::Sender<[i16; 2]>,
+    audio_stream: cpal::Stream,
+    audio_buffer: Vec<[i16;2]>,
+    // writer: BufWriter<File>
 }
 
 impl State {
@@ -229,20 +215,20 @@ impl State {
             view_formats: vec![surface_format],
             color_space: wgpu::wgt::SurfaceColorSpace::Auto,
         };
-        let img_data = include_bytes!("happy-tree.png");
-        use image::ImageReader;
-        let image = ImageReader::new(Cursor::new(img_data))
-            .with_guessed_format()
-            .unwrap()
-            .decode()
-            .unwrap();
-        let image_rgba = image.to_rgba8();
-        use image::GenericImageView;
-        let dimensions = image.dimensions();
+        // let img_data = include_bytes!("happy-tree.png");
+        // use image::ImageReader;
+        // let image = ImageReader::new(Cursor::new(img_data))
+        //     .with_guessed_format()
+        //     .unwrap()
+        //     .decode()
+        //     .unwrap();
+        // let image_rgba = image.to_rgba8();
+        // use image::GenericImageView;
+        // let dimensions = image.dimensions();
 
         let texture_size = wgpu::Extent3d {
-            width: dimensions.0,
-            height: dimensions.1,
+            width: 1024,
+            height: 512,
             // All textures are stored as 3D, we represent our 2D texture
             // by setting depth to 1.
             depth_or_array_layers: 1,
@@ -442,8 +428,12 @@ impl State {
 
     let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
     let ram = ram::Ram::new();
+    let scratchpad = scratchpad::Scratchpad::new();
     let dma = dma::Dma::new();
     let gpu = gpu::Gpu::new();
+    let spu = spu::Spu::new();
+    // let spu = spu::Spu::default();
+    let irqctl = irq::InterruptController::default();
 //
 //     // let bytes = fs::read("/foo/SCPH1001.BIN")?;
 //     for i in (0..40).step_by(4) {
@@ -454,14 +444,17 @@ impl State {
 //         println!();
 //     }
 //
-    let memory_bus = memory_bus::MemoryBus::new(bios, ram, dma, gpu);
-    let mut cpu = cpu::Cpu::new(memory_bus);
-//     loop {
-//         cpu.run_next_instruction();
-//         // cpu.debug_print();
-//     }
+    let mut scheduler = scheduler::Scheduler::default();
+    scheduler.init();
+    let timers = timers::Timers::new();
+    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers);
+    let cpu = cpu::Cpu::new(memory_bus);
 
-        let state = Self {
+    let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
+         let file = File::create("output.pcm")?;
+    // let mut writer = BufWriter::new(file);
+
+        let mut state = Self {
             instance,
             surface: Some(surface),
             device,
@@ -493,34 +486,49 @@ impl State {
             // tilemap_index_texture,
             texture_bind_group,
             texture,
-            image_rgba,
-            dimensions, // game_state,
+            framebuffer: vec![Color {r:0, g:0 ,b:0, a: 255}; 1024 * 512],
+            texture_size,
+            // image_rgba,
+            // dimensions, 
+            // game_state,
                         // sprites,
                         // normal_font,
                         // normal_blue_font,
                         // small_font,
                         // sounds
             cpu,
+            audio_stream,
+            audio_sender,
+            audio_buffer: Vec::with_capacity(735),
+            // writer,
         };
         set_camera(&state, &state.queue, FULLSCREEN_QUAD_CAMERA);
-        state.queue.write_texture(
-            // Tells wgpu where to copy the pixel data
-            wgpu::TexelCopyTextureInfo {
-                texture: &state.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            // The actual pixel data
-            &state.image_rgba,
-            // The layout of the texture
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * dimensions.0),
-                rows_per_image: Some(dimensions.1),
-            },
-            texture_size,
-        );
+        State::upload_framebuffer(&state);
+        // for _ in 0..120*735 {
+        //     state.audio_sender.send([0i16, 0i16]).expect("can't send audio sample");
+        // }
+        state.audio_stream.play()?;
+        // State::sideload_exe(&mut state);
+        //
+
+        // state.queue.write_texture(
+        //     // Tells wgpu where to copy the pixel data
+        //     wgpu::TexelCopyTextureInfo {
+        //         texture: &state.texture,
+        //         mip_level: 0,
+        //         origin: wgpu::Origin3d::ZERO,
+        //         aspect: wgpu::TextureAspect::All,
+        //     },
+        //     // The actual pixel data
+        //     bytemuck::cast_slice(&state.framebuffer),
+        //     // The layout of the texture
+        //     wgpu::TexelCopyBufferLayout {
+        //         offset: 0,
+        //         bytes_per_row: Some(4 * 1024),
+        //         rows_per_image: Some(512),
+        //     },
+        //     texture_size,
+        // );
         // let tileset =
         //     TilesetData::from_image_with_spacing(&image, Vec2::broadcast(16), Vec2::broadcast(0));
         // let fontset = TilesetData::from_image_with_spacing(
@@ -543,6 +551,27 @@ impl State {
         Ok(state)
     }
 
+    pub fn upload_framebuffer(&self) {
+        self.queue.write_texture(
+            // Tells wgpu where to copy the pixel data
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            // The actual pixel data
+            bytemuck::cast_slice(&self.framebuffer),
+            // The layout of the texture
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * 1024),
+                rows_per_image: Some(512),
+            },
+            self.texture_size,
+        );
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.config.width = width;
@@ -555,12 +584,131 @@ impl State {
         }
     }
 
-    fn update(&mut self, event_loop: &ActiveEventLoop) {
-        // 33.8688 MHz
-        for _ in 0..564_480  {
+    fn sideload_exe(&mut self) {
+        let mut file = match std::fs::File::open("/foo/psxtest_cpu.exe") {
+            Ok(file) => file,
+            Err(e) => panic!("Can't load exe {}", e),
+        };
+        let mut data: Vec<u8> = Vec::new();
+        let file_size = match file.read_to_end(&mut data) {
+            Ok(x) => x,
+            Err(e) => panic!("Can't read exe {}", e),
+        };
+        while self.cpu.pc != 0x80030000 {
             self.cpu.run_next_instruction();
-            // cpu.debug_print();
+            self.cpu.check_for_tty_output();
         }
+
+        // exe header
+        let initial_pc   = u32::from_le_bytes(data[0x10..0x14].try_into().unwrap());
+        let initial_r28  = u32::from_le_bytes(data[0x14..0x18].try_into().unwrap());
+        let exe_ram_addr = u32::from_le_bytes(data[0x18..0x1C].try_into().unwrap()) & 0x1FFFFF;
+        let exe_size= u32::from_le_bytes(data[0x1C..0x20].try_into().unwrap()) as usize;
+        let initial_sp   = u32::from_le_bytes(data[0x30..0x34].try_into().unwrap());
+
+        // exe_ram_addr = crate::memory_bus::mask_region(exe_ram_addr);
+        println!("exe ram addr: 0x{:X}", exe_ram_addr);
+        println!("initial pc: 0x{:X}", initial_pc);
+
+        // let exe_size = (file_size - 2048) as u32;
+        // let exe_size = (exe_size_2kb);
+        // let exe_size = 1013760 - 2048;
+        println!("exe size: {}", exe_size);
+        self.cpu.memory_bus.ram.data[exe_ram_addr as usize .. (exe_ram_addr  as usize + exe_size)]
+            .copy_from_slice(&data[2048..2048 + exe_size as usize]);
+        //  let dest = self
+        //     .cpu.memory_bus.ram.data
+        //     .bytes()
+        //     .get_mut(exe_ram_addr as usize..exe_ram_addr as usize + exe_size)
+        //     .context("EXE load address out of RAM bounds")?;
+        //
+        // let src = data
+        //     .get(2048..2048 + exe_size)
+        //     .context("EXE file truncated")?;
+        //
+        // dest.copy_from_slice(src);
+
+        self.cpu.set_reg(28, initial_r28);
+        if initial_sp != 0 {
+            self.cpu.set_reg(29, initial_sp);
+            self.cpu.set_reg(30, initial_sp);
+        }
+        self.cpu.pc = initial_pc;
+        self.cpu.next_pc = initial_pc + 4;
+    }
+
+    fn update(&mut self, event_loop: &ActiveEventLoop) {
+        loop {
+            if let Some(event) = self.cpu.memory_bus.scheduler.get_next_event() {
+                match event {
+                    scheduler::Event::SpuTick => {
+                         self.cpu.memory_bus.spu.clock();
+                         let sample = self.cpu.memory_bus.spu.mix();
+                         self.audio_sender.send(sample).expect("can't send audio sample");
+
+
+                        // self.audio_buffer.push(sample);
+                        // if self.audio_buffer.len() == 20*735 {
+                        //     self.audio_buffer.clear();
+                        //     break;
+                        // }
+
+                         // self.writer.write_all(&sample[0].to_le_bytes()).expect("foo");
+                        // self.cpu.memory_bus.spu.clock();
+                        // self.audio_buffer.push(sample);
+                        // if self.audio_buffer.len() == 735 {
+                        //     self.audio_buffer.iter().for_each(|sample| {
+                        //         self.audio_sender.send(*sample).expect("can't send audio sample");
+                        //     });
+                        //     self.audio_buffer.clear();
+                        //
+                        // }
+                    }
+                    scheduler::Event::VBlankStart => {
+                        // TODO: produce framebuffer here?
+                        self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer);
+                        self.cpu.memory_bus.irqctl.status.set_vblank(true);
+                        timers::Timers::enter_vsync(&mut self.cpu.memory_bus);
+                        // println!("vsync?");
+                    },
+                    scheduler::Event::VBlankEnd => {
+                        timers::Timers::exit_vsync(&mut self.cpu.memory_bus);
+                        break;
+                    },
+                    scheduler::Event::HBlankStart => {
+                        timers::Timers::enter_hsync(&mut self.cpu.memory_bus);
+                    },
+                    scheduler::Event::HBlankEnd => {
+                        timers::Timers::exit_hsync(&mut self.cpu.memory_bus);
+                    },
+                    scheduler::Event::Timer(i) => timers::Timers::process_interrupt(&mut self.cpu.memory_bus, i),
+                }
+            }
+            for _ in 0..20 {
+                self.cpu.run_next_instruction();
+                self.cpu.check_for_tty_output();
+            }
+            self.cpu.memory_bus.scheduler.advance(37); // 40???
+        }
+        //     for _ in 0..200 {
+        //         self.cpu.run_next_instruction();
+        //         self.cpu.check_for_tty_output();
+        //     }
+        // // println!(".");
+        // for i in 0..735 {
+        //     // for _ in 0..334 {
+        //     for _ in 0..668 {
+        //         self.cpu.run_next_instruction();
+        //         self.cpu.check_for_tty_output();
+        //     }
+        //     if i == 500 {
+        //                  self.cpu.memory_bus.irqctl.status.set_vblank(true);
+        //     }
+        //     self.cpu.memory_bus.spu.clock();
+        //     audio_buffer.push(self.cpu.memory_bus.spu.mix());
+        //     // self.audio_sender.send(self.cpu.memory_bus.spu.mix()).expect("can't send audio");
+        // }
+
         // let before = web_time::Instant::now();
         // let elapsed = before.duration_since(self.render_finished);
         // println!("elsaped: {}", self.render_time_ms);
@@ -608,25 +756,8 @@ impl State {
     }
 
     fn render(&mut self, view: &wgpu::TextureView) {
-        let before = web_time::Instant::now();
-        let elapsed = before.duration_since(self.render_finished);
-        if elapsed.as_micros() < 16000 {
-            let sl = 16000 - elapsed.as_micros();
-            #[cfg(not(target_arch = "wasm32"))]
-            std::thread::sleep(std::time::Duration::new(0, 1000 * sl as u32));
-        }
+        self.upload_framebuffer();
         self.window.request_redraw();
-        let after = web_time::Instant::now();
-        self.render_time_ms = after
-            .checked_duration_since(self.render_finished)
-            .unwrap()
-            .subsec_nanos()
-            / 1000;
-        if self.frame_num % 600 == 1 {
-            // println!("ms: {}",  (self.render_time_ms) as f32 / 100_000.0);
-            let msg = format!("fps: {}", 1_000_000.0 / (self.render_time_ms) as f32);
-            println!("{}", msg);
-        }
 
         // let output = self.surface.as_ref().unwrap().get_current_texture();
         // let view = output
@@ -712,7 +843,6 @@ impl State {
         // tilemap stuff end
         // output.present();
         // TODO: must move up..
-        self.render_finished = web_time::Instant::now();
         self.frame_num += 1;
 
         // Ok(())
@@ -867,9 +997,31 @@ impl ApplicationHandler<State> for App {
         };
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                state.audio_stream.pause().expect("audio stream should pause");
+                event_loop.exit();
+            },
             WindowEvent::Resized(size) => state.resize(size.width, size.height),
             WindowEvent::RedrawRequested => {
+        let before = web_time::Instant::now();
+        let elapsed = before.duration_since(state.render_finished);
+        const FRAME_TIME: u128 = 16666;
+        if elapsed.as_micros() < FRAME_TIME {
+            let sl = FRAME_TIME - elapsed.as_micros();
+            // std::thread::sleep(std::time::Duration::new(0, 1000 * sl as u32));
+        }
+        let after = web_time::Instant::now();
+        state.render_time_ms = after
+            .checked_duration_since(state.render_finished)
+            .unwrap()
+            .subsec_nanos()
+            / 1000;
+        if state.frame_num % 60 == 1 {
+            // println!("ms: {}",  (self.render_time_ms) as f32 / 100_000.0);
+            let msg = format!("fps: {}", 1_000_000.0 / (state.render_time_ms) as f32);
+            println!("{}", msg);
+        }
+
                 state.update(event_loop);
                 if self.occluded {
                     return;
@@ -887,6 +1039,7 @@ impl ApplicationHandler<State> for App {
 
                     state.queue.present(frame);
                 }
+                state.render_finished = web_time::Instant::now();
             }
             WindowEvent::MouseInput { state, button, .. } => match (button, state.is_pressed()) {
                 (MouseButton::Left, true) => {}
@@ -918,6 +1071,10 @@ pub fn run() -> anyhow::Result<()> {
     let event_loop = EventLoop::with_user_event().build()?;
     let mut app = App::new();
     event_loop.run_app(&mut app)?;
+    // app.state.unwrap().writer.flush()?;
+    // println!("why u not exiting??");
+    // drop(app.state.unwrap().audio_sender);
+    // drop(app);
 
     Ok(())
 }

@@ -1,4 +1,7 @@
-use crate::memory_bus::{AccessWidth, Addressable};
+use wgpu::CurrentSurfaceTexture;
+use std::cmp;
+
+use crate::{Color, memory_bus::{AccessWidth, Addressable}};
 
 pub struct Gpu {
     // Texture page base X coordinate (4 bits, 64 byte increment)
@@ -108,10 +111,16 @@ impl Gpu {
             let (len, method):(u32, fn (&mut Gpu)) = match opcode {
                 0x00 => (1, Gpu::gp0_nop),
                 0x01 => (1, Gpu::gp0_clear_cache),
+                0x02 => (3, Gpu::gp0_fill_rect),
+                // 0x28 => (5, Gpu::gp0_nop),
                 0x28 => (5, Gpu::gp0_quad_mono_opaque),
+                // 0x2C => (9, Gpu::gp0_nop),
                 0x2C => (9, Gpu::gp0_quad_texture_blend_opaque),
+                // 0x30 => (6, Gpu::gp0_nop),
                 0x30 => (6, Gpu::gp0_triangle_shaded_opaque),
+                // 0x38 => (8, Gpu::gp0_nop),
                 0x38 => (8, Gpu::gp0_quad_shaded_opaque),
+                0x68 => (2, Gpu::gp0_monochrome_rect_1x1),
                 0xA0 => (3, Gpu::gp0_image_load),
                 0xC0 => (3, Gpu::gp0_image_store),
                 0xE1 => (1, Gpu::gp0_draw_mode),
@@ -120,7 +129,7 @@ impl Gpu {
                 0xE4 => (1, Gpu::gp0_drawing_area_bottom_right),
                 0xE5 => (1, Gpu::gp0_drawing_offset),
                 0xE6 => (1, Gpu::gp0_mask_bit_setting),
-                _ => panic!("Unhandled GP0 command {:08X} opcode: {:02X}", val, opcode),
+                _ => panic!("Unhandled GP0 command 0x{:08X} opcode: 0x{:02X}", val, opcode),
             };
             self.gp0_words_remaining = len;
             self.gp0_command_method = method;
@@ -134,38 +143,232 @@ impl Gpu {
                     (self.gp0_command_method)(self);
                 }
             },
-            Gp0Mode::ImageLoad => {
-                // FIXME: should copy pixels to VRAM
+            Gp0Mode::ImageLoad {top_left, resolution, current_row, current_col}=> {
+                self.process_cpu_to_vram_copy(val, top_left, resolution, current_row, current_col);
                 if self.gp0_words_remaining == 0 {
                     self.gp0_mode = Gp0Mode::Command;
                 }
             }
         }
     }
+
+    pub fn process_cpu_to_vram_copy(&mut self, word: u32, top_left: (u16, u16), resolution: (u16, u16),
+                                               curr_row: u16, curr_col: u16) {
+        let mut current_row = curr_row;
+        let mut current_col = curr_col;
+        // 2 halfwords per GP0 write
+        for i in 0..2 {
+            let halfword = (word >> (16 * i)) as u16;
+
+            let vram_row = ((top_left.1 + current_row) & 0x1FF) as usize;
+            let vram_col = ((top_left.0 + current_col) & 0x3FF) as usize;
+
+            let [lsb, msb] = halfword.to_le_bytes();
+            let vram_addr = 2 * (1024 * vram_row + vram_col);
+
+            self.vram[vram_addr] = lsb;
+            self.vram[vram_addr + 1] = msb;
+
+            current_col += 1;
+            if current_col == resolution.0 {
+                current_col = 0;
+                current_row += 1;
+                // TODO: maybe return from here?
+            }
+
+        }
+        self.gp0_mode = Gp0Mode::ImageLoad {top_left, resolution, current_row, current_col}
+    }
+
+    pub fn gp0_position(pos: u32) -> [u32;2] {
+        // Parameter word contains the pixel coordinates.
+        // Vertex coordinates are technically signed 11-bit integers, and the drawing offset needs to be
+        // applied, but let's ignore that for now
+        let x = pos & 0x3FF;
+        let y = (pos >> 16) & 0x1FF;
+
+        [x,y]
+    }
+    pub fn gp0_colour(color: u32) -> Colour {
+        let r = (color & 0xFF) as u8;
+        let g = ((color >> 8) & 0xFF) as u8;
+        let b = ((color >> 16) & 0xFF) as u8;
+        Colour { r, g, b }
+    }
+    pub fn gp0_color(color: u32) -> [u8;2] {
+        let r = (color & 0xFF) >> 3;
+        let g = ((color >> 8) & 0xFF) >> 3;
+        let b = ((color >> 16) & 0xFf) >> 3;
+
+        let pixel = (r | (g << 5) | (b << 10)) as u16;
+        pixel.to_le_bytes()
+    }
+    pub fn gp0_vertex(v: u32) -> Vertex {
+        let x = (v & 0x3FF) as i32;
+        let y = ((v >> 16) & 0x1FF) as i32;
+        Vertex { x, y }
+    }
     pub fn gp0_nop(&mut self) {}
     pub fn gp0_clear_cache(&mut self) {}
-    pub fn gp0_quad_mono_opaque(&mut self) {
-        println!("draw quad!");
+    pub fn gp0_fill_rect(&mut self) {
+        println!("gp0 fill rect");
     }
+    pub fn render_triangle_mono_opaque(&mut self, color: [u8;2], v0: &mut Vertex, v1: &mut Vertex, v2: Vertex) {
+        ensure_vertex_order(v0, v1, v2);
+        let [pixel_lsb, pixel_msb] = color;
+
+        // bounding box
+        let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
+        let mut max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
+        let mut min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
+        let mut max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
+
+        // clip pixels outside of the drawing area
+        min_x = cmp::max(min_x, self.drawing_area_left as i32);
+        max_x = cmp::min(max_x, self.drawing_area_right as i32);
+        min_y = cmp::max(min_y, self.drawing_area_top as i32);
+        max_y = cmp::min(max_y, self.drawing_area_bottom as i32);
+
+        for y in min_y..max_y {
+            for x in min_x..max_x {
+                let p = Vertex{x,y};
+                if is_inside_triangle(p, *v0, *v1, v2) {
+                    let vram_addr = 2 * (y * 1024 + x) as usize;
+                    self.vram[vram_addr] = pixel_lsb;
+                    self.vram[vram_addr+1] = pixel_msb;
+                }
+            }
+        }
+
+        // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
+    }
+
+    pub fn render_triangle_shaded_opaque(&mut self, v0: &mut Vertex, v1: &mut Vertex, v2: Vertex,
+                     c0: &mut Colour, c1: &mut Colour, c2: Colour) {
+        ensure_vertex_and_color_order(v0, v1, v2, c0, c1, c2);
+
+        // bounding box
+        let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
+        let mut max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
+        let mut min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
+        let mut max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
+
+        // clip pixels outside of the drawing area
+        min_x = cmp::max(min_x, self.drawing_area_left as i32);
+        max_x = cmp::min(max_x, self.drawing_area_right as i32);
+        min_y = cmp::max(min_y, self.drawing_area_top as i32);
+        max_y = cmp::min(max_y, self.drawing_area_bottom as i32);
+
+        for y in min_y..max_y {
+            for x in min_x..max_x {
+                let p = Vertex{x,y};
+                if is_inside_triangle(p, *v0, *v1, v2) {
+                    let lambda = compute_barycentric_coordinates(p, *v0, *v1, v2);
+                    let color = interpolate_color(lambda, [*c0, *c1, c2]);
+                    let color = apply_dithering(color, p);
+
+                    let r = ((color.r & 0xFF) >> 3) as u16;
+                    let g = ((color.g & 0xFF) >> 3) as u16;
+                    let b = ((color.b & 0xFF) >> 3) as  u16;
+
+                    let pixel = (r | (g << 5) | (b << 10)) as u16;
+                    let [pixel_lsb, pixel_msb] = pixel.to_le_bytes();
+
+                    let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                    self.vram[vram_addr] = pixel_lsb;
+                    self.vram[vram_addr+1] = pixel_msb;
+                }
+            }
+        }
+
+        // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
+    }
+
+    pub fn gp0_quad_mono_opaque(&mut self) {
+        let color = Self::gp0_color(self.gp0_command[0]);
+        let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let mut v1 = Self::gp0_vertex(self.gp0_command[2]);
+        let mut v2 = Self::gp0_vertex(self.gp0_command[3]);
+        let v3 = Self::gp0_vertex(self.gp0_command[4]);
+
+        self.render_triangle_mono_opaque(color, &mut v0, &mut v1, v2);
+        self.render_triangle_mono_opaque(color, &mut v1, &mut v2, v3);
+    }
+
     pub fn gp0_quad_texture_blend_opaque(&mut self) {
-        println!("draw texture quad blend opaque!");
+        let color = Self::gp0_color(self.gp0_command[0]);
+        let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let mut v1 = Self::gp0_vertex(self.gp0_command[3]);
+        let mut v2 = Self::gp0_vertex(self.gp0_command[5]);
+        let v3 = Self::gp0_vertex(self.gp0_command[7]);
+        // 9
+        self.render_triangle_mono_opaque(color, &mut v0, &mut v1, v2);
+        self.render_triangle_mono_opaque(color, &mut v1, &mut v2, v3);
     }
     pub fn gp0_triangle_shaded_opaque(&mut self) {
-        println!("draw triangle!");
+        // 6
+        let mut c0 = Self::gp0_colour(self.gp0_command[0]);
+        let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let mut c1 = Self::gp0_colour(self.gp0_command[2]);
+        let mut v1 = Self::gp0_vertex(self.gp0_command[3]);
+        let c2 = Self::gp0_colour(self.gp0_command[4]);
+        let mut v2 = Self::gp0_vertex(self.gp0_command[5]);
+        self.render_triangle_shaded_opaque(&mut v0, &mut v1, v2, &mut c0, &mut c1, c2);
+        // self.render_triangle_mono_opaque(c0, &mut v0, &mut v1, v2);
     }
     pub fn gp0_quad_shaded_opaque(&mut self) {
-        println!("draw shaded quad!");
+        // 8
+        // println!("draw shaded quad!");
+        let mut c0 = Self::gp0_colour(self.gp0_command[0]);
+        let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let mut c1 = Self::gp0_colour(self.gp0_command[2]);
+        let mut v1 = Self::gp0_vertex(self.gp0_command[3]);
+        let mut c2 = Self::gp0_colour(self.gp0_command[4]);
+        let mut v2 = Self::gp0_vertex(self.gp0_command[5]);
+        let c3 = Self::gp0_colour(self.gp0_command[6]);
+        let mut v3 = Self::gp0_vertex(self.gp0_command[7]);
+
+        self.render_triangle_shaded_opaque(&mut v0, &mut v1, v2, &mut c0, &mut  c1, c2);
+        self.render_triangle_shaded_opaque(&mut v1, &mut v2, v3, &mut c1, &mut c2, c3);
+        // self.render_triangle_mono_opaque(c0, &mut v0, &mut v1, v2);
+        // self.render_triangle_mono_opaque(c0, &mut v1, &mut v2, v3);
+    }
+    pub fn gp0_monochrome_rect_1x1(&mut self) {
+        let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
+        let [x,y] = Self::gp0_position(self.gp0_command[1]);
+        // println!("monochrome rect 1x1");
+        let vram_addr = 2 * (y * 1024 + x) as usize;
+        self.vram[vram_addr] = pixel_lsb;
+        self.vram[vram_addr+1] = pixel_msb;
     }
     pub fn gp0_image_load(&mut self) {
+        let pos = self.gp0_command[1];
+
+        let x = pos as u16;
+        let y = (pos >> 16) as u16;
+
         let res = self.gp0_command[2];
-        let width = res & 0xffff;
-        let height = res >> 16;
+        let mut width = res & 0xffff;
+        if width == 0 {
+            width = 1024;
+        }
+
+        let mut height = res >> 16;
+        if height == 0 {
+            height = 512;
+        }
 
         let imgsize = width * height;
         // rounding so we have 16 bit of padding in last word
         let imgsize = (imgsize + 1) & !1;
         self.gp0_words_remaining = imgsize / 2;
-        self.gp0_mode = Gp0Mode::ImageLoad;
+        self.gp0_mode = Gp0Mode::ImageLoad {
+            top_left: (x, y),
+            resolution: (width as u16, height as u16),
+            current_row: 0,
+            current_col: 0
+        };
 
     }
     pub fn gp0_image_store(&mut self) {
@@ -234,6 +437,7 @@ impl Gpu {
             0x06 => self.gp1_display_horizontal_range(val),
             0x07 => self.gp1_display_vertical_range(val),
             0x08 => self.gp1_display_mode(val),
+            0x10 => self.gp1_get_gpu_info(val),
             _ => panic!("Unhandled GP1 command {:08X} opcode: {:02X}", val, opcode),
         }
     }
@@ -319,18 +523,35 @@ impl Gpu {
             panic!("Unsupported display mode {:08x}", val);
         }
     }
+
+    pub fn gp1_get_gpu_info(&mut self, val: u32) {
+        let v = val % 8;
+        match v {
+            0 | 1 => {}, // nop
+  //           02h     = Read Texture Window setting  ;GP0(E2h) ;20bit/MSBs=Nothing
+  //           03h     = Read Draw area top left      ;GP0(E3h) ;19bit/MSBs=Nothing
+  //           04h     = Read Draw area bottom right  ;GP0(E4h) ;19bit/MSBs=Nothing
+  //           05h     = Read Draw offset             ;GP0(E5h) ;22bit
+            6 | 7 => {}, // nop
+            _ => unreachable!("v could be 0...7")
+        }
+    }
+
     pub fn gp1_display_vram_start(&mut self, val: u32) {
         self.display_vram_x_start = (val & 0x3fe) as u16;
         self.display_vram_y_start = ((val >> 10) & 0x1ff) as u16;
     }
+    
     pub fn gp1_display_horizontal_range(&mut self, val: u32) {
         self.display_horiz_start = (val & 0xfff) as u16;
         self.display_horiz_end = ((val >> 12) & 0xfff) as u16;
     }
+
     pub fn gp1_display_vertical_range(&mut self, val: u32) {
         self.display_line_start = (val & 0x3ff) as u16;
         self.display_line_end = ((val >> 10) & 0x3ff) as u16;
     }
+
     pub fn gp1_dma_direction(&mut self, val: u32) {
         self.dma_direction = match val & 3 {
             0 => DmaDirection::Off,
@@ -412,7 +633,48 @@ impl Gpu {
                 _ => panic!("GPU write {}: {:08X}", offset, val)
         };
     }
+
+    pub fn convert_5bit_to_8bit(color: u16) -> u8 {
+        // Note it is probably a lot faster to use a 32-entry lookup table than doing this calculation live
+        // (f64::from(color) * 255.0 / 31.0).round() as u8
+        FIVE_BIT_TO_8BIT[color as usize]
+    }
+
+    pub fn render_vram(&self, output_frame_buffer: &mut [Color]) {
+        for y in 0..512 {
+            for x in 0..1024 {
+                let vram_addr = 2 * (1024 * y + x);
+                let pixel = u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
+
+                let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
+                let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+                let b = Gpu::convert_5bit_to_8bit((pixel >> 10 ) & 0x1F);
+
+                output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
+            }
+        }
+    }
+    // pub fn get_clock_divider(&self) -> u16 {
+    //     match self.hres.0 {
+    //         256 => 10,
+    //         320 => 8,
+    //         368 => 7,
+    //         512 => 5,
+    //         640 => 4,
+    //         _ => panic!("not implemented")
+    //     }
+    // }
 }
+
+const FIVE_BIT_TO_8BIT: [u8; 32] = {
+    let mut table = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        table[i] = (i as f64 * 255.0 / 31.0).round() as u8;
+        i += 1;
+    }
+    table
+};
 
 #[derive(Clone, Copy)]
 enum TextureDepth {
@@ -511,5 +773,110 @@ impl ::std::ops::Index<usize> for CommandBuffer {
 
 enum Gp0Mode {
     Command,
-    ImageLoad
+    ImageLoad {top_left: (u16,u16), resolution: (u16, u16), current_row: u16, current_col: u16}
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Vertex {
+    x: i32,
+    y: i32
+}
+
+// clockwise order (psx has inverted y coord)
+fn ensure_vertex_order(v0: &mut Vertex, v1: &mut Vertex, v2: Vertex) {
+    let cross_product_z = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+    if cross_product_z < 0 {
+        std::mem::swap(v0, v1);
+    }
+}
+
+fn ensure_vertex_and_color_order(v0: &mut Vertex, v1: &mut Vertex, v2: Vertex,
+                       c0: &mut Colour, c1: &mut Colour, _: Colour) {
+    let cross_product_z = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+    if cross_product_z < 0 {
+        std::mem::swap(v0, v1);
+        std::mem::swap(c0, c1);
+    }
+}
+
+fn cross_product_z(v0: Vertex, v1: Vertex, v2: Vertex) -> i32 {
+    (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x)
+}
+
+fn is_inside_triangle(p: Vertex, v0: Vertex, v1: Vertex, v2: Vertex) -> bool {
+    for (va, vb) in [(v0, v1), (v1, v2), (v2, v0)] {
+        let cpz = cross_product_z(va, vb, p);
+        if cpz < 0 {
+            return false;
+        }
+        if cpz == 0 {
+            // If the cross product Z component is 0, this point lies exactly on an edge.
+            // Per the top-left rule, this pixel should be rasterized only if it does not lie
+            // on a bottom or right edge.
+
+            // Assuming clockwise order and an inverted Y axis, if the Y value increases from Va to Vb,
+            // this edge is right-oriented
+            if vb.y > va.y {
+                // Pixel lies on a right-oriented edge, skip
+                return false;
+            }
+
+            // If the Y coordinates are equal and the X coordinate decreases, this is a horizontal bottom edge
+            if vb.y == va.y && vb.x < va.x {
+                // Pixel lies on a horizontal bottom edge, skip
+                return false;
+            }
+
+            // Otherwise, this is either a horizontal top edge or a left-oriented edge; rasterize it
+            // (If it doesn't also lie on a different edge that is bottom/right)
+        }
+    }
+
+    true
+}
+
+fn compute_barycentric_coordinates(p: Vertex, v0: Vertex, v1: Vertex, v2: Vertex) -> [f64;3] {
+    let denominator = cross_product_z(v0, v1, v2);
+    if denominator == 0 {
+        return [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+    }
+    let denominator: f64 = denominator.into();
+    let lambda0 = f64::from(cross_product_z(v1, v2, p)) / denominator;
+    let lambda1 = f64::from(cross_product_z(v2, v0, p)) / denominator;
+    let lambda2 = 1.0 - lambda0 - lambda1;
+    [lambda0, lambda1, lambda2]
+}
+
+#[derive(Clone, Copy)]
+struct Colour {
+    r: u8,
+    g: u8,
+    b: u8
+}
+
+fn interpolate_color(lambda: [f64;3], colors: [Colour;3]) -> Colour {
+    let colors_r: [f64; 3] = colors.map(|c| f64::from(c.r));
+    let colors_g = colors.map(|c| f64::from(c.g));
+    let colors_b = colors.map(|c| f64::from(c.b));
+
+    let r = (lambda[0] * colors_r[0] + lambda[1] * colors_r[1] + lambda[2] * colors_r [2]).round() as u8;
+    let g = (lambda[0] * colors_g[0] + lambda[1] * colors_g[1] + lambda[2] * colors_g [2]).round() as u8;
+    let b = (lambda[0] * colors_b[0] + lambda[1] * colors_b[1] + lambda[2] * colors_b [2]).round() as u8;
+
+    Colour { r, g, b }
+}
+
+const DITHER_TABLE: &[[i8; 4]; 4] = &[
+    [-4, 0, -3, 1],
+    [2, -2, 3, 1],
+    [-3, 1, -4, 0],
+    [3, -1, 2, -2]];
+
+fn apply_dithering(color: Colour, p: Vertex) -> Colour {
+    let offset = DITHER_TABLE[(p.y & 3) as usize][(p.x & 3) as usize];
+    Colour { 
+        r: color.r.saturating_add_signed(offset),
+        g: color.g.saturating_add_signed(offset),
+        b: color.b.saturating_add_signed(offset),
+    }
 }

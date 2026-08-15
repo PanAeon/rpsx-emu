@@ -9,13 +9,20 @@ wgpu = "*"
 anyhow = "*"
 vek = "*"
 bytemuck = {version = "*", features = [ "derive" ] }
+bitfield = "*"
 cgmath = "0.18"
 pollster = "*"
 web-time = "*"
 env_logger = "*"
 log = "*"
+gilrs = "*"
+cpal = { version = "*", features = ["pipewire"]}
+crossbeam = "*"
+num_enum = "*"
+arrayvec = "*"
 
 [dependencies.image]
 version = "0.25"
 default-features = false
 features = ["png", "jpeg"]
+

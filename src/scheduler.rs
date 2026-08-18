@@ -19,7 +19,8 @@ pub enum Event {
     HBlankStart,
     HBlankEnd,
     SpuTick,
-    Timer(TimerInterrupt)
+    Timer(TimerInterrupt),
+    CDRom(u8, [u8;16],usize)
 }
 
 pub struct Task {

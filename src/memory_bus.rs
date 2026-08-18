@@ -1,5 +1,5 @@
 
-use crate::{bios::Bios, dma::{Direction, Dma, Port, Step, Sync}, gpu::Gpu, irq::InterruptController, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, spu::Spu, timers::Timers};
+use crate::{bios::Bios, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, gpu::Gpu, irq::InterruptController, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, spu::Spu, timers::Timers};
 
 mod map {
     pub struct Range(u32, u32);
@@ -23,12 +23,14 @@ mod map {
     pub const SCRATCHPAD: Range = Range(0x1f80_0000, 1024);
     pub const SPU: Range = Range(0x1f801c00, 640);
     pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
-    pub const EXPANSION_2: Range = Range(0x1f802000, 66);
+    // pub const EXPANSION_2: Range = Range(0x1f802000, 66);
+    pub const EXPANSION_2: Range = Range(0x1f802000, 8*1024);
     pub const IRQ_CONTROL: Range = Range(0x1f801070, 8);
     pub const TIMERS: Range = Range(0x1F801100, 0x30);
     pub const DMA: Range = Range(0x1f801080, 0x80);
     pub const GPU: Range = Range(0x1f801810, 8);
     pub const JOYSTICK: Range = Range(0x1f801040, 16);
+    pub const CDROM: Range = Range(0x1f801800, 4);
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -90,6 +92,7 @@ pub struct MemoryBus {
     pub irqctl: InterruptController,
     pub scheduler: Scheduler,
     pub timers: Timers,
+    pub cdrom: CDRom,
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -106,8 +109,8 @@ pub fn mask_region(addr: u32) -> u32 {
 
 impl MemoryBus {
     pub fn new(bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, gpu: Gpu, spu: Spu, irqctl: InterruptController,
-        scheduler: Scheduler, timers: Timers) -> MemoryBus {
-        MemoryBus { bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers }
+        scheduler: Scheduler, timers: Timers, cdrom: CDRom) -> MemoryBus {
+        MemoryBus { bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers, cdrom }
     }
     pub fn load<T:Addressable>(&mut self, addr: u32) -> T {
         let address = mask_region(addr);
@@ -126,7 +129,7 @@ impl MemoryBus {
             // return T::from_u32(0);
         }
         if let Some(offset) = map::JOYSTICK.contains(address) {
-            // println!("Unhandled read from Joystick register {:x}", addr);
+            println!("Unhandled read from Joystick register {:x}", addr);
             return T::from_u32(0);
         }
         if let Some(offset) = map::DMA.contains(address) {
@@ -139,6 +142,10 @@ impl MemoryBus {
         if let Some(offset) = map::IRQ_CONTROL.contains(address) {
             return self.irqctl.load(offset);
         }
+        if let Some(offset) = map::CDROM.contains(address) {
+            return self.cdrom.load(offset);
+            // return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
+        }
         if let Some(offset) = map::TIMERS.contains(address) {
             return crate::timers::load(self, offset);
             // println!("Unhandled read from TIMERS register {:x}", offset);
@@ -149,6 +156,13 @@ impl MemoryBus {
         }
         if let Some(offset) = map::EXPANSION_1.contains(address) {
             return T::from_u32(!0);
+        }
+        if let Some(offset) = map::EXPANSION_2.contains(address) {
+            return T::from_u32(!0);
+        }
+        if let Some(offset) = map::MEM_CTRL.contains(address) {
+            println!("Unhandled read from memctrl register {:x}", offset);
+            return T::from_u32(0);
         }
         panic!("Unhandled load{:?} address: {:08x}", T::width(), address)
     }
@@ -185,6 +199,10 @@ impl MemoryBus {
         }
         if let Some(offset) = map::TIMERS.contains(address) {
             return crate::timers::store(self, offset, value);
+            // return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
+        }
+        if let Some(offset) = map::CDROM.contains(address) {
+            return self.cdrom.store(offset, value);
             // return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
         }
         if let Some(offset) = map::MEM_CTRL.contains(address) {

@@ -23,6 +23,9 @@ use winit::{
 use std::{borrow::Cow, collections::HashMap, hash::Hash, num::NonZeroU64};
 use vek::{Mat4, Vec2, Vec4};
 
+use crate::cdrom::CDRom;
+use crate::spu::Spu;
+
 mod bios;
 mod cpu;
 mod dma;
@@ -35,6 +38,8 @@ mod audio;
 mod irq;
 mod timers;
 mod scheduler;
+mod cdrom;
+mod gte;
 
 mod resources;
 
@@ -143,6 +148,7 @@ pub struct State {
     audio_sender: crossbeam::channel::Sender<[i16; 2]>,
     audio_stream: cpal::Stream,
     audio_buffer: Vec<[i16;2]>,
+    paused: bool,
     // writer: BufWriter<File>
 }
 
@@ -426,12 +432,14 @@ impl State {
         //     ],
         // });
 
-    let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
+    // let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
+    let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
     let ram = ram::Ram::new();
     let scratchpad = scratchpad::Scratchpad::new();
     let dma = dma::Dma::new();
     let gpu = gpu::Gpu::new();
     let spu = spu::Spu::new();
+    let cdrom = CDRom::default();
     // let spu = spu::Spu::default();
     let irqctl = irq::InterruptController::default();
 //
@@ -447,11 +455,11 @@ impl State {
     let mut scheduler = scheduler::Scheduler::default();
     scheduler.init();
     let timers = timers::Timers::new();
-    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers);
+    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers, cdrom);
     let cpu = cpu::Cpu::new(memory_bus);
 
     let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
-         let file = File::create("output.pcm")?;
+         // let file = File::create("output.pcm")?;
     // let mut writer = BufWriter::new(file);
 
         let mut state = Self {
@@ -500,6 +508,7 @@ impl State {
             audio_stream,
             audio_sender,
             audio_buffer: Vec::with_capacity(735),
+            paused: false
             // writer,
         };
         set_camera(&state, &state.queue, FULLSCREEN_QUAD_CAMERA);
@@ -638,11 +647,21 @@ impl State {
     }
 
     fn update(&mut self, event_loop: &ActiveEventLoop) {
+        if self.paused {
+            println!("current pc: 0x{:X}", self.cpu.pc);
+            self.cpu.memory_bus.irqctl.status.set_sio(true);
+            self.cpu.memory_bus.irqctl.status.set_ctl_mem(true);
+            self.cpu.pc = self.cpu.pc + 4;
+            self.cpu.next_pc = self.cpu.pc + 8;
+            self.paused = false;
+            return;
+        }
         loop {
             if let Some(event) = self.cpu.memory_bus.scheduler.get_next_event() {
                 match event {
                     scheduler::Event::SpuTick => {
-                         self.cpu.memory_bus.spu.clock();
+                        Spu::clock(&mut self.cpu.memory_bus);
+                         // self.cpu.memory_bus.spu.clock();
                          let sample = self.cpu.memory_bus.spu.mix();
                          self.audio_sender.send(sample).expect("can't send audio sample");
 
@@ -669,17 +688,24 @@ impl State {
                         self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer);
                         self.cpu.memory_bus.irqctl.status.set_vblank(true);
                         timers::Timers::enter_vsync(&mut self.cpu.memory_bus);
+                        self.cpu.memory_bus.gpu.enter_vsync();
                         // println!("vsync?");
                     },
                     scheduler::Event::VBlankEnd => {
+                        self.cpu.memory_bus.gpu.exit_vsync();
                         timers::Timers::exit_vsync(&mut self.cpu.memory_bus);
                         break;
                     },
                     scheduler::Event::HBlankStart => {
+                        self.cpu.memory_bus.gpu.enter_hsync();
                         timers::Timers::enter_hsync(&mut self.cpu.memory_bus);
                     },
                     scheduler::Event::HBlankEnd => {
+                        self.cpu.memory_bus.gpu.exit_hsync();
                         timers::Timers::exit_hsync(&mut self.cpu.memory_bus);
+                    },
+                    scheduler::Event::CDRom(irq, response,n) => {
+                        cdrom::CDRom::process_interrupt(&mut self.cpu.memory_bus, irq, response, n);
                     },
                     scheduler::Event::Timer(i) => timers::Timers::process_interrupt(&mut self.cpu.memory_bus, i),
                 }
@@ -688,7 +714,8 @@ impl State {
                 self.cpu.run_next_instruction();
                 self.cpu.check_for_tty_output();
             }
-            self.cpu.memory_bus.scheduler.advance(37); // 40???
+            self.cpu.memory_bus.scheduler.advance(40); // 40???
+            cdrom::CDRom::tick(&mut self.cpu.memory_bus);
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -709,50 +736,7 @@ impl State {
         //     // self.audio_sender.send(self.cpu.memory_bus.spu.mix()).expect("can't send audio");
         // }
 
-        // let before = web_time::Instant::now();
-        // let elapsed = before.duration_since(self.render_finished);
-        // println!("elsaped: {}", self.render_time_ms);
-        // game_state::update_game_state(&mut self.game_state,
-        //     self.render_time_ms as f64 / 1000.0,
-        //     &self.sounds);
-        // if !self.sounds.initialized && self.game_state.user_engaged {
-        //   let res = self.sounds.engine.initialize_audio_output_device();
-        //     // println!(">>>>");
-        //   self.sounds.initialized = res.is_ok();
-        // }
-        // self.game_state.update();
-        // self.camera_controller.update_camera(&mut self.camera);
-        // let x = self.game_state.camera_pos.0 as usize % 16;
-        // let y = self.game_state.camera_pos.1 as usize % 16;
-        // set_camera(
-        //     self,
-        //     &self.queue,
-        //     wgpu_tilemap::camera_with_shift(x as f32, y as f32),
-        // );
 
-        // self.sprites.clear();
-        // wgpu_tilemap::draw_sprites(&self.game_state, &mut self.sprites, &self.normal_blue_font);
-        // upload_sprites(
-        //     &self,
-        //     &self.device,
-        //     &self.queue,
-        //     &TilemapDrawData {
-        //         transform: Mat4::identity(),
-        //         tilemap: Cow::Borrowed(&self.sprites),
-        //         tileset: 0,
-        //     },
-        // );
-        // if !self.game_state.run {
-        //     event_loop.exit();
-        // }
-        // self.proxy.send_event(self.clone());
-        // drop(self.window.clone());
-        // self.device.destroy();
-        // self.queue.write_buffer(
-        //     &self.camera_buffer,
-        //     0,
-        //     bytemuck::cast_slice(&[self.camera_uniform]),
-        // );
     }
 
     fn render(&mut self, view: &wgpu::TextureView) {
@@ -905,6 +889,7 @@ impl State {
         repeat: bool,
     ) {
         match (code, key_state.is_pressed()) {
+            (KeyCode::Space, false) => self.paused = !self.paused,
             // (KeyCode::ArrowRight, true) => self.game_state.camera_pos.0 += 33.0,
             // (KeyCode::ArrowLeft, true) => if self.game_state.camera_pos.0 >= 33.0 {self.game_state.camera_pos.0 -= 33.0 },
             // (KeyCode::ArrowUp, true) => if self.game_state.camera_pos.1 >= 33.0  {self.game_state.camera_pos.1 -= 33.0},

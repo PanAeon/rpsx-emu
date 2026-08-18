@@ -1,4 +1,4 @@
-use crate::memory_bus::{Addressable, MemoryBus};
+use crate::{gte::Gte, memory_bus::{Addressable, MemoryBus}};
 
 #[derive(Clone, Copy)]
 pub struct Instruction(u32);
@@ -82,6 +82,7 @@ pub struct Cpu {
     load: (u32, u32), // load initiated by the current instruction
     branch: bool, // set by the current instruction if the branch occurred
     delay_slot:bool, // set if the current instruction executes in the delay slot
+    gte: Gte,
 }
 
 impl Cpu {
@@ -103,6 +104,7 @@ impl Cpu {
             load: (0, 0),
             branch: false,
             delay_slot: false,
+            gte: Gte::default(),
         }
     }
     pub fn run_next_instruction(&mut self) {
@@ -810,12 +812,43 @@ impl Cpu {
         self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
-    pub fn op_cop2(&mut self, _: Instruction) {
-        panic!("GTE is not implemented (yet)");
+    pub fn op_cop2(&mut self, instr: Instruction) {
+        match instr.cop_opcode() {
+            0b00000 => self.op_mfc2(instr),
+            0b00110 => self.op_cfc2(instr),
+            // 0b00100 => self.op_mtc2(instr),
+            // 0b10000 => self.op_rfe(instr),
+            _ => panic!(
+                "Unhandled cop2 instruction:  {:02X} ({:b})",
+                instr.cop_opcode(),
+                instr.cop_opcode()
+            ),
+        }
     }
     pub fn op_cop3(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
+    pub fn op_mfc2(&mut self, instr: Instruction) {
+        let v = match instr.rd() {
+            x => panic!("unhandled read from the cop2r{} register", x),
+        };
+        self.delayed_load_chain(instr.rt(), v);
+    }
+    pub fn op_cfc2(&mut self, instr: Instruction) {
+        let v = match instr.rd() {
+            24 => self.gte.r56,
+            25 => self.gte.r57,
+            26 => self.gte.r58 as u16 as u32,
+            27 => self.gte.r59 as u16 as u32,
+            28 => self.gte.r60 as u32,
+            29 => self.gte.r61 as u16 as u32,
+            30 => self.gte.r62 as u16 as u32,
+            x => panic!("unhandled read from the cop2c {} register", x),
+        };
+        self.delayed_load_chain(instr.rt(), v);
+    }
+    // pub fn op_mtc2(&mut self, instr: Instruction) {
+    // }
     pub fn op_mfc0(&mut self, instr: Instruction) {
         let v = match instr.rd() {
             6  => 0, // jumpdest..

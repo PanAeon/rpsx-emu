@@ -1,13 +1,14 @@
+use std::{cell::Cell, collections::VecDeque, ops::{Index, IndexMut, Range}};
 
 use num_enum::FromPrimitive;
 
-use crate::memory_bus::Addressable;
+use crate::memory_bus::{Addressable, MemoryBus};
 
 bitfield::bitfield! {
     #[derive(Default)]
     struct SpuControl(u16);
     enabled, _: 15; // doesn't affect CD Audio
-    muted, _: 14; // doesnt' affect CD Audio
+    unmuted, _: 14; // doesnt' affect CD Audio
     u8, noise_frequency_shift, _: 13,10;
     u8, noise_frequency_step, _:9,8;
     reverb_master_enabled, _: 7;
@@ -33,55 +34,252 @@ bitfield::bitfield! {
 
 }
 
+#[derive(Default)]
+pub struct NoiseGenerator {
+    lfsr: u16,
+    step: u8,
+    shift: u8,
+    timer: i32,
+}
+
+impl NoiseGenerator {
+
+    pub fn clock(&mut self) {
+        // Configured 2-bit step value of N represents a decrement of (N + 4)
+        self.timer -= i32::from(self.step + 4);
+        if self.timer >= 0 {
+            return;
+        }
+
+        self.clock_lfsr();
+
+        // Reset timer
+        while self.timer <= 0 {
+            self.timer += 0x20000 >> self.shift;
+        }
+    }
+
+    // Called on SPUCNT writes
+    pub fn update_frequency(&mut self, step: u8, shift: u8) {
+        if shift != self.shift {
+            self.timer = 0x20000 >> shift;
+        }
+        self.step = step;
+        self.shift = shift;
+    }
+
+    pub fn clock_lfsr(&mut self) {
+        // XOR bits 10, 11, 12, and 15, and then XOR with 1 to invert the result
+        let parity = ((self.lfsr >> 15) & 1)
+            ^ ((self.lfsr >> 12) & 1)
+            ^ ((self.lfsr >> 11) & 1)
+            ^ ((self.lfsr >> 10) & 1)
+            ^ 1;
+        self.lfsr = (self.lfsr << 1) | parity;
+    }
+}
+
 // R/W
 // All volume registers are signed 16bit (range -8000h..+7FFFh).
-// All src/dst/disp/base registers are addresses in SPU memory (divided by 8), 
+// All src/dst/disp/base registers are addresses in SPU memory (divided by 8),
 // src/dst are relative to the current buffer address,
 // the disp registers are relative to src registers,
-// the base register defines the start address of the reverb buffer 
+// the base register defines the start address of the reverb buffer
 // (the end address is fixed, at 7FFFEh).
 // Writing a value to mBASE does additionally set the current buffer address to that value.
 #[derive(Default)]
 pub struct Reverb {
     // Reverb Work Area Start Address in Sound RAM
-    output_volume_left: u16,
-    output_volume_right: u16,
-    m_base: u16, // FIXME: also set base buffer address
-    apf_offset_1: u16,
-    apf_offset_2: u16,
-    reflection_volume_1: i16,
-    comb_volume_1: i16,
-    comb_volume_2: i16,
-    comb_volume_3: i16,
-    comb_volume_4: i16,
-    reflection_volume_2: i16,
-    apf_volume_1: i16,
-    apf_volume_2: i16,
-    same_side_reflection_address_1_left: u16,
-    same_side_reflection_address_1_right: u16,
-    comb_address_1_left: u16,
-    comb_address_1_right: u16,
-    comb_address_2_left: u16,
-    comb_address_2_right: u16,
-    same_side_reflection_address_2_left: u16,
-    same_side_reflection_address_2_right: u16,
-    diff_side_reflection_address_1_left: u16,
-    diff_side_reflection_address_1_right: u16,
-    comb_address_3_left: u16,
-    comb_address_3_right: u16,
-    comb_address_4_left: u16,
-    comb_address_4_right: u16,
-    diff_side_reflection_address_2_left: u16,
-    diff_side_reflection_address_2_right: u16,
-    apf_address_1_left: u16,
-    apf_address_1_right: u16,
-    apf_address_2_left: u16,
-    apf_address_2_right: u16,
+    output_volume_left: i16,
+    output_volume_right: i16,
+    m_base: usize,
+    d_apf1: usize,
+    d_apf2: usize,
+    v_iir: i32,
+    v_comb1: i32,
+    v_comb2: i32,
+    v_comb3: i32,
+    v_comb4: i32,
+    v_wall: i32,
+    v_apf1: i32,
+    v_apf2: i32,
+    ml_same: usize,
+    mr_same: usize,
+    ml_comb1: usize,
+    mr_comb1: usize,
+    ml_comb2: usize,
+    mr_comb2: usize,
+    dl_same: usize,
+    dr_same: usize,
+    ml_diff: usize,
+    mr_diff: usize,
+    ml_comb3: usize,
+    mr_comb3: usize,
+    ml_comb4: usize,
+    mr_comb4: usize,
+    dl_diff: usize,
+    dr_diff: usize,
+    ml_apf1: usize,
+    mr_apf1: usize,
+    ml_apf2: usize,
+    mr_apf2: usize,
     input_volume_left: i16,
     input_volume_right: i16,
-
-
+    half_tick: bool,
+    // left_queue: VecDeque<i32>,
+    // right_queue: VecDeque<i32>,
+    current_buffer_address: usize,
+    pub l_out: i32,
+    pub r_out: i32,
 }
+
+impl Reverb {
+    pub fn set_base_address(&mut self, address: u16) {
+        self.m_base = (address as usize) * 8;
+        self.current_buffer_address = self.m_base;
+    }
+    // pub fn push_input_sample(deque: &mut VecDeque<i32>, sample: i32) {
+    //     if deque.len() == FIR_FILTER.len() {
+    //         deque.pop_front();
+    //     }
+    //     deque.push_back(sample);
+    // }
+    // pub fn apply_fir_filter(deque: &VecDeque<i32>) -> i32 {
+    //     FIR_FILTER.iter().zip(deque)
+    //         .map(|(&a, &b)| (a * b) >> 15)
+    //         .sum()
+    // }
+
+    pub fn read_sample(&self, ram: &SoundRam, pos: usize) -> i32 {
+        let base = self.m_base;
+        let offs = (pos + self.current_buffer_address - base) % (0x80000 - base);
+        let addr = (base + offs) & 0x7FFFE;
+
+        let bytes = [ram[addr], ram[addr + 1]];
+        i32::from(i16::from_le_bytes(bytes))
+    }
+    
+    pub fn write_sample(&self, ram: &mut SoundRam, pos: usize, val: i32) {
+        let base = self.m_base;
+        let offs = (pos + self.current_buffer_address - base) % (0x80000 - base);
+        let addr = (base + offs) & 0x7FFFE;
+
+        let bytes = clamped_i16(val).to_le_bytes();
+        ram[addr] = bytes[0];
+        ram[addr + 1] = bytes[1];
+    }
+
+    pub fn tick(&mut self, mixed: [i32;2], ram: &mut SoundRam, write_to_ram: bool) {
+        self.half_tick = !self.half_tick;
+        if self.half_tick {
+            return;
+        }
+          // ___Input from Mixer (Input volume multiplied with incoming data)_____________
+          // Lin = vLIN * LeftInput    ;from any channels that have Reverb enabled
+          // Rin = vRIN * RightInput   ;from any channels that have Reverb enabled
+        let l_in = mixed[0].saturating_mul(i32::from(self.input_volume_left)) >> 15;
+        let r_in = mixed[1].saturating_mul(i32::from(self.input_volume_right)) >> 15;
+          // ____Same Side Reflection (left-to-left and right-to-right)___________________
+          // [mLSAME] = (Lin + [dLSAME]*vWALL - [mLSAME-2])*vIIR + [mLSAME-2]  ;L-to-L
+          // [mRSAME] = (Rin + [dRSAME]*vWALL - [mRSAME-2])*vIIR + [mRSAME-2]  ;R-to-R
+        let l2l = 
+            mul_16(l_in + mul_16(self.read_sample(ram, self.dl_same), self.v_wall)
+             - self.read_sample(ram, self.ml_same.saturating_sub(2)),
+            self.v_iir) + self.read_sample(ram, self.ml_same.saturating_sub(2));
+
+        let r2r = 
+            mul_16(r_in + mul_16(self.read_sample(ram, self.dr_same), self.v_wall)
+             - self.read_sample(ram, self.mr_same.saturating_sub(2)),
+            self.v_iir) + self.read_sample(ram, self.mr_same.saturating_sub(2));
+
+        if write_to_ram {
+            self.write_sample(ram, self.ml_same, l2l);
+            self.write_sample(ram, self.mr_same, r2r);
+        }
+          // ___Different Side Reflection (left-to-right and right-to-left)_______________
+          // [mLDIFF] = (Lin + [dRDIFF]*vWALL - [mLDIFF-2])*vIIR + [mLDIFF-2]  ;R-to-L
+          // [mRDIFF] = (Rin + [dLDIFF]*vWALL - [mRDIFF-2])*vIIR + [mRDIFF-2]  ;L-to-R
+
+        let r2l = mul_16(
+            l_in + mul_16(self.read_sample(ram, self.dr_diff), self.v_wall)
+                - self.read_sample(ram, self.ml_diff.saturating_sub(2)),
+            self.v_iir
+        ) + self.read_sample(ram, self.ml_diff.saturating_sub(2));
+
+        let l2r = mul_16(
+            l_in + mul_16(self.read_sample(ram, self.dl_diff), self.v_wall)
+                - self.read_sample(ram, self.mr_diff.saturating_sub(2)),
+            self.v_iir
+        ) + self.read_sample(ram, self.mr_diff.saturating_sub(2));
+
+        if write_to_ram {
+            self.write_sample(ram, self.ml_diff, r2l);
+            self.write_sample(ram, self.mr_diff, l2r);
+        }
+          // ___Early Echo (Comb Filter, with input from buffer)__________________________
+          // Lout=vCOMB1*[mLCOMB1]+vCOMB2*[mLCOMB2]+vCOMB3*[mLCOMB3]+vCOMB4*[mLCOMB4]
+          // Rout=vCOMB1*[mRCOMB1]+vCOMB2*[mRCOMB2]+vCOMB3*[mRCOMB3]+vCOMB4*[mRCOMB4]
+        let mut l_out = mul_16(self.v_comb1, self.read_sample(ram, self.ml_comb1))
+            + mul_16(self.v_comb2, self.read_sample(ram, self.ml_comb2))
+            + mul_16(self.v_comb3, self.read_sample(ram, self.ml_comb3))
+            + mul_16(self.v_comb4, self.read_sample(ram, self.ml_comb4));
+
+        let mut r_out = mul_16(self.v_comb1, self.read_sample(ram, self.mr_comb1))
+            + mul_16(self.v_comb2, self.read_sample(ram, self.mr_comb2))
+            + mul_16(self.v_comb3, self.read_sample(ram, self.mr_comb3))
+            + mul_16(self.v_comb4, self.read_sample(ram, self.mr_comb4));
+          // ___Late Reverb APF1 (All Pass Filter 1, with input from COMB)________________
+          // Lout=Lout-vAPF1*[mLAPF1-dAPF1], [mLAPF1]=Lout, Lout=Lout*vAPF1+[mLAPF1-dAPF1]
+          // Rout=Rout-vAPF1*[mRAPF1-dAPF1], [mRAPF1]=Rout, Rout=Rout*vAPF1+[mRAPF1-dAPF1]
+
+        l_out -= mul_16(
+            self.v_apf1,
+            self.read_sample(ram, self.ml_apf1 - self.d_apf1));
+
+        r_out -= mul_16(
+            self.v_apf1,
+            self.read_sample(ram, self.mr_apf1 - self.d_apf1));
+
+        if write_to_ram {
+            self.write_sample(ram, self.ml_apf1, l_out);
+            self.write_sample(ram, self.mr_apf1, r_out);
+        }
+
+        l_out = mul_16(l_out, self.v_apf1) + self.read_sample(ram, self.ml_apf1 - self.d_apf1);
+        r_out = mul_16(r_out, self.v_apf1) + self.read_sample(ram, self.mr_apf1 - self.d_apf1);
+          // ___Late Reverb APF2 (All Pass Filter 2, with input from APF1)________________
+          // Lout=Lout-vAPF2*[mLAPF2-dAPF2], [mLAPF2]=Lout, Lout=Lout*vAPF2+[mLAPF2-dAPF2]
+          // Rout=Rout-vAPF2*[mRAPF2-dAPF2], [mRAPF2]=Rout, Rout=Rout*vAPF2+[mRAPF2-dAPF2]
+
+        l_out -= mul_16(
+            self.v_apf2,
+            self.read_sample(ram, self.ml_apf2 - self.d_apf2));
+
+        r_out -= mul_16(
+            self.v_apf2,
+            self.read_sample(ram, self.mr_apf2 - self.d_apf2));
+
+        if write_to_ram {
+            self.write_sample(ram, self.ml_apf2, l_out);
+            self.write_sample(ram, self.mr_apf2, r_out);
+        }
+
+        l_out = mul_16(l_out, self.v_apf2) + self.read_sample(ram, self.ml_apf2 - self.d_apf2);
+        r_out = mul_16(r_out, self.v_apf2) + self.read_sample(ram, self.mr_apf2 - self.d_apf2);
+
+          // ___Output to Mixer (Output volume multiplied with input from APF2)___________
+          // LeftOutput  = Lout*vLOUT
+          // RightOutput = Rout*vROUT
+
+        self.l_out = mul_16(l_out, i32::from(self.output_volume_left));
+        self.r_out = mul_16(r_out, i32::from(self.output_volume_right));
+          // ___Finally, before repeating the above steps_________________________________
+          // BufferAddress = MAX(mBASE, (BufferAddress+2) AND 7FFFEh)
+        self.current_buffer_address = ((self.current_buffer_address + 2) & 0x7FFFE).max(self.m_base);
+          // Wait one 22050Hz cycle, then repeat the above stuff
+    }
+}
+
 #[derive(Default, Copy, Clone)]
 pub struct Voice {
     volume_left: i16,
@@ -93,14 +291,19 @@ pub struct Voice {
     current_address: usize,
     repeat_address: usize,
     pitch_counter: u16,
-    decode_buffer: [i16;28],
+    decode_buffer: [i16; 28],
     key_on: bool,
-    key_off: bool,
+    // key_off: bool,
     current_buffer_idx: usize,
     current_sample: i16,
     old_sample: i16,
     older_sample: i16,
-    sample_history: [i16;4]
+    sample_history: [i16; 4],
+    noise_mode: bool,
+    reverb_mode: bool,
+    modulation_enabled: bool,
+    ignore_loop_address: bool,
+    pub reached_loop_end: bool,
 
 }
 
@@ -108,8 +311,12 @@ impl Voice {
     pub fn set_start_address(&mut self, address: u16) {
         self.adpcm_start_address = address;
     }
+    pub fn set_repeat_address(&mut self, address: u16) {
+        self.repeat_address = (address as usize ) * 8;
+        self.ignore_loop_address = true;
+    }
 
-    pub fn key_on(&mut self, sound_ram: &[u8]) {
+    pub fn key_on(&mut self, sound_ram: &SoundRam) {
         self.key_on = true;
         self.current_address = (self.adpcm_start_address as usize) << 3;
         self.pitch_counter = 0;
@@ -117,6 +324,8 @@ impl Voice {
         self.sample_history.fill(0);
         self.old_sample = 0;
         self.older_sample = 0;
+        self.ignore_loop_address = false;
+        self.reached_loop_end = false;
         self.decode_next_block(sound_ram);
         self.envelope.key_on();
     }
@@ -126,22 +335,28 @@ impl Voice {
         self.key_on = false;
     }
 
-    pub fn decode_next_block(&mut self, sound_ram: &[u8]) {
+    pub fn decode_next_block(&mut self, sound_ram: &SoundRam) {
         // grab the next 16-byte block
         let block = &sound_ram[self.current_address..self.current_address + 16];
 
         // Decode the 28 samples
-        decode_adpcm_block(block, &mut self.decode_buffer, &mut self.old_sample, &mut self.older_sample);
+        decode_adpcm_block(
+            block,
+            &mut self.decode_buffer,
+            &mut self.old_sample,
+            &mut self.older_sample,
+        );
 
-         // Parse loop flags from the second header byte
+        // Parse loop flags from the second header byte
         let loop_end = block[1] & 1 != 0;
         let loop_repeat = block[1] & 2 != 0;
         let loop_start = block[1] & 4 != 0;
 
-        if loop_start {
+        if loop_start && !self.ignore_loop_address {
             self.repeat_address = self.current_address;
         }
         if loop_end {
+            self.reached_loop_end = true;
             self.current_address = self.repeat_address;
 
             if !loop_repeat {
@@ -151,13 +366,22 @@ impl Voice {
         } else {
             self.current_address += 16;
         }
-
     }
 
-    pub fn clock(&mut self, sound_ram: &[u8]) {
-        // Increment pitch counter using the sample rate.
+    pub fn clock(&mut self, sound_ram: &SoundRam, previous_voice_output: i16) {
+        let mut pitch_counter_step = self.adpcm_sample_rate;
+
+        if self.modulation_enabled {
+            // Convert previous voice output from i16 range to u16 range
+            let multiplier = i32::from(previous_voice_output) + 0x8000;
+            // Apply previous voice output as a multiplier to step, N/0x8000
+            let adjusted_step = (i32::from(pitch_counter_step) * multiplier) >> 15;
+            pitch_counter_step = adjusted_step as u16;
+        }
+
+
         // Effective sample rate cannot be larger than 0x4000 (176400 Hz)
-        let pitch_counter_step = std::cmp::min(0x4000, self.adpcm_sample_rate);
+        pitch_counter_step = std::cmp::min(0x4000, pitch_counter_step);
 
         // In a full implementation, pitch modulation would be applied right here
         self.pitch_counter += pitch_counter_step;
@@ -181,14 +405,13 @@ impl Voice {
         let interpolation_idx = ((self.pitch_counter >> 4) & 0xFF) as usize;
         let samples = self.sample_history.map(i32::from);
 
-
         // Perform interpolation; do math using signed 32-bit integers to avoid overflow in intermediate calculations
         // The right shifts by 15 are because each multiplier N represents (N / 0x8000)
         let mut interpolated = (GAUSSIAN_TABLE[0x0FF - interpolation_idx] * samples[0]) >> 15;
         interpolated += (GAUSSIAN_TABLE[0x1FF - interpolation_idx] * samples[1]) >> 15;
         interpolated += (GAUSSIAN_TABLE[0x100 + interpolation_idx] * samples[2]) >> 15;
         interpolated += (GAUSSIAN_TABLE[interpolation_idx] * samples[3]) >> 15;
-        
+
         // update current sample
         self.current_sample = interpolated as i16; //
         // self.current_sample = self.decode_buffer[self.current_buffer_idx as usize];
@@ -196,36 +419,36 @@ impl Voice {
     }
 }
 
+// TODO: implement sweep volume
 pub struct Spu {
     main_volume_left: i16,
     main_volume_right: i16,
-
 
     voice_key_on: u32,
     voice_key_off: u32,
 
     control: SpuControl,
-    cd_audio_input_volume_left: u16,
-    cd_audio_input_volume_right: u16,
-    external_audio_input_volume_left: i16, // (-8000h..+7FFFh)
+    cd_audio_input_volume_left: i16,
+    cd_audio_input_volume_right: i16,
+    external_audio_input_volume_left: i16,  // (-8000h..+7FFFh)
     external_audio_input_volume_right: i16, // (-8000h..+7FFFh)
 
     data_transfer_type: DataTransferType,
     data_transfer_address: u16, // address divided by 8
     current_address: usize,     // current address for dma transfer
     // 512kb
-    memory: Box<[u8]>,
-    voices: [Voice;24],
+    memory: SoundRam,
+    voices: [Voice; 24],
     reverb: Reverb,
-
-
+    noise: NoiseGenerator,
+    last_irq_line: bool,
+    capture_buffer_idx: usize,
 }
 
 impl Spu {
-
     pub fn new() -> Self {
-        let voices = [Default::default();24];
-       Spu {
+        let voices = [Default::default(); 24];
+        Spu {
             main_volume_left: 0,
             main_volume_right: 0,
 
@@ -241,46 +464,111 @@ impl Spu {
             current_address: 0,
             voices,
             reverb: Default::default(),
-            memory: vec![0;512*1024].into_boxed_slice()
+            memory: SoundRam { ram: vec![0; 512 * 1024].into_boxed_slice(), irq_enabled: false, irq_address: 0, irq: Cell::default() },
+            noise: NoiseGenerator::default(),
+            last_irq_line: false,
+            capture_buffer_idx: 0,
         }
     }
 
-    pub fn clock(&mut self) {
-        for voice in &mut self.voices {
-            // if !voice.key_on {
-            //     continue;
-            // }
-            voice.clock(&self.memory);
+    pub fn clock(memory_bus: &mut MemoryBus) {
+        let spu = &mut memory_bus.spu;
+        let mut prev_output: i16 =  0;
+        for voice in &mut spu.voices {
+            voice.clock(&spu.memory, prev_output);
+            prev_output = voice.current_sample;
         }
+        spu.noise.clock();
+
+        let irq_line = spu.memory.irq.get();
+        if !spu.last_irq_line && irq_line && spu.control.irq9_enabled() && spu.control.enabled() {
+            memory_bus.irqctl.status.set_spu(true);
+        }
+        spu.last_irq_line = irq_line;
     }
 
-    pub fn mix(&self) -> [i16;2] {
+    pub fn mix(&mut self) -> [i16; 2] {
         let mut mixed_sample_l: i32 = 0;
         let mut mixed_sample_r: i32 = 0;
-        for voice in &self.voices {
-            // if !voice.key_on {
-            //     continue;
-            // }
-                // Apply ADSR envelope first
-            let envelope_sample = apply_volume(voice.current_sample, voice.envelope.level as i16);
+        let mut mixed_reverb = [0i32;2];
+
+        let (cd_l, cd_r) = (0_i16, 0_i16);
+
+        self.write_capture_buffer(cd_l, 0x000);
+        self.write_capture_buffer(cd_r, 0x400);
+
+        let cd_l = apply_volume(cd_l, self.cd_audio_input_volume_left);
+        let cd_r = apply_volume(cd_r, self.cd_audio_input_volume_right);
+
+        if !self.control.enabled() {
+            return [cd_l, cd_r];
+        }
+
+        let noise_sample = self.noise.lfsr.cast_signed();
+
+        for i in 0..24 {
+            // Apply ADSR envelope first
+            let voice = &mut self.voices[i];
+            let envelope_sample = if voice.noise_mode {
+                apply_volume(noise_sample, voice.envelope.level as i16)
+            } else {
+                apply_volume(voice.current_sample, voice.envelope.level as i16)
+            };
 
             // Apply L/R volumes second
             let output_l = apply_volume(envelope_sample, voice.volume_left);
             let output_r = apply_volume(envelope_sample, voice.volume_right);
 
+            if voice.reverb_mode {
+                mixed_reverb[0] += i32::from(apply_volume(envelope_sample, voice.volume_left));
+                mixed_reverb[1] += i32::from(apply_volume(envelope_sample, voice.volume_right));
+            }
+
+
+            if i == 1 {
+                self.write_capture_buffer(envelope_sample, 0x800);
+            }
+            if i == 3 {
+                self.write_capture_buffer(envelope_sample, 0xC00);
+            }
+
             mixed_sample_l += output_l as i32;
             mixed_sample_r += output_r as i32;
         }
-        let clamped_l = mixed_sample_l.clamp(-0x8000,0x7FFF) as i16;
-        let clamped_r = mixed_sample_r.clamp(-0x8000,0x7FFF) as i16;
+        self.capture_buffer_idx = (self.capture_buffer_idx + 2) & 0x3FF;
+
+        if self.control.cd_audio_reverb() {
+            mixed_reverb[0] += i32::from(cd_l);
+            mixed_reverb[1] += i32::from(cd_r);
+        }
+
+        // TODO: this is incorrect when reverb is enabled for cd audio only?
+        self.reverb.tick(mixed_reverb, &mut self.memory, self.control.reverb_master_enabled());
+
+        mixed_sample_l += i32::from(cd_l) + self.reverb.l_out;
+        mixed_sample_r += i32::from(cd_r) + self.reverb.r_out;
+
+        if !self.control.unmuted() {
+            return [cd_l, cd_r];
+        }
+        
+
+        let clamped_l = mixed_sample_l.clamp(-0x8000, 0x7FFF) as i16;
+        let clamped_r = mixed_sample_r.clamp(-0x8000, 0x7FFF) as i16;
 
         let output_l = apply_volume(clamped_l, self.main_volume_left);
         let output_r = apply_volume(clamped_r, self.main_volume_right);
         [output_l, output_r]
     }
 
+    pub fn write_capture_buffer(&mut self, sample: i16, offset: usize) {
+        let bytes = sample.to_le_bytes();
+        self.memory[self.capture_buffer_idx + offset] = bytes[0];
+        self.memory[self.capture_buffer_idx + offset + 1] = bytes[1];
+    }
+
     // 8bit/16bit/32bit reads
-    pub fn load<T:Addressable>(&self, address: u32) -> T {
+    pub fn load<T: Addressable>(&self, address: u32) -> T {
         let width = T::width() as usize;
         // let addr = address as usize;
         // let mut buffer = [0u8;4];
@@ -300,30 +588,43 @@ impl Spu {
                     0xA => return T::from_u32((self.voices[i].envelope.reg.0 >> 16) as u32),
                     0xC => return T::from_u32(self.voices[i].envelope.level as u32),
 
-                    _ => panic!("unhandled {:?} load from voices, offset: 0x{:X}", T::width(), r),
+                    _ => panic!(
+                        "unhandled {:?} load from voices, offset: 0x{:X}",
+                        T::width(),
+                        r
+                    ),
                 }
-            },
+            }
             0x1F801D88 => return T::from_u32(self.voice_key_on),
             0x1F801D8A => return T::from_u32(self.voice_key_on >> 16),
             0x1F801D8C => return T::from_u32(self.voice_key_off),
             0x1F801D8E => return T::from_u32(self.voice_key_off >> 16),
+            0x1F801D9C => return T::from_u32(self.endx::<0>() as u32),
+            0x1F801D9E => return T::from_u32(self.endx::<1>() as u32),
             0x1F801DAA => return T::from_u32(self.control.0 as u32),
             0x1F801DAE => return T::from_u32(self.spu_stat()),
             0x1F801DAC => return T::from_u32(self.get_sound_ram_data_transfer_control() as u32),
-            _ => panic!("unhandled {:?} load from spu, address: 0x{:X}", T::width(), address),
+            _ => panic!(
+                "unhandled {:?} load from spu, address: 0x{:X}",
+                T::width(),
+                address
+            ),
         }
         // panic!("unhandled {:?} load from spu, address: 0x{:X}", T::width(), address);
     }
 
     pub fn spu_stat(&self) -> u32 {
-        let mut status : SpuStatus = Default::default();
+        // TODO: populate!
+        let mut status: SpuStatus = Default::default();
+        status.set_irq9_flag(self.memory.irq.get());
+        status.set_write_to_second_half(self.capture_buffer_idx > 0x200);
         status.0 as u32
     }
 
     // 16 bit writes, 32 bit writes unstable,
     // 8 bit writes on odd addresses are ignored,
     // 8 bit writes on even addresses are executed as 16 bit writes
-    pub fn store<T:Addressable>(&mut self, address: u32, value: T) {
+    pub fn store<T: Addressable>(&mut self, address: u32, value: T) {
         let width = T::width() as usize;
         // let addr = address as usize;
         // let bytes = value.as_u32().to_le_bytes();
@@ -342,15 +643,20 @@ impl Spu {
                     0x8 => self.voices[i].envelope.set_reg::<0>(val),
                     0xA => self.voices[i].envelope.set_reg::<1>(val),
                     0xC => self.voices[i].envelope.level = val,
-                    0xE => println!("unhandled set current volume (l)"),// self.voices[ip
+                    0xE => self.voices[i].set_repeat_address(val), // self.voices[ip
 
-                    _ => panic!("unhandled {:?} store to voices, offset: 0x{:X}, value: 0x{:X}", T::width(), r, value.as_u32()),
+                    _ => panic!(
+                        "unhandled {:?} store to voices, offset: 0x{:X}, value: 0x{:X}",
+                        T::width(),
+                        r,
+                        value.as_u32()
+                    ),
                 }
-            },
+            }
             0x1F801D80 => self.main_volume_left = (val << 1) as i16,
             0x1F801D82 => self.main_volume_right = (val << 1) as i16,
-            0x1F801D84 => self.reverb.output_volume_left = val,
-            0x1F801D86 => self.reverb.output_volume_right = val,
+            0x1F801D84 => self.reverb.output_volume_left = val as i16,
+            0x1F801D86 => self.reverb.output_volume_right = val as i16,
             0x1F801D88 => self.voice_key_on::<0>(val),
             0x1F801D8A => self.voice_key_on::<1>(val),
             0x1F801D8C => self.voice_key_off::<0>(val),
@@ -361,54 +667,77 @@ impl Spu {
             0x1F801D96 => self.noise_mode_enable::<1>(val),
             0x1F801D98 => self.reverb_mode::<0>(val),
             0x1F801D9A => self.reverb_mode::<1>(val),
-            0x1F801DA2 => self.reverb.m_base = val,
-            0x1F801DB0 => self.cd_audio_input_volume_left = val, //  (for normal CD-DA, and compressed XA-ADPCM)
-            0x1F801DB2 => self.cd_audio_input_volume_right = val, //  (for normal CD-DA, and compressed XA-ADPCM)
+            0x1F801DA2 => self.reverb.set_base_address(val),
+            0x1F801DA4 => self.memory.irq_address = (val as usize) * 8,
+            0x1F801DB0 => self.cd_audio_input_volume_left = val as i16, //  (for normal CD-DA, and compressed XA-ADPCM)
+            0x1F801DB2 => self.cd_audio_input_volume_right = val as i16, //  (for normal CD-DA, and compressed XA-ADPCM)
             0x1F801DB4 => self.external_audio_input_volume_left = val as i16,
             0x1F801DB6 => self.external_audio_input_volume_right = val as i16,
-            0x1F801DC0 => self.reverb.apf_offset_1 = val,
-            0x1F801DC2 => self.reverb.apf_offset_2 = val,
+            0x1F801DC0 => self.reverb.d_apf1 = (val as usize) * 8,
+            0x1F801DC2 => self.reverb.d_apf2 = (val as usize) * 8,
             0x1F801DA6 => self.set_data_transfer_address(val),
             0x1F801DA8 => self.push_to_data_transfer_fifo(val),
-            0x1F801DAC => self.set_sound_ram_data_transfer_control(val),// Sound ram data transfer control (should be 0004h)
-            0x1F801DAA => self.control.0 = val,
-            0x1F801DC4 => self.reverb.reflection_volume_1 = val as i16,
-            0x1F801DC6 => self.reverb.comb_volume_1 = val as i16,
-            0x1F801DC8 => self.reverb.comb_volume_2 = val as i16,
-            0x1F801DCA => self.reverb.comb_volume_3 = val as i16,
-            0x1F801DCC => self.reverb.comb_volume_4 = val as i16,
-            0x1f801DCE => self.reverb.reflection_volume_2 = val as i16,
-            0x1f801DD0 => self.reverb.apf_volume_1 = val as i16,
-            0x1f801DD2 => self.reverb.apf_volume_2 = val as i16,
-            0x1f801DD4 => self.reverb.same_side_reflection_address_1_left = val,
-            0x1f801DD6 => self.reverb.same_side_reflection_address_1_right = val,
-            0x1f801DD8 => self.reverb.comb_address_1_left = val,
-            0x1f801DDA => self.reverb.comb_address_1_right = val,
-            0x1f801DDC => self.reverb.comb_address_2_left = val,
-            0x1f801DDE => self.reverb.comb_address_2_right = val,
-            0x1f801DE0 => self.reverb.same_side_reflection_address_2_left = val,
-            0x1f801DE2 => self.reverb.same_side_reflection_address_2_right = val,
-            0x1f801DE4 => self.reverb.diff_side_reflection_address_1_left = val,
-            0x1f801DE6 => self.reverb.diff_side_reflection_address_1_right = val,
-            0x1f801DE8 => self.reverb.comb_address_3_left = val,
-            0x1f801DEA => self.reverb.comb_address_3_right = val,
-            0x1f801DEC => self.reverb.comb_address_4_left = val,
-            0x1f801DEE => self.reverb.comb_address_4_right = val,
-            0x1f801DF0 => self.reverb.diff_side_reflection_address_2_left = val,
-            0x1f801DF2 => self.reverb.diff_side_reflection_address_2_right = val,
-            0x1f801DF4 => self.reverb.apf_address_1_left = val,
-            0x1f801DF6 => self.reverb.apf_address_1_right = val,
-            0x1f801DF8 => self.reverb.apf_address_2_left = val,
-            0x1f801DFA => self.reverb.apf_address_2_right = val,
+            0x1F801DAC => self.set_sound_ram_data_transfer_control(val), // Sound ram data transfer control (should be 0004h)
+            0x1F801DAA => self.set_control(val),
+            0x1F801DC4 => self.reverb.v_iir = val as i16 as i32,
+            0x1F801DC6 => self.reverb.v_comb1 = val as i16 as i32,
+            0x1F801DC8 => self.reverb.v_comb2 = val as i16 as i32,
+            0x1F801DCA => self.reverb.v_comb3 = val as i16 as i32,
+            0x1F801DCC => self.reverb.v_comb4 = val as i16 as i32,
+            0x1f801DCE => self.reverb.v_wall = val as i16 as i32,
+            0x1f801DD0 => self.reverb.v_apf1 = val as i16 as i32,
+            0x1f801DD2 => self.reverb.v_apf2 = val as i16 as i32,
+            0x1f801DD4 => self.reverb.ml_same = (val as usize) * 8,
+            0x1f801DD6 => self.reverb.mr_same = (val as usize) * 8,
+            0x1f801DD8 => self.reverb.ml_comb1 = (val as usize) * 8,
+            0x1f801DDA => self.reverb.mr_comb1 = (val as usize) * 8,
+            0x1f801DDC => self.reverb.ml_comb2 = (val as usize) * 8,
+            0x1f801DDE => self.reverb.mr_comb2 = (val as usize) * 8,
+            0x1f801DE0 => self.reverb.dl_same = (val as usize) * 8,
+            0x1f801DE2 => self.reverb.dr_same = (val as usize) * 8,
+            0x1f801DE4 => self.reverb.ml_diff = (val as usize) * 8,
+            0x1f801DE6 => self.reverb.mr_diff = (val as usize) * 8,
+            0x1f801DE8 => self.reverb.ml_comb3 = (val as usize) * 8,
+            0x1f801DEA => self.reverb.mr_comb3 = (val as usize) * 8,
+            0x1f801DEC => self.reverb.ml_comb4 = (val as usize) * 8,
+            0x1f801DEE => self.reverb.mr_comb4 = (val as usize) * 8,
+            0x1f801DF0 => self.reverb.dl_diff = (val as usize) * 8,
+            0x1f801DF2 => self.reverb.dr_diff = (val as usize) * 8,
+            0x1f801DF4 => self.reverb.ml_apf1 = (val as usize) * 8,
+            0x1f801DF6 => self.reverb.mr_apf1 = (val as usize) * 8,
+            0x1f801DF8 => self.reverb.ml_apf2 = (val as usize) * 8,
+            0x1f801DFA => self.reverb.mr_apf2 = (val as usize) * 8,
             0x1f801DFC => self.reverb.input_volume_left = val as i16,
             0x1f801DFE => self.reverb.input_volume_right = val as i16,
-            _ => panic!("unhandled {:?} store to spu, address: 0x{:X}, value: 0x{:X}", T::width(), address, value.as_u32()),
+            _ => panic!(
+                "unhandled {:?} store to spu, address: 0x{:X}, value: 0x{:X}",
+                T::width(),
+                address,
+                value.as_u32()
+            ),
         }
 
         // self.data[addr..addr+width].copy_from_slice(&bytes[..width]);
         // panic!("unhandled {:?} store to spu, address: 0x{:X}, value: 0x{:X}", T::width(), address, value.as_u32());
     }
-    
+
+    pub fn set_control(&mut self, v: u16) {
+        self.control.0 = v;
+        self.noise.update_frequency(self.control.noise_frequency_step(), self.control.noise_frequency_shift());
+        self.memory.irq_enabled = self.control.irq9_enabled();
+        if !self.control.irq9_enabled() {
+            self.memory.irq.set(false);
+        }
+    }
+    pub fn endx<const HIGH: usize>(&self) -> u16 {
+        let base = HIGH * 16;
+        let count = if HIGH == 1 { 8 } else { 16 };
+
+        (0..count).fold(0, |acc, i| {
+            acc | (u16::from(self.voices[base + i].reached_loop_end) << i)
+        })
+
+    }
 
     // starts adsr envelope and automatically initializes ADSR volume to zero
     pub fn voice_key_on<const HIGH: usize>(&mut self, value: u16) {
@@ -448,6 +777,7 @@ impl Spu {
         let count = if HIGH == 1 { 8 } else { 15 };
         let start = if HIGH == 1 { 0 } else { 1 };
         for i in start..count {
+            self.voices[base + i].modulation_enabled = v & 0x1 == 1;
             if v & 0x1 == 1 {
                 // TODO: voice base + i modulation enabled
                 // TODO: 0 - normal, 1 - modulate by n-1
@@ -461,9 +791,7 @@ impl Spu {
         let base = HIGH * 16;
         let count = if HIGH == 1 { 8 } else { 16 };
         for i in 0..count {
-            if v & 0x1 == 1 {
-                // TODO: voice base + i 0 - ADPCM, 1 - NOISE
-            }
+            self.voices[base + i].noise_mode = v & 0x1 == 1;
             v = v >> 1;
         }
     }
@@ -474,9 +802,7 @@ impl Spu {
         let base = HIGH * 16;
         let count = if HIGH == 1 { 8 } else { 16 };
         for i in 0..count {
-            if v & 0x1 == 1 {
-                // TODO: voice base + i (0=To Mixer, 1=To Mixer and to Reverb) 
-            }
+            self.voices[base + i].reverb_mode = v & 0x1 == 1;
             v = v >> 1;
         }
     }
@@ -498,7 +824,7 @@ impl Spu {
             3 => self.data_transfer_type = DataTransferType::Rep2,
             4 => self.data_transfer_type = DataTransferType::Rep4,
             5 => self.data_transfer_type = DataTransferType::Rep8,
-            _ => unreachable!("should be 0..7")
+            _ => unreachable!("should be 0..7"),
         }
     }
     pub fn get_sound_ram_data_transfer_control(&self) -> u16 {
@@ -519,19 +845,18 @@ impl Spu {
 
     // TODO: implement this buffer?
     pub fn push_to_data_transfer_fifo(&mut self, value: u16) {
-         self.ram_write::<2>(value as u32);
+        self.ram_write::<2>(value as u32);
     }
 
     pub fn ram_write<const WIDTH: usize>(&mut self, value: u32) {
         let address = self.current_address & 0x7FFFF;
         let bytes = value.to_le_bytes();
         for i in 0..WIDTH {
-            self.memory[address+i] = bytes[i];
+            self.memory[address + i] = bytes[i];
         }
 
         self.current_address += WIDTH;
     }
-
 }
 
 pub enum DataTransferType {
@@ -539,7 +864,7 @@ pub enum DataTransferType {
     Normal,
     Rep2,
     Rep4,
-    Rep8
+    Rep8,
 }
 pub fn signed4bit(v: u8) -> i32 {
     i32::from((v as i8) << 4 >> 4)
@@ -548,30 +873,39 @@ fn clamped_i16(a: i32) -> i16 {
     a.clamp(-0x8000, 0x7FFF) as i16
 }
 // from starpsx
- fn decode_adpcm_block2(block: &[u8], decoded: &mut [i16;28], old_sample: &mut i16, older_sample: &mut i16) {
+fn decode_adpcm_block2(
+    block: &[u8],
+    decoded: &mut [i16; 28],
+    old_sample: &mut i16,
+    older_sample: &mut i16,
+) {
+    let shift = block[0] & 0x0F;
+    let shift = 12 - if shift > 12 { 9 } else { shift };
+    let filter = ((block[0] & 0x70) >> 4).min(4);
 
-        let shift = block[0] & 0x0F;
-        let shift = 12 - if shift > 12 { 9 } else { shift };
-        let filter = ((block[0] & 0x70) >> 4).min(4);
+    let f0 = POS_ADPCM_TABLE[usize::from(filter)];
+    let f1 = NEG_ADPCM_TABLE[usize::from(filter)];
 
-        let f0 = POS_ADPCM_TABLE[usize::from(filter)];
-        let f1 = NEG_ADPCM_TABLE[usize::from(filter)];
+    for i in 0..28 {
+        let old = i32::from(*old_sample);
+        let older = i32::from(*older_sample);
 
-        for i in 0..28 {
-            let old = i32::from(*old_sample);
-            let older = i32::from(*older_sample);
+        let t = signed4bit((block[2 + i / 2] >> (4 * (i & 1))) & 0xF);
+        let s = clamped_i16((t << shift) + (old * f0 + older * f1 + 32) / 64);
 
-            let t = signed4bit((block[2 + i / 2] >> (4 * (i & 1))) & 0xF);
-            let s = clamped_i16((t << shift) + (old * f0 + older * f1 + 32) / 64);
+        *older_sample = *old_sample;
+        *old_sample = s;
 
-            *older_sample = *old_sample;
-            *old_sample = s;
-
-            decoded[i] = s;
-        }
+        decoded[i] = s;
     }
+}
 // from https://jsgroth.dev/blog/posts/ps1-spu-part-1/
-pub fn decode_adpcm_block(block: &[u8], decoded: &mut [i16;28], old_sample: &mut i16, older_sample: &mut i16) {
+pub fn decode_adpcm_block(
+    block: &[u8],
+    decoded: &mut [i16; 28],
+    old_sample: &mut i16,
+    older_sample: &mut i16,
+) {
     // First byte is a header byte specifying the shift value (bits 0-3) and the filter value (bits 4-6).
     // A shift value of 13-15 is invalid and behaves the same as shift=9
     let shift = block[0] & 0x0F;
@@ -589,7 +923,7 @@ pub fn decode_adpcm_block(block: &[u8], decoded: &mut [i16;28], old_sample: &mut
         // Read the raw 4-bit sample value from the block.
         // Samples are stored little-endian within a byte
         let sample_byte = block[2 + sample_idx / 2];
-        let sample_nibble = (sample_byte >> (4 * (sample_idx % 2))) &  0x0F;
+        let sample_nibble = (sample_byte >> (4 * (sample_idx % 2))) & 0x0F;
 
         // Sign extended from 4 bits to 32 bits
         let raw_sample: i32 = (((sample_nibble as i8) << 4) >> 4).into();
@@ -685,11 +1019,10 @@ struct AdsrEnvelope {
 }
 
 impl AdsrEnvelope {
-    pub fn set_reg<const HIGH:usize>(&mut self, value: u16) {
+    pub fn set_reg<const HIGH: usize>(&mut self, value: u16) {
         write_half::<HIGH>(&mut self.reg.0, value);
-        self.sustain_level = (self.reg.sustain_level()+1) as u16 * 0x800;
+        self.sustain_level = (self.reg.sustain_level() + 1) as u16 * 0x800;
     }
-
 
     fn key_on(&mut self) {
         self.level = 0;
@@ -701,17 +1034,37 @@ impl AdsrEnvelope {
 
     pub fn clock(&mut self) {
         let (direction, step, shift, mode) = match self.phase {
-            AdsrPhase::Attack => (Direction::Increasing, self.reg.attack_step(), self.reg.attack_shift(), self.reg.attack_mode()),
-            AdsrPhase::Release => (Direction::Decreasing, 0, self.reg.release_shift(), self.reg.release_mode()),
-            AdsrPhase::Sustain => (self.reg.sustain_direction(), self.reg.sustain_step(), self.reg.sustain_shift(), self.reg.sustain_mode()),
-            AdsrPhase::Decay => (Direction::Decreasing, 0, self.reg.decay_shift(), Mode::Exponential),
+            AdsrPhase::Attack => (
+                Direction::Increasing,
+                self.reg.attack_step(),
+                self.reg.attack_shift(),
+                self.reg.attack_mode(),
+            ),
+            AdsrPhase::Release => (
+                Direction::Decreasing,
+                0,
+                self.reg.release_shift(),
+                self.reg.release_mode(),
+            ),
+            AdsrPhase::Sustain => (
+                self.reg.sustain_direction(),
+                self.reg.sustain_step(),
+                self.reg.sustain_shift(),
+                self.reg.sustain_mode(),
+            ),
+            AdsrPhase::Decay => (
+                Direction::Decreasing,
+                0,
+                self.reg.decay_shift(),
+                Mode::Exponential,
+            ),
         };
         self.check_fore_phase_transition();
         // For a shift value of N, the envelope should update every 1 << (N - 11) cycles.
         // Accomplish this by using a counter decrement of MAX >> (N - 11)
         let mut counter_decrement = ENVELOPE_COUNTER_MAX >> shift.saturating_sub(11);
 
-         // Quadruple the update interval if in exponential increase mode and volume is above the threshold
+        // Quadruple the update interval if in exponential increase mode and volume is above the threshold
         if direction == Direction::Increasing && mode == Mode::Exponential && self.level > 0x6000 {
             counter_decrement >>= 2;
         }
@@ -736,7 +1089,6 @@ impl AdsrEnvelope {
         }
 
         self.level = (current_level + step).clamp(0, 0x7FFF) as u16;
-
     }
 
     pub fn check_fore_phase_transition(&mut self) {
@@ -749,6 +1101,45 @@ impl AdsrEnvelope {
         }
     }
 }
+
+pub struct SoundRam {
+    ram: Box<[u8]>,
+    irq_enabled: bool,
+    irq_address: usize,
+    irq: Cell<bool>
+}
+
+impl Index<usize> for SoundRam {
+    type Output = u8;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        if self.irq_enabled && index == self.irq_address {
+            self.irq.set(true);
+        }
+        &self.ram[index]
+    }
+}
+
+impl Index<Range<usize>> for SoundRam {
+    type Output = [u8];
+
+    fn index(&self, range: Range<usize>) -> &Self::Output {
+        if self.irq_enabled && (range.contains(&self.irq_address)) {
+            self.irq.set(true);
+        }
+        &self.ram[range]
+    }
+}
+
+impl IndexMut<usize> for SoundRam {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        if self.irq_enabled && index == self.irq_address {
+            self.irq.set(true);
+        }
+        &mut self.ram[index]
+    }
+}
+
 
 pub const GAUSSIAN_TABLE: [i32; 512] = [
     -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, -0x001,
@@ -796,11 +1187,18 @@ pub const GAUSSIAN_TABLE: [i32; 512] = [
     0x5997, 0x599E, 0x59A4, 0x59A9, 0x59AD, 0x59B0, 0x59B2, 0x59B3,
 ];
 
-    pub fn write_half<const HIGH: usize>(r: &mut u32, value: u16) {
-        let shift = HIGH * 16;
-        let mask = 0xFFFF << shift;
-        *r = (*r & !mask) | ((value as u32) << shift);
-    }
+const FIR_FILTER: &[i32; 39] = &[
+    -0x0001, 0x0000, 0x0002, 0x0000, -0x000A, 0x0000, 0x0023, 0x0000, -0x0067, 0x0000, 0x010A,
+    0000, -0x0268, 0000, 0x0534, 0000, -0x0B90, 0000, 0x2806, 0x4000, 0x2806, 0000, -0x0B90, 0000,
+    0x0534, 0000, -0x0268, 0000, 0x010A, 0000, -0x0067, 0000, 0x0023, 0000, -0x000A, 0000, 0x0002,
+    0000, -0x0001,
+];
+
+pub fn write_half<const HIGH: usize>(r: &mut u32, value: u16) {
+    let shift = HIGH * 16;
+    let mask = 0xFFFF << shift;
+    *r = (*r & !mask) | ((value as u32) << shift);
+}
 
 fn apply_volume(sample: i16, volume: i16) -> i16 {
     // Do multiplication in 32 bits to avoid possible overflow
@@ -809,3 +1207,6 @@ fn apply_volume(sample: i16, volume: i16) -> i16 {
 
 pub const POS_ADPCM_TABLE: [i32; 5] = [0, 60, 115, 98, 122];
 pub const NEG_ADPCM_TABLE: [i32; 5] = [0, 0, -52, -55, -60];
+const fn mul_16(a: i32, b: i32) -> i32 {
+    a.saturating_mul(b) >> 15
+}

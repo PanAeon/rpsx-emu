@@ -138,15 +138,15 @@ impl CDRom {
         self.set_int(3);
         self.push_status();
         // then we need to schedule response...
-        // let mut data = [0;16];
-        // data[0] = 0x8;
-        // data[1] = 0x40;
-        // self.pending_interrupt = Some((0x4A00, 0x5, data, 8)); // it works!!!! (no-cd)
+        let mut data = [0;16];
+        data[0] = 0x8;
+        data[1] = 0x40;
+        self.pending_interrupt = Some((0x4A00, 0x5, data, 8)); // it works!!!! (no-cd)
 
         // let mut data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x41,0,0,0,0,0,0,0,0]; // na
-        let mut data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x45,0,0,0,0,0,0,0,0]; //eu
-
-        self.pending_interrupt = Some((0x4A00, 0x3, data, 8));
+        // let mut data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x45,0,0,0,0,0,0,0,0]; //eu
+        //
+        // self.pending_interrupt = Some((0x4A00, 0x3, data, 8));
     }
 
     pub fn cmd_init(&mut self) {

@@ -1,6 +1,6 @@
 use crate::{gte::Gte, memory_bus::{Addressable, MemoryBus}};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Instruction(u32);
 
 impl Instruction {
@@ -473,6 +473,11 @@ impl Cpu {
     }
     pub fn op_lb(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
+        if addr == 0xfffffcac {
+            println!("gotcha!!!");
+            println!("next_pc {:X}", self.next_pc);
+            self.debug_print();
+        }
         let v = (self.load::<u8>(addr) as u8) as i8;
         self.delayed_load_chain(instr.rt(), v as u32);
     }
@@ -638,6 +643,8 @@ impl Cpu {
         }
     }
     pub fn op_j(&mut self, instr: Instruction) {
+        // self.pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2) - 4;
+        // self.next_pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2) + 4;
         self.next_pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2);
         self.branch = true;
         self.delayed_load();
@@ -737,19 +744,30 @@ impl Cpu {
     }
 
     fn exception(&mut self, cause: Exception) {
+        // TODO:: branch delay slot
+        // TODO: bad address exception...
+        let mode = self.sr & 0x3f;
+        self.sr &= !0x3f;
+        self.sr |= (mode << 2) & 0x3f;
+
+        self.cause &= !0x7c;
+        self.cause = (cause as u32) << 2;
+
+        if self.delay_slot { // this what happend?
+            self.epc = self.current_pc.wrapping_sub(4);
+            self.cause |= 1 << 31;
+        } else {
+            self.epc = self.current_pc;
+            self.cause &= !(1 << 31);
+        }
+
         // exception handler address depends on the BEV bit
         let handler: u32 = if self.sr & (1 << 22) != 0 {
             0xbfc00180
             } else {
             0x80000080
         };
-        // TODO:: branch delay slot
-        // TODO: bad address exception...
-        let mode = self.sr & 0x3f;
-        self.sr &= !0x3f;
-        self.sr |= (mode << 2) & 0x3f;
-        self.cause = (cause as u32) << 2;
-        self.epc = self.current_pc;
+
         self.pc = handler;
         self.next_pc = handler.wrapping_add(4);
     }
@@ -835,29 +853,20 @@ impl Cpu {
         self.delayed_load_chain(instr.rt(), v);
     }
     pub fn op_cfc2(&mut self, instr: Instruction) {
-        let v = match instr.rd() {
-            24 => self.gte.r56,
-            25 => self.gte.r57,
-            26 => self.gte.r58 as u16 as u32,
-            27 => self.gte.r59 as u16 as u32,
-            28 => self.gte.r60 as u32,
-            29 => self.gte.r61 as u16 as u32,
-            30 => self.gte.r62 as u16 as u32,
-            x => panic!("unhandled read from the cop2c {} register", x),
-        };
+        let v = self.gte.control(instr.rd() as u8);
         self.delayed_load_chain(instr.rt(), v);
     }
     // pub fn op_mtc2(&mut self, instr: Instruction) {
     // }
     pub fn op_mfc0(&mut self, instr: Instruction) {
         let v = match instr.rd() {
-            6  => 0, // jumpdest..
+            6  => {println!(">>>>> jumpdest"); 0}, // jumpdest..
             7  => 0, // not used (0)
             8  => 0,// bad virtual address (R),
             12 => self.sr,
             13 => self.cause,
             14 => self.epc,
-            15 => 0x00000001,// Processor ID
+            15 => 0x00000002,// Processor ID
             x => panic!("unhandled read from the cop0r{} register", x),
         };
         self.delayed_load_chain(instr.rt(), v);

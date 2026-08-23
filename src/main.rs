@@ -20,10 +20,13 @@ use winit::{
     window::Window,
 };
 
+use gilrs::{Button, Event, GamepadId, Gilrs};
+
 use std::{borrow::Cow, collections::HashMap, hash::Hash, num::NonZeroU64};
 use vek::{Mat4, Vec2, Vec4};
 
 use crate::cdrom::CDRom;
+use crate::sio::Sio;
 use crate::spu::Spu;
 
 mod bios;
@@ -40,6 +43,7 @@ mod timers;
 mod scheduler;
 mod cdrom;
 mod gte;
+mod sio;
 
 mod resources;
 
@@ -149,6 +153,8 @@ pub struct State {
     audio_stream: cpal::Stream,
     audio_buffer: Vec<[i16;2]>,
     paused: bool,
+    gilrs: Gilrs,
+    active_gamepad: Option<GamepadId>
     // writer: BufWriter<File>
 }
 
@@ -432,8 +438,8 @@ impl State {
         //     ],
         // });
 
-    // let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
-    let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
+    let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
+    // let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
     let ram = ram::Ram::new();
     let scratchpad = scratchpad::Scratchpad::new();
     let dma = dma::Dma::new();
@@ -442,6 +448,7 @@ impl State {
     let cdrom = CDRom::default();
     // let spu = spu::Spu::default();
     let irqctl = irq::InterruptController::default();
+    let sio = sio::Sio::new();
 //
 //     // let bytes = fs::read("/foo/SCPH1001.BIN")?;
 //     for i in (0..40).step_by(4) {
@@ -455,7 +462,7 @@ impl State {
     let mut scheduler = scheduler::Scheduler::default();
     scheduler.init();
     let timers = timers::Timers::new();
-    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers, cdrom);
+    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers, cdrom, sio);
     let cpu = cpu::Cpu::new(memory_bus);
 
     let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
@@ -508,16 +515,26 @@ impl State {
             audio_stream,
             audio_sender,
             audio_buffer: Vec::with_capacity(735),
-            paused: false
+            paused: false,
+            gilrs: Gilrs::new().unwrap(),
+            active_gamepad: None,
             // writer,
         };
+
+        for (id, gamepad) in state.gilrs.gamepads() {
+            println!("{} is {:?}", gamepad.name(), gamepad.power_info());
+            if gamepad.name().eq("Microsoft Xbox Controller") {
+                state.active_gamepad = Some(id)
+            }
+        }
+
         set_camera(&state, &state.queue, FULLSCREEN_QUAD_CAMERA);
         State::upload_framebuffer(&state);
         // for _ in 0..120*735 {
         //     state.audio_sender.send([0i16, 0i16]).expect("can't send audio sample");
         // }
-        state.audio_stream.play()?;
         // State::sideload_exe(&mut state);
+        state.audio_stream.play()?;
         //
 
         // state.queue.write_texture(
@@ -594,10 +611,18 @@ impl State {
     }
 
     fn sideload_exe(&mut self) {
-        let mut file = match std::fs::File::open("/foo/psxtest_cpu.exe") {
+        let filename = "/foo/psxtest_cpu.exe";
+        // let filename = "/foo/psx/PSX/CPUTest/CPU/LOADSTORE/LB/CPULB.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/MemoryTransfer/MemoryTransfer16BPP.exe";
+        // let filename = "/foo/psx/PSX/Cube/Cube.exe";
+        let mut file = match std::fs::File::open(filename) {
             Ok(file) => file,
             Err(e) => panic!("Can't load exe {}", e),
         };
+        // let mut file = match std::fs::File::open() {
+        //     Ok(file) => file,
+        //     Err(e) => panic!("Can't load exe {}", e),
+        // };
         let mut data: Vec<u8> = Vec::new();
         let file_size = match file.read_to_end(&mut data) {
             Ok(x) => x,
@@ -647,12 +672,13 @@ impl State {
     }
 
     fn update(&mut self, event_loop: &ActiveEventLoop) {
+        self.update_gamepad();
         if self.paused {
             println!("current pc: 0x{:X}", self.cpu.pc);
-            self.cpu.memory_bus.irqctl.status.set_sio(true);
-            self.cpu.memory_bus.irqctl.status.set_ctl_mem(true);
-            self.cpu.pc = self.cpu.pc + 4;
-            self.cpu.next_pc = self.cpu.pc + 8;
+            // self.cpu.memory_bus.irqctl.status.set_sio(true);
+            // self.cpu.memory_bus.irqctl.status.set_ctl_mem(true);
+            // self.cpu.pc = self.cpu.pc + 4;
+            // self.cpu.next_pc = self.cpu.pc + 8;
             self.paused = false;
             return;
         }
@@ -689,7 +715,6 @@ impl State {
                         self.cpu.memory_bus.irqctl.status.set_vblank(true);
                         timers::Timers::enter_vsync(&mut self.cpu.memory_bus);
                         self.cpu.memory_bus.gpu.enter_vsync();
-                        // println!("vsync?");
                     },
                     scheduler::Event::VBlankEnd => {
                         self.cpu.memory_bus.gpu.exit_vsync();
@@ -708,6 +733,8 @@ impl State {
                         cdrom::CDRom::process_interrupt(&mut self.cpu.memory_bus, irq, response, n);
                     },
                     scheduler::Event::Timer(i) => timers::Timers::process_interrupt(&mut self.cpu.memory_bus, i),
+                    scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.cpu.memory_bus),
+                    scheduler::Event::DsrOff     => self.cpu.memory_bus.sio.turn_dsr_off(),
                 }
             }
             for _ in 0..20 {
@@ -716,6 +743,7 @@ impl State {
             }
             self.cpu.memory_bus.scheduler.advance(40); // 40???
             cdrom::CDRom::tick(&mut self.cpu.memory_bus);
+            Sio::tick(&mut self.cpu.memory_bus);
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -936,7 +964,88 @@ impl State {
             }
         }
     }
+    pub fn update_gamepad(&mut self) {
+        let mut prev_buttons = self.cpu.memory_bus.sio.gamepad.digital_switches;
+        while let Some(Event { id, event, time, .. }) = self.gilrs.next_event() {
+            // println!("{:?} New event from {}: {:?}", time, id, event);
+            match event {
+                gilrs::EventType::ButtonPressed(button, _) => match button {
+                    gilrs::Button::South => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Cross as usize));
+                    }, // Cross
+                    gilrs::Button::East => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Circle as usize));
+                    }, // Circle
+                    gilrs::Button::North => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Triangle as usize));
+                    }, // Triangle
+                    gilrs::Button::West => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Square as usize));
+                    }, // Square
+                    gilrs::Button::Select => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Select as usize));
+                    },
+                    gilrs::Button::Start => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Start as usize));
+                    },
+                    gilrs::Button::DPadUp => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Up as usize));
+                    },
+                    gilrs::Button::DPadDown => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Down as usize));
+                    },
+                    gilrs::Button::DPadLeft => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Left as usize));
+                    },
+                    gilrs::Button::DPadRight => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Right as usize));
+                    },
+                    _ => {}, // ignore..
+                },
+                gilrs::EventType::ButtonReleased(button, _) => match button {
+                    gilrs::Button::South => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Cross as usize));
+                    }, // Cross
+                    gilrs::Button::East => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Circle as usize));
+                    }, // Circle
+                    gilrs::Button::North => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Triangle as usize));
+                    }, // Triangle
+                    gilrs::Button::West => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Square as usize));
+                    }, // Square
+                    gilrs::Button::Select => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Select as usize));
+                    },
+                    gilrs::Button::Start => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Start as usize));
+                    },
+                    gilrs::Button::DPadUp => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Up as usize));
+                    },
+                    gilrs::Button::DPadDown => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Down as usize));
+                    },
+                    gilrs::Button::DPadLeft => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Left as usize));
+                    },
+                    gilrs::Button::DPadRight => {
+                        prev_buttons |= (0x1 << (crate::sio::Button::Right as usize));
+                    },
+                    _ => {}, // ignore..
+                },
+                gilrs::EventType::AxisChanged(axis, value, _) => {},
+                gilrs::EventType::Connected => {},
+                gilrs::EventType::Disconnected => {},
+                _ => {}//println!("gamepad evvent ignored {:?} ", event)
+            }
+        }
+        // println!("0x{:X}", prev_buttons);
+        self.cpu.memory_bus.sio.gamepad.set_buttons(prev_buttons);
+    }
 }
+
 
 pub struct App {
     state: Option<State>,

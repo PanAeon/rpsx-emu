@@ -20,7 +20,9 @@ pub enum Event {
     HBlankEnd,
     SpuTick,
     Timer(TimerInterrupt),
-    CDRom(u8, [u8;16],usize)
+    CDRom(u8, [u8;16],usize),
+    SerialSend,
+    DsrOff,
 }
 
 pub struct Task {

@@ -30,7 +30,7 @@ pub struct Gpu {
     display_depth: DisplayDepth,
     interlaced: bool,
     display_disabled: bool,
-    interrupt: bool,
+    pub interrupt: bool,
     dma_direction: DmaDirection,
 
     rectange_texture_x_flip: bool,
@@ -114,6 +114,29 @@ impl Gpu {
         }
     }
 
+    pub fn get_command(val: u32) -> u32 {
+        val >> 29
+    }
+
+    pub fn get_shading(val: u32) -> bool {
+        val & (0x1 << 28) != 0
+    }
+    pub fn get_vertices(val: u32) -> bool {
+        val & (0x1 << 27) != 0
+    }
+    pub fn get_textured(val: u32) -> bool {
+        val & (0x1 << 26) != 0
+    }
+
+    pub fn get_blend_mode(val: u32) -> bool {
+        val & (0x1 << 25) != 0
+    }
+
+    pub fn get_modulation(val: u32) -> bool {
+        val & (0x1 << 24) != 0
+    }
+
+
     pub fn gp0(&mut self, val: u32) {
         if self.gp0_words_remaining == 0 {
             let opcode = (val >> 24) & 0xff;
@@ -125,6 +148,7 @@ impl Gpu {
                 0x28 => (5, Gpu::gp0_quad_mono_opaque),
                 // 0x2C => (9, Gpu::gp0_nop),
                 0x2C => (9, Gpu::gp0_quad_texture_blend_opaque),
+                0x2D => (9, Gpu::gp0_quad_texture_opaque),
                 // 0x30 => (6, Gpu::gp0_nop),
                 0x30 => (6, Gpu::gp0_triangle_shaded_opaque),
                 // 0x38 => (8, Gpu::gp0_nop),
@@ -138,10 +162,21 @@ impl Gpu {
                 0xE4 => (1, Gpu::gp0_drawing_area_bottom_right),
                 0xE5 => (1, Gpu::gp0_drawing_offset),
                 0xE6 => (1, Gpu::gp0_mask_bit_setting),
-                _ => panic!(
-                    "Unhandled GP0 command 0x{:08X} opcode: 0x{:02X}",
-                    val, opcode
-                ),
+                _ => {
+                    let cmd = Self::get_command(val);
+                    let shading = Self::get_shading(val);
+                    let vertices = Self::get_vertices(val);
+                    let textured = Self::get_textured(val);
+                    let blend_mode = Self::get_blend_mode(val);
+                    let modulation = Self::get_modulation(val);
+
+                    println!("command: {:03b}, shading: {shading}, vertices: {vertices}, textured: {textured}, blend: {blend_mode}, modulation: {modulation}", cmd);
+
+                    std::thread::sleep(std::time::Duration::new(5, 0 ));
+                    panic!(
+                        "Unhandled GP0 command 0x{:08X} opcode: 0x{:02X}",
+                        val, opcode);
+                },
             };
             self.gp0_words_remaining = len;
             self.gp0_command_method = method;
@@ -154,7 +189,7 @@ impl Gpu {
                 if self.gp0_words_remaining == 0 {
                     (self.gp0_command_method)(self);
                 }
-            }
+            },
             Gp0Mode::ImageLoad {
                 top_left,
                 resolution,
@@ -165,6 +200,12 @@ impl Gpu {
                 if self.gp0_words_remaining == 0 {
                     self.gp0_mode = Gp0Mode::Command;
                 }
+            },
+            Gp0Mode::ImageStore { top_left, resolution, current_row, current_col } => {
+                // self.gp0_command.clear();
+                // self.gp0_words_remaining = 0;
+                // self.gp0_mode = Gp0Mode::Command;
+                // self.gp0(val);
             }
         }
     }
@@ -344,6 +385,139 @@ impl Gpu {
       14-23 Not used (should be 0)
       24-31 Command  (E1h)
     */
+    pub fn render_triangle_texture_opaque(
+        &mut self,
+        clut: u16,
+        page: u16,
+        vs: &mut [Vertex; 3],
+        uv: &mut [[u16; 2]; 3],
+    ) {
+        ensure_vertex_order2(vs, uv);
+
+        // bounding box
+        let mut min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
+        let mut max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
+        let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
+        let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
+
+        // clip pixels outside of the drawing area
+        min_x = cmp::max(min_x, self.drawing_area_left as i32);
+        max_x = cmp::min(max_x, self.drawing_area_right as i32);
+        min_y = cmp::max(min_y, self.drawing_area_top as i32);
+        max_y = cmp::min(max_y, self.drawing_area_bottom as i32);
+
+        // textpage stuff
+        let page_base_x = ((page & 0xf) as usize) * 64; // n * 64
+        let page_base_y = (((page >> 4) & 1) as usize) * 256; // n * 256
+
+        let texture_depth = match (page >> 7) & 3 {
+            0 => TextureDepth::T4Bit,
+            1 => TextureDepth::T8Bit,
+            2 => TextureDepth::T15Bit,
+            n => panic!("Unhandled texture depth: {n}"),
+        };
+        // let texture_page_y_base2 = ((page >> 11) & 1) != 0;
+
+        // clut stuff
+        // 0-5    X coordinate X/16  (ie. in 16-halfword steps)
+        // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
+        // 15     Unused (should be 0)                      ;/
+        // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
+        let clut_x = ((clut & 0x1f) as usize) * 16;
+        let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
+
+        // println!("uv: {:?}", texture_depth);
+
+        for y in min_y..max_y {
+            for x in min_x..max_x {
+                let p = Vertex { x, y };
+                if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
+                    let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
+                    let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
+
+
+                    match texture_depth {
+                        TextureDepth::T4Bit => {
+                            // Width 4096...
+                            let pixel = self.vram[page_base_y * 2048 + uv_y * 4096 + 2*page_base_x + uv_x/2];
+                            let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
+                            if pixel == 0 {
+                                continue;
+                            }
+
+                            let mut pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
+                            let mut pixel_msb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+
+                            let vram_addr = 2 * (y * 1024 + x) as usize;
+
+
+                            if pixel_lsb == 0 && pixel_msb == 0 {
+                                continue;
+                            }
+
+
+                            // self.vram[vram_addr] = pixel;
+                            // self.vram[vram_addr + 1] = 0;
+                            self.vram[vram_addr] = pixel_lsb;
+                            self.vram[vram_addr + 1] = pixel_msb;
+                            
+                        },
+                        TextureDepth::T8Bit => {
+                            // Width 4096...
+                            let pixel = self.vram[page_base_y * 2048 + uv_y * 2048 + 2*page_base_x + uv_x];
+                            if pixel == 0 {
+                                continue;
+                            }
+
+                            let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
+                            let pixel_msb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+
+                            let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                            // self.vram[vram_addr] = pixel;
+                            // self.vram[vram_addr + 1] = 0;
+                            self.vram[vram_addr] = pixel_lsb;
+                            self.vram[vram_addr + 1] = pixel_msb;
+                        },
+                        TextureDepth::T15Bit => {
+                            let texture_x = page_base_x + uv_x;
+                            let texture_y = page_base_y + uv_y;
+                            let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
+                            let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
+                            if pixel_lsb == 0 && pixel_msb == 0 {
+                                continue;
+                            }
+                            let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                            self.vram[vram_addr] = pixel_lsb;
+                            self.vram[vram_addr + 1] = pixel_msb;
+                        }
+                    };
+                    // let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
+                    // let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
+                    //
+                    // Colour { r, g, b }
+                    // let color = interpolate_color(lambda, [*c0, *c1, c2]);
+                    // let color = apply_dithering(color, p);
+
+                    // let r = ((color.r & 0xFF) >> 3) as u16;
+                    // let g = ((color.g & 0xFF) >> 3) as u16;
+                    // let b = ((color.b & 0xFF) >> 3) as  u16;
+
+                    // let pixel = (r | (g << 5) | (b << 10)) as u16;
+                    // let [pixel_lsb, pixel_msb] = pixel.to_le_bytes();
+
+                    // let vram_addr = 2 * (y * 1024 + x) as usize;
+                    //
+                    // self.vram[vram_addr] = pixel_lsb;
+                    // self.vram[vram_addr + 1] = pixel_msb;
+                }
+            }
+        }
+
+        // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
+    }
+
     pub fn render_triangle_texture_blend(
         &mut self,
         clut: u16,
@@ -534,6 +708,28 @@ impl Gpu {
         self.render_triangle_mono_opaque(color, &mut v1, &mut v2, v3);
     }
 
+
+    pub fn gp0_quad_texture_opaque(&mut self) {
+        // let color = Self::gp0_color(self.gp0_command[0]);
+        let v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let [_u0, _v0, clut] = Self::gp0_page_clut(self.gp0_command[2]);
+        let v1 = Self::gp0_vertex(self.gp0_command[3]);
+        let [_u1, _v1, page] = Self::gp0_page_clut(self.gp0_command[4]);
+        let v2 = Self::gp0_vertex(self.gp0_command[5]);
+        let [_u2, _v2, _] = Self::gp0_page_clut(self.gp0_command[6]);
+        let v3 = Self::gp0_vertex(self.gp0_command[7]);
+        let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[8]);
+        // 9
+        // self.render_triangle_mono_opaque(color, &mut v0, &mut v1, v2);
+        // self.render_triangle_mono_opaque(color, &mut v1, &mut v2, v3);
+        let mut uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2]];
+        let mut vs0 = [v0, v1, v2];
+        let mut uv1 = [[_u1, _v1], [_u2, _v2], [_u3, _v3]];
+        let mut vs1 = [v1, v2, v3];
+        self.render_triangle_texture_opaque(clut, page, &mut vs0, &mut uv0);
+        self.render_triangle_texture_opaque(clut, page, &mut vs1, &mut uv1);
+    }
+
     pub fn gp0_quad_texture_blend_opaque(&mut self) {
         // let color = Self::gp0_color(self.gp0_command[0]);
         let v0 = Self::gp0_vertex(self.gp0_command[1]);
@@ -618,12 +814,38 @@ impl Gpu {
             current_col: 0,
         };
     }
+
     pub fn gp0_image_store(&mut self) {
+        let pos = self.gp0_command[1];
         let res = self.gp0_command[2];
-        let width = res & 0xffff;
-        let height = res >> 16;
-        println!("Unhandled image store: {}x{}", width, height);
+        // let width = res & 0xffff;
+        // let height = res >> 16;
+        let mut width = res & 0xffff;
+        if width == 0 {
+            width = 1024;
+        }
+
+        let mut height = res >> 16;
+        if height == 0 {
+            height = 512;
+        }
+
+        let x = pos as u16;
+        let y = (pos >> 16) as u16;
+
+        let imgsize = width * height;
+        // rounding so we have 16 bit of padding in last word
+        let imgsize = (imgsize + 1) & !1;
+        self.gp0_words_remaining = imgsize / 2;
+        self.gp0_mode = Gp0Mode::ImageStore {
+            top_left: (x, y),
+            resolution: (width as u16, height as u16),
+            current_row: 0,
+            current_col: 0,
+        };
+        // println!("Unhandled image store: {}x{}", width, height);
     }
+
     pub fn gp0_draw_mode(&mut self) {
         let val: u32 = self.gp0_command[0];
         self.page_base_x = (val & 0xf) as u8;
@@ -728,6 +950,7 @@ impl Gpu {
         self.display_line_start = 0x10;
         self.display_line_end = 0x100;
         self.display_depth = DisplayDepth::D15Bits;
+        self.interrupt = false;
         self.gp1_reset_command_buffer(0);
     }
 
@@ -738,6 +961,7 @@ impl Gpu {
         // TODO: should also clear the command FIFO
     }
     pub fn gp1_acknowledge_irq(&mut self, _: u32) {
+        println!("ack irq");
         self.interrupt = false;
     }
     pub fn gp1_display_enable(&mut self, val: u32) {
@@ -809,9 +1033,50 @@ impl Gpu {
         };
     }
 
-    pub fn read(&self) -> u32 {
-        // NOT implemented for now
-        0
+    pub fn read(&mut self) -> u32 {
+        if let Gp0Mode::ImageStore { top_left, resolution, current_row, current_col } = self.gp0_mode {
+            let mut current_row = current_row;
+            let mut current_col = current_col;
+            // 2 halfwords per GP0 read..
+            let mut word  = 0_u32;
+            for i in 0..2 {
+                // let halfword = (word >> (16 * i)) as u16;
+
+                let vram_row = ((top_left.1 + current_row) & 0x1FF) as usize;
+                let vram_col = ((top_left.0 + current_col) & 0x3FF) as usize;
+
+                // let [lsb, msb] = halfword.to_le_bytes();
+                let vram_addr = 2 * (1024 * vram_row + vram_col);
+
+                let lsb = self.vram[vram_addr];
+                let msb = self.vram[vram_addr + 1];
+                let halfword = u32::from_le_bytes([0, 0, msb, lsb]);
+                word |= halfword << (i*16); // FIXME: smth is wrong...
+
+                current_col += 1;
+                if current_col == resolution.0 {
+                    current_col = 0;
+                    current_row += 1;
+                }
+            }
+            self.gp0_words_remaining -= 1;
+            if self.gp0_words_remaining == 0 {
+                self.gp0_mode = Gp0Mode::Command;
+                // println!("done transfering");
+            } else {
+                self.gp0_mode = Gp0Mode::ImageStore {
+                    top_left,
+                    resolution,
+                    current_row,
+                    current_col,
+            };
+            }
+            // println!("transfering 0x{:X}", word);
+            // 0xff
+            word
+        } else {
+            0x0
+        }
     }
 
     pub fn status(&self) -> u32 {
@@ -836,17 +1101,23 @@ impl Gpu {
         r |= (self.display_disabled as u32) << 23;
         r |= (self.interrupt as u32) << 24;
 
+        let dma_request = self.dma_direction == DmaDirection::CpuToGp0
+            || self.dma_direction == DmaDirection::VRamToCpu;
+
+        r |= (dma_request as u32) << 25;
+
+
         // Ready to receive command:
-        r |= 1 << 26;
+        let is_idle = self.gp0_words_remaining == 0 && self.gp0_mode == Gp0Mode::Command;
+        r |= (is_idle as u32) << 26;
         // Ready to send VRAM to CPU
-        r |= 1 << 27;
+        if let Gp0Mode::ImageStore{top_left,resolution, current_row, current_col} = self.gp0_mode {
+            r |= 1 << 27;
+        }
+        // r |= 0 << 27;
         // ready to receive DMA block
         r |= 1 << 28;
 
-        // should change depending even/odd/vblank line
-        // (0=Even or Vblank, 1=Odd)
-        // In 480-lines mode, bit31 changes per frame. And in 240-lines mode, the bit changes per scanline. In 480-lines mode, bit31 changes per frame. And in 240-lines mode, the bit changes per scanline.
-        r |= ((!self.even & !self.in_vblank) as u32) << 31;
 
         let dma_request = match self.dma_direction {
             DmaDirection::Off => 0,
@@ -857,9 +1128,14 @@ impl Gpu {
 
         r |= dma_request << 25;
 
+        // should change depending even/odd/vblank line
+        // (0=Even or Vblank, 1=Odd)
+        // In 480-lines mode, bit31 changes per frame. And in 240-lines mode, the bit changes per scanline. 
+        r |= ((!self.even & !self.in_vblank) as u32) << 31;
+
         r
     }
-    pub fn load<T: Addressable>(&self, offset: u32) -> T {
+    pub fn load<T: Addressable>(&mut self, offset: u32) -> T {
         if T::width() != AccessWidth::Word {
             panic!("Unhandled {:?} GPU load", T::width());
         }
@@ -913,6 +1189,9 @@ impl Gpu {
     }
     pub fn enter_hsync(&mut self) {
         self.in_hblank = true;
+        if !self.interlaced {
+            self.even = !self.even;
+        }
     }
     pub fn exit_hsync(&mut self) {
         self.in_hblank = false;
@@ -990,7 +1269,7 @@ enum DisplayDepth {
     D24Bits = 1,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum DmaDirection {
     Off = 0,
     Fifo = 1,
@@ -1034,9 +1313,16 @@ impl ::std::ops::Index<usize> for CommandBuffer {
     }
 }
 
+#[derive(PartialEq)]
 enum Gp0Mode {
     Command,
     ImageLoad {
+        top_left: (u16, u16),
+        resolution: (u16, u16),
+        current_row: u16,
+        current_col: u16,
+    },
+    ImageStore {
         top_left: (u16, u16),
         resolution: (u16, u16),
         current_row: u16,
@@ -1177,3 +1463,9 @@ fn apply_dithering(color: Colour, p: Vertex) -> Colour {
         b: color.b.saturating_add_signed(offset),
     }
 }
+const OPAQUE: bool = false;
+const SEMI_TRANS: bool = true;
+const BLEND: bool = true;
+const RAW: bool = false;
+const QUAD: bool = true;
+const TRI: bool = false;

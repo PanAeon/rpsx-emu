@@ -78,6 +78,7 @@ pub struct Cpu {
     sr: u32,
     cause: u32,
     epc: u32,
+    baddr: u32,
     // out_regs: [u32; 32],
     load: (u32, u32), // load initiated by the current instruction
     branch: bool, // set by the current instruction if the branch occurred
@@ -100,6 +101,7 @@ impl Cpu {
             sr: 0,
             cause: 0,
             epc: 0,
+            baddr: 0,
             // out_regs: regs,
             load: (0, 0),
             branch: false,
@@ -143,7 +145,7 @@ impl Cpu {
             self.cause &= !(1 << 10);
         }
         // mask bits 8..15
-        let pending = (self.cause & self.sr) & 0xFF00;
+        let pending = (self.cause & self.sr) & 0x700;//0xFF00;
         pending != 0 && (self.sr & 1 != 0)
     }
 
@@ -643,9 +645,9 @@ impl Cpu {
         }
     }
     pub fn op_j(&mut self, instr: Instruction) {
-        // self.pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2) - 4;
+        self.next_pc = (self.current_pc & 0xf000_0000) | (instr.imm26() << 2);
         // self.next_pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2) + 4;
-        self.next_pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2);
+        // self.next_pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2);
         self.branch = true;
         self.delayed_load();
     }
@@ -712,6 +714,7 @@ impl Cpu {
 
         let test = (v < 0) as u32;
         let test = test ^ is_bgez;
+
         self.delayed_load();
 
         if is_link {
@@ -862,7 +865,7 @@ impl Cpu {
         let v = match instr.rd() {
             6  => {println!(">>>>> jumpdest"); 0}, // jumpdest..
             7  => 0, // not used (0)
-            8  => 0,// bad virtual address (R),
+            8  => self.baddr,// bad virtual address (R),
             12 => self.sr,
             13 => self.cause,
             14 => self.epc,
@@ -881,6 +884,7 @@ impl Cpu {
                     panic!("unhandled cop0 breakpoint register write");
                 }
             }
+            8 => self.baddr = v,
             12 => self.sr = v,
             13 => {
                 // cause register
@@ -897,7 +901,7 @@ impl Cpu {
         if instr.0 & 0x3f != 0b010000 {
             panic!("Invalid cop0 instruction {:x}", instr.0);
         }
-        self.delayed_load();
+        // self.delayed_load();
         let mode = self.sr & 0x3f;
         self.sr &= !0xf;
         self.sr |= mode >> 2;

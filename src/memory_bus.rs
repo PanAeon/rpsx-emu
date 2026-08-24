@@ -22,7 +22,7 @@ mod map {
     pub const RAM: Range = Range(0x0000_0000, 2 * 1024 * 1024);
     pub const SCRATCHPAD: Range = Range(0x1f80_0000, 1024);
     pub const SPU: Range = Range(0x1f801c00, 640);
-    pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
+    pub const EXPANSION_1: Range = Range(0x1f000000, 0x80000);
     // pub const EXPANSION_2: Range = Range(0x1f802000, 66);
     pub const EXPANSION_2: Range = Range(0x1f802000, 8*1024);
     pub const IRQ_CONTROL: Range = Range(0x1f801070, 8);
@@ -176,7 +176,7 @@ impl MemoryBus {
     pub fn store<T:Addressable>(&mut self, addr: u32, value: T) {
         let address = mask_region(addr);
         if !address.is_multiple_of(T::width() as u32) {
-            panic!("unaligned load{:?} address: {:08x}", T::width(), address)
+            panic!("unaligned store{:?} address: {:08x}", T::width(), address)
         }
         if let Some(offset) = map::RAM.contains(address) {
             return self.ram.store(offset, value);
@@ -238,10 +238,18 @@ impl MemoryBus {
         if let Some(offset) = map::IRQ_CONTROL.contains(address) {
             return self.irqctl.store(offset, value);
         }
+        if let Some(offset) = map::EXPANSION_1.contains(address) {
+            println!("Unhandled write to expansion_1 register {:x}", addr);
+            return ;
+        }
         if let Some(offset) = map::EXPANSION_2.contains(address) {
             println!("Unhandled write to expansion_2 register {:x}", addr);
             return;
         }
+        if address == 0x1f00e1ec {
+            return;
+        }
+        
         panic!("Unhandled store{:?} address: {:08x}", T::width(), address)
     }
 

@@ -27,7 +27,7 @@ impl Sio {
             control: Control::default(),
             boudrate_reload: 0,
             mode: Mode::default(),
-            status: Status(0x22005), // TX idle and TX ready
+            status: Status::default(), // TX idle and TX ready
             transfer: None,
             received: ArrayVec::new(),
             state: State::None,
@@ -164,37 +164,37 @@ impl Sio {
             };
             (byte, state)
         } else {
-            // let byte = self.gamepad2.send_and_receive_byte(data);
-            // let state = if self.gamepad2.in_ack() {
-            //     State::GamepadComm
-            // } else {
-            //     State::None
-            // };
-            // (byte, state)
-            (0xFF, State::None)
+            let byte = self.gamepad2.send_and_receive_byte(data);
+            let state = if self.gamepad2.in_ack() {
+                State::GamepadComm
+            } else {
+                State::None
+            };
+            (byte, state)
+            // (0xFF, State::None)
         }
         // (0xFF, State::None)
     }
     pub fn process_memcard(&mut self, port: usize, data: u8) -> (u8, State) {
-        // if port == 0 {
-        //     let byte = self.memcard1.send_and_receive_byte(data);
-        //     let state = if self.memcard1.in_ack() {
-        //         State::MemcardComm
-        //     } else {
-        //         State::None
-        //     };
-        //     (byte, state)
-        // } else {
-        //     let byte = self.memcard2.send_and_receive_byte(data);
-        //     let state = if self.memcard2.in_ack() {
-        //         State::MemcardComm
-        //     } else {
-        //         State::None
-        //     };
-        //     (byte, state)
-        //     // (0xFF, State::None)
-        // }
-        (0xFF, State::None)
+        if port == 0 {
+            let byte = self.memcard1.send_and_receive_byte(data);
+            let state = if self.memcard1.in_ack() {
+                State::MemcardComm
+            } else {
+                State::None
+            };
+            (byte, state)
+        } else {
+            let byte = self.memcard2.send_and_receive_byte(data);
+            let state = if self.memcard2.in_ack() {
+                State::MemcardComm
+            } else {
+                State::None
+            };
+            (byte, state)
+            // (0xFF, State::None)
+        }
+        // (0xFF, State::None)
     }
 
     pub fn try_send_data(memory_bus: &mut MemoryBus) {
@@ -202,7 +202,7 @@ impl Sio {
             return;
         }
 
-        if let Some(val) = memory_bus.sio.transfer {
+        if let Some(val) = memory_bus.sio.transfer.take() {
             // send/receive
             let (received, ack) = memory_bus.sio.send_and_receive_byte(val);
 
@@ -297,7 +297,6 @@ bitfield::bitfield! {
 // 10    Unknown                (always zero)
 // 11-31 Baudrate Timer         (15-21 bit timer, decrementing at 33MHz)
 bitfield::bitfield! {
-    #[derive(Default)]
     pub struct Status(u32);
     impl Debug;
     tx_fifo_not_full, set_tx_fifo_not_full: 0;
@@ -312,6 +311,12 @@ bitfield::bitfield! {
     interrupt_request, set_interrupt_request: 9;
     baudrate_timer, set_baudrate_timer: 31,11;
 
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self(0x22005) // TX idle and TX ready
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]

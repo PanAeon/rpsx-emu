@@ -151,10 +151,10 @@ pub struct State {
     texture_size: wgpu::Extent3d,
     audio_sender: crossbeam::channel::Sender<[i16; 2]>,
     audio_stream: cpal::Stream,
-    audio_buffer: Vec<[i16;2]>,
     paused: bool,
     gilrs: Gilrs,
-    active_gamepad: Option<GamepadId>
+    active_gamepad: Option<GamepadId>,
+    audio_tick: usize,
     // writer: BufWriter<File>
 }
 
@@ -514,10 +514,10 @@ impl State {
             cpu,
             audio_stream,
             audio_sender,
-            audio_buffer: Vec::with_capacity(735),
             paused: false,
             gilrs: Gilrs::new().unwrap(),
             active_gamepad: None,
+            audio_tick: 0
             // writer,
         };
 
@@ -533,7 +533,7 @@ impl State {
         // for _ in 0..120*735 {
         //     state.audio_sender.send([0i16, 0i16]).expect("can't send audio sample");
         // }
-        State::sideload_exe(&mut state);
+        // State::sideload_exe(&mut state);
         state.audio_stream.play()?;
         //
 
@@ -611,10 +611,10 @@ impl State {
     }
 
     fn sideload_exe(&mut self) {
-        let filename = "/foo/psxtest_cpu.exe";
+        // let filename = "/foo/psxtest_cpu.exe";
         // let filename = "/foo/psx/PSX/CPUTest/CPU/LOADSTORE/LB/CPULB.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/MemoryTransfer/MemoryTransfer16BPP.exe";
-        // let filename = "/foo/psx/PSX/Cube/Cube.exe";
+        let filename = "/foo/psx/PSX/Cube/Cube.exe";
         let mut file = match std::fs::File::open(filename) {
             Ok(file) => file,
             Err(e) => panic!("Can't load exe {}", e),
@@ -628,7 +628,7 @@ impl State {
             Ok(x) => x,
             Err(e) => panic!("Can't read exe {}", e),
         };
-        while self.cpu.pc != 0x80030000 {
+        while self.cpu.pc != 0x8003_0000 {
             self.cpu.run_next_instruction();
             self.cpu.check_for_tty_output();
         }
@@ -636,7 +636,7 @@ impl State {
         // exe header
         let initial_pc   = u32::from_le_bytes(data[0x10..0x14].try_into().unwrap());
         let initial_r28  = u32::from_le_bytes(data[0x14..0x18].try_into().unwrap());
-        let exe_ram_addr = u32::from_le_bytes(data[0x18..0x1C].try_into().unwrap()) & 0x1FFFFF;
+        let exe_ram_addr = u32::from_le_bytes(data[0x18..0x1C].try_into().unwrap()) & 0x001F_FFFF;
         let exe_size= u32::from_le_bytes(data[0x1C..0x20].try_into().unwrap()) as usize;
         let initial_sp   = u32::from_le_bytes(data[0x30..0x34].try_into().unwrap());
 
@@ -691,6 +691,11 @@ impl State {
                          let sample = self.cpu.memory_bus.spu.mix();
                          self.audio_sender.send(sample).expect("can't send audio sample");
 
+                        self.audio_tick += 1;
+                        if self.audio_tick == 735 {
+                            self.audio_tick = 0;
+                           break;
+                        }
 
                         // self.audio_buffer.push(sample);
                         // if self.audio_buffer.len() == 20*735 {
@@ -721,7 +726,6 @@ impl State {
                     scheduler::Event::VBlankEnd => {
                         self.cpu.memory_bus.gpu.exit_vsync();
                         timers::Timers::exit_vsync(&mut self.cpu.memory_bus);
-                        break;
                     },
                     scheduler::Event::HBlankStart => {
                         self.cpu.memory_bus.gpu.enter_hsync();

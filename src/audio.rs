@@ -36,7 +36,7 @@ pub fn build_audio_stream() -> anyhow::Result<(cpal::Stream, Sender<AudioSample>
                     match cons.try_recv() {
                         Ok(sample) => *d = sample,
                         Err(_) => {
-                            println!("<audio buffer underrun>");
+                            // println!("<audio buffer underrun>");
                             catch_up = true;
                             // std::thread::sleep(std::time::Duration::from_millis(400));
                             return;

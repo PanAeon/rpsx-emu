@@ -899,7 +899,7 @@ impl Cpu {
         }
         self.delayed_load();
         let mode = self.sr & 0x3f;
-        self.sr &= !0x3f;
+        self.sr &= !0xf;
         self.sr |= mode >> 2;
     }
 

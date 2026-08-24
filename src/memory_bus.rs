@@ -200,7 +200,7 @@ impl MemoryBus {
             return self.spu.store(address, value);
         }
         if let Some(offset) = map::JOYSTICK.contains(address) {
-            return self.sio.store(offset, value);
+            return crate::sio::Sio::store(self, offset, value);
             // println!("Unhandled write to Joystick register {:x}", addr);
             // return;
         }

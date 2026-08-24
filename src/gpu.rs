@@ -136,7 +136,6 @@ impl Gpu {
         val & (0x1 << 24) != 0
     }
 
-
     pub fn gp0(&mut self, val: u32) {
         if self.gp0_words_remaining == 0 {
             let opcode = (val >> 24) & 0xff;
@@ -144,24 +143,97 @@ impl Gpu {
                 0x00 => (1, Gpu::gp0_nop),
                 0x01 => (1, Gpu::gp0_clear_cache),
                 0x02 => (3, Gpu::gp0_fill_rect),
-                // 0x28 => (5, Gpu::gp0_nop),
-                0x28 => (5, Gpu::gp0_quad_mono_opaque),
-                // 0x2C => (9, Gpu::gp0_nop),
-                0x2C => (9, Gpu::gp0_quad_texture_blend_opaque),
-                0x2D => (9, Gpu::gp0_quad_texture_opaque),
-                // 0x30 => (6, Gpu::gp0_nop),
-                0x30 => (6, Gpu::gp0_triangle_shaded_opaque),
-                // 0x38 => (8, Gpu::gp0_nop),
-                0x38 => (8, Gpu::gp0_quad_shaded_opaque),
-                0x68 => (2, Gpu::gp0_monochrome_rect_1x1),
+                0x03 => (1, Gpu::gp0_nop),
+                0x04..=0x1E => (1, Gpu::gp0_nop),
+
+                0x20 => (4, Self::gp0_poly_mono::<TRI, OPAQUE>),
+                0x21 => (4, Self::gp0_poly_mono::<TRI, OPAQUE>),
+                0x22 => (4, Self::gp0_poly_mono::<TRI, SEMI_TRANS>),
+                0x23 => (4, Self::gp0_poly_mono::<TRI, SEMI_TRANS>),
+                0x24 => (7, Self::gp0_poly_texture::<TRI, OPAQUE, BLEND>),
+                0x25 => (7, Self::gp0_poly_texture::<TRI, OPAQUE, RAW>),
+                0x26 => (7, Self::gp0_poly_texture::<TRI, SEMI_TRANS, BLEND>),
+                0x27 => (7, Self::gp0_poly_texture::<TRI, SEMI_TRANS, RAW>),
+
+                0x28 => (5, Gpu::gp0_poly_mono::<QUAD, OPAQUE>),
+                0x29 => (5, Gpu::gp0_poly_mono::<QUAD, OPAQUE>),
+                0x2A => (5, Gpu::gp0_poly_mono::<QUAD, SEMI_TRANS>),
+                0x2B => (5, Gpu::gp0_poly_mono::<QUAD, SEMI_TRANS>),
+                0x2C => (9, Gpu::gp0_poly_texture::<QUAD, OPAQUE, BLEND>),
+                0x2D => (9, Gpu::gp0_poly_texture::<QUAD, OPAQUE, RAW>),
+                0x2E => (9, Gpu::gp0_poly_texture::<QUAD, SEMI_TRANS, BLEND>),
+                0x2F => (9, Gpu::gp0_poly_texture::<QUAD, SEMI_TRANS, RAW>),
+
+                0x30 => (6, Gpu::gp0_poly_shaded::<TRI, OPAQUE>),
+                0x31 => (6, Gpu::gp0_poly_shaded::<TRI, OPAQUE>),
+                0x32 => (6, Gpu::gp0_poly_shaded::<TRI, SEMI_TRANS>),
+                0x33 => (6, Gpu::gp0_poly_shaded::<TRI, SEMI_TRANS>),
+
+                0x34 => (9, Self::gp0_poly_texture_shaded::<TRI, OPAQUE, BLEND>),
+                0x35 => (9, Self::gp0_poly_texture_shaded::<TRI, OPAQUE, RAW>),
+                0x36 => (9, Self::gp0_poly_texture_shaded::<TRI, SEMI_TRANS, BLEND>),
+                0x37 => (9, Self::gp0_poly_texture_shaded::<TRI, SEMI_TRANS, RAW>),
+
+                0x38 => (8, Gpu::gp0_poly_shaded::<QUAD, OPAQUE>),
+                0x39 => (8, Gpu::gp0_poly_shaded::<QUAD, OPAQUE>),
+
+                0x3A => (8, Gpu::gp0_poly_shaded::<QUAD, SEMI_TRANS>),
+                0x3B => (8, Gpu::gp0_poly_shaded::<QUAD, SEMI_TRANS>),
+
+                0x3C => (12, Gpu::gp0_poly_texture_shaded::<QUAD, OPAQUE, BLEND>),
+                0x3D => (12, Gpu::gp0_poly_texture_shaded::<QUAD, OPAQUE, RAW>),
+                0x3E => (12, Gpu::gp0_poly_texture_shaded::<QUAD, SEMI_TRANS, BLEND>),
+                0x3F => (12, Gpu::gp0_poly_texture_shaded::<QUAD, SEMI_TRANS, RAW>),
+
+                0x40 | 0x41 | 0x44 | 0x45 => (3, Self::gp0_line_mono::<OPAQUE>),
+                0x42 | 0x43 | 0x46 | 0x47 => (3, Self::gp0_line_mono::<SEMI_TRANS>),
+                // 0x50 | 0x51 => (4, Self::gp0_line_shaded::<OPAQUE>),
+                // 0x52 | 0x53 => (4, Self::gp0_line_shaded::<SEMI_TRANS>),
+                0x60 => (3, Self::gp0_rect_variable::<OPAQUE>),
+                0x61 => (3, Self::gp0_rect_variable::<OPAQUE>),
+                0x62 => (3, Self::gp0_rect_variable::<SEMI_TRANS>),
+                0x63 => (3, Self::gp0_rect_variable::<SEMI_TRANS>),
+
+                0x64 => (4, Self::gp0_rect_texture_variable::<OPAQUE, BLEND>),
+                0x65 => (4, Self::gp0_rect_texture_variable::<OPAQUE, RAW>),
+                0x66 => (4, Self::gp0_rect_texture_variable::<SEMI_TRANS, BLEND>),
+                0x67 => (4, Self::gp0_rect_texture_variable::<SEMI_TRANS, RAW>),
+
+                0x68 => (2, Gpu::gp0_rect_fixed::<1, OPAQUE>),
+                0x69 => (2, Gpu::gp0_rect_fixed::<1, OPAQUE>),
+                0x6A => (2, Gpu::gp0_rect_fixed::<1, SEMI_TRANS>),
+                0x6B => (2, Gpu::gp0_rect_fixed::<1, SEMI_TRANS>),
+                0x6C => (3, Self::gp0_rect_texture_fixed::<1, OPAQUE, BLEND>),
+                0x6D => (3, Self::gp0_rect_texture_fixed::<1, OPAQUE, RAW>),
+                0x6E => (3, Self::gp0_rect_texture_fixed::<1, SEMI_TRANS, BLEND>),
+                0x6F => (3, Self::gp0_rect_texture_fixed::<1, SEMI_TRANS, RAW>),
+                0x70 => (2, Gpu::gp0_rect_fixed::<8, OPAQUE>),
+                0x71 => (2, Gpu::gp0_rect_fixed::<8, OPAQUE>),
+                0x72 => (2, Gpu::gp0_rect_fixed::<8, SEMI_TRANS>),
+                0x73 => (2, Gpu::gp0_rect_fixed::<8, SEMI_TRANS>),
+                0x74 => (3, Self::gp0_rect_texture_fixed::<8, OPAQUE, BLEND>),
+                0x75 => (3, Self::gp0_rect_texture_fixed::<8, OPAQUE, RAW>),
+                0x76 => (3, Self::gp0_rect_texture_fixed::<8, SEMI_TRANS, BLEND>),
+                0x77 => (3, Self::gp0_rect_texture_fixed::<8, SEMI_TRANS, RAW>),
+                0x78 => (2, Gpu::gp0_rect_fixed::<16, OPAQUE>),
+                0x79 => (2, Gpu::gp0_rect_fixed::<16, OPAQUE>),
+                0x7A => (2, Gpu::gp0_rect_fixed::<16, SEMI_TRANS>),
+                0x7B => (2, Gpu::gp0_rect_fixed::<16, SEMI_TRANS>),
+                0x7C => (3, Self::gp0_rect_texture_fixed::<16, OPAQUE, BLEND>),
+                0x7D => (3, Self::gp0_rect_texture_fixed::<16, OPAQUE, RAW>),
+                0x7E => (3, Self::gp0_rect_texture_fixed::<16, SEMI_TRANS, BLEND>),
+                0x7F => (3, Self::gp0_rect_texture_fixed::<16, SEMI_TRANS, RAW>),
+                0x80 => (4, Self::gp0_vram_to_vram_blit),
                 0xA0 => (3, Gpu::gp0_image_load),
                 0xC0 => (3, Gpu::gp0_image_store),
+                0xE0 => (1, Gpu::gp0_nop),
                 0xE1 => (1, Gpu::gp0_draw_mode),
                 0xE2 => (1, Gpu::gp0_texture_window),
                 0xE3 => (1, Gpu::gp0_drawing_area_top_left),
                 0xE4 => (1, Gpu::gp0_drawing_area_bottom_right),
                 0xE5 => (1, Gpu::gp0_drawing_offset),
                 0xE6 => (1, Gpu::gp0_mask_bit_setting),
+                0xE7..=0xEF => (1, Self::gp0_nop),
                 _ => {
                     let cmd = Self::get_command(val);
                     let shading = Self::get_shading(val);
@@ -170,13 +242,17 @@ impl Gpu {
                     let blend_mode = Self::get_blend_mode(val);
                     let modulation = Self::get_modulation(val);
 
-                    println!("command: {:03b}, shading: {shading}, vertices: {vertices}, textured: {textured}, blend: {blend_mode}, modulation: {modulation}", cmd);
+                    println!(
+                        "command: {:03b}, shading: {shading}, vertices: {vertices}, textured: {textured}, blend: {blend_mode}, modulation: {modulation}",
+                        cmd
+                    );
 
-                    std::thread::sleep(std::time::Duration::new(5, 0 ));
+                    // std::thread::sleep(std::time::Duration::new(5, 0 ));
                     panic!(
                         "Unhandled GP0 command 0x{:08X} opcode: 0x{:02X}",
-                        val, opcode);
-                },
+                        val, opcode
+                    );
+                }
             };
             self.gp0_words_remaining = len;
             self.gp0_command_method = method;
@@ -189,7 +265,7 @@ impl Gpu {
                 if self.gp0_words_remaining == 0 {
                     (self.gp0_command_method)(self);
                 }
-            },
+            }
             Gp0Mode::ImageLoad {
                 top_left,
                 resolution,
@@ -200,8 +276,13 @@ impl Gpu {
                 if self.gp0_words_remaining == 0 {
                     self.gp0_mode = Gp0Mode::Command;
                 }
-            },
-            Gp0Mode::ImageStore { top_left, resolution, current_row, current_col } => {
+            }
+            Gp0Mode::ImageStore {
+                top_left,
+                resolution,
+                current_row,
+                current_col,
+            } => {
                 // self.gp0_command.clear();
                 // self.gp0_words_remaining = 0;
                 // self.gp0_mode = Gp0Mode::Command;
@@ -261,7 +342,7 @@ impl Gpu {
         let r = (color & 0xFF) as u8;
         let g = ((color >> 8) & 0xFF) as u8;
         let b = ((color >> 16) & 0xFF) as u8;
-        Colour { r, g, b }
+        Colour { r, g, b, m: 0 }
     }
     pub fn gp0_color(color: u32) -> [u8; 2] {
         let r = (color & 0xFF) >> 3;
@@ -285,17 +366,37 @@ impl Gpu {
     pub fn gp0_nop(&mut self) {}
     pub fn gp0_clear_cache(&mut self) {}
     pub fn gp0_fill_rect(&mut self) {
-        println!("gp0 fill rect");
+        let color = Colour::from_gp0(self.gp0_command[0]);
+        let v = Self::gp0_vertex(self.gp0_command[1]);
+        let Vertex {x: width, y: height} = Self::gp0_vertex(self.gp0_command[2]);
+
+        let min_x = v.x.max(0) as usize;
+        let min_y = v.y.max(0) as usize;
+        let max_x = (v.x + width).min(0x400) as usize;
+        let max_y = (v.y + height).min(0x200) as usize;
+
+        for x in min_x..max_x {
+            for y in min_y..max_y {
+                let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                let [pixel_lsb, pixel_msb] = color.to_le_bytes();
+                self.vram[vram_addr] = pixel_lsb;
+                self.vram[vram_addr + 1] = pixel_msb;
+
+            }
+        }
+
+
     }
-    pub fn render_triangle_mono_opaque(
+    pub fn render_triangle_mono<const SEMI_TRANS: bool>(
         &mut self,
-        color: [u8; 2],
+        mono: Colour,
         v0: &mut Vertex,
         v1: &mut Vertex,
         v2: Vertex,
     ) {
         ensure_vertex_order(v0, v1, v2);
-        let [pixel_lsb, pixel_msb] = color;
+        // let [pixel_lsb, pixel_msb] = color;
 
         // bounding box
         let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
@@ -314,8 +415,20 @@ impl Gpu {
                 let p = Vertex { x, y };
                 if is_inside_triangle(p, *v0, *v1, v2) {
                     let vram_addr = 2 * (y * 1024 + x) as usize;
-                    self.vram[vram_addr] = pixel_lsb;
-                    self.vram[vram_addr + 1] = pixel_msb;
+                    let mut color = mono;
+
+                    if SEMI_TRANS {
+                        let background_lsb = self.vram[vram_addr];
+                        let background_msb = self.vram[vram_addr + 1];
+
+                        let bg = Colour::from_bytes(background_msb, background_lsb);
+
+                        color.blend_with_background(bg, self.semi_transparency);
+                    }
+                    self.vram_write_color(vram_addr, color);
+                    // let [pixel_lsb, pixel_msb] = color.to_le_bytes();
+                    // self.vram[vram_addr] = pixel_lsb;
+                    // self.vram[vram_addr + 1] = pixel_msb;
                 }
             }
         }
@@ -323,7 +436,7 @@ impl Gpu {
         // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
     }
 
-    pub fn render_triangle_shaded_opaque(
+    pub fn draw_triangle_shaded<const SEMI_TRANS: bool>(
         &mut self,
         v0: &mut Vertex,
         v1: &mut Vertex,
@@ -352,19 +465,23 @@ impl Gpu {
                 if is_inside_triangle(p, *v0, *v1, v2) {
                     let lambda = compute_barycentric_coordinates(p, *v0, *v1, v2);
                     let color = interpolate_color(lambda, [*c0, *c1, c2]);
-                    let color = apply_dithering(color, p);
-
-                    let r = ((color.r & 0xFF) >> 3) as u16;
-                    let g = ((color.g & 0xFF) >> 3) as u16;
-                    let b = ((color.b & 0xFF) >> 3) as u16;
-
-                    let pixel = (r | (g << 5) | (b << 10)) as u16;
-                    let [pixel_lsb, pixel_msb] = pixel.to_le_bytes();
-
+                    let mut color = apply_dithering(color, p);
                     let vram_addr = 2 * (y * 1024 + x) as usize;
 
-                    self.vram[vram_addr] = pixel_lsb;
-                    self.vram[vram_addr + 1] = pixel_msb;
+                    if SEMI_TRANS {
+                        let background_lsb = self.vram[vram_addr];
+                        let background_msb = self.vram[vram_addr + 1];
+
+                        let bg = Colour::from_bytes(background_msb, background_lsb);
+
+                        color.blend_with_background(bg, self.semi_transparency);
+                    }
+
+                    self.vram_write_color(vram_addr, color);
+                    // let [pixel_lsb, pixel_msb] = color.to_le_bytes();
+                    //
+                    // self.vram[vram_addr] = pixel_lsb;
+                    // self.vram[vram_addr + 1] = pixel_msb;
                 }
             }
         }
@@ -385,141 +502,20 @@ impl Gpu {
       14-23 Not used (should be 0)
       24-31 Command  (E1h)
     */
-    pub fn render_triangle_texture_opaque(
+    // pub fn render_triangle_texture_opaque(
+    //     &mut self,
+    //     clut: u16,
+    //     page: u16,
+    //     vs: &mut [Vertex; 3],
+    //     uv: &mut [[u16; 2]; 3],
+    // ) {
+    //
+    // }
+
+    // TODO: dithering? (should't be the case?)
+    pub fn draw_triangle_textured<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
-        clut: u16,
-        page: u16,
-        vs: &mut [Vertex; 3],
-        uv: &mut [[u16; 2]; 3],
-    ) {
-        ensure_vertex_order2(vs, uv);
-
-        // bounding box
-        let mut min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
-        let mut max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
-        let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
-        let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
-
-        // clip pixels outside of the drawing area
-        min_x = cmp::max(min_x, self.drawing_area_left as i32);
-        max_x = cmp::min(max_x, self.drawing_area_right as i32);
-        min_y = cmp::max(min_y, self.drawing_area_top as i32);
-        max_y = cmp::min(max_y, self.drawing_area_bottom as i32);
-
-        // textpage stuff
-        let page_base_x = ((page & 0xf) as usize) * 64; // n * 64
-        let page_base_y = (((page >> 4) & 1) as usize) * 256; // n * 256
-
-        let texture_depth = match (page >> 7) & 3 {
-            0 => TextureDepth::T4Bit,
-            1 => TextureDepth::T8Bit,
-            2 => TextureDepth::T15Bit,
-            n => panic!("Unhandled texture depth: {n}"),
-        };
-        // let texture_page_y_base2 = ((page >> 11) & 1) != 0;
-
-        // clut stuff
-        // 0-5    X coordinate X/16  (ie. in 16-halfword steps)
-        // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
-        // 15     Unused (should be 0)                      ;/
-        // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
-        let clut_x = ((clut & 0x1f) as usize) * 16;
-        let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
-
-        // println!("uv: {:?}", texture_depth);
-
-        for y in min_y..max_y {
-            for x in min_x..max_x {
-                let p = Vertex { x, y };
-                if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
-                    let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
-                    let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
-
-
-                    match texture_depth {
-                        TextureDepth::T4Bit => {
-                            // Width 4096...
-                            let pixel = self.vram[page_base_y * 2048 + uv_y * 4096 + 2*page_base_x + uv_x/2];
-                            let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
-                            if pixel == 0 {
-                                continue;
-                            }
-
-                            let mut pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                            let mut pixel_msb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-
-                            let vram_addr = 2 * (y * 1024 + x) as usize;
-
-
-                            if pixel_lsb == 0 && pixel_msb == 0 {
-                                continue;
-                            }
-
-
-                            // self.vram[vram_addr] = pixel;
-                            // self.vram[vram_addr + 1] = 0;
-                            self.vram[vram_addr] = pixel_lsb;
-                            self.vram[vram_addr + 1] = pixel_msb;
-                            
-                        },
-                        TextureDepth::T8Bit => {
-                            // Width 4096...
-                            let pixel = self.vram[page_base_y * 2048 + uv_y * 2048 + 2*page_base_x + uv_x];
-                            if pixel == 0 {
-                                continue;
-                            }
-
-                            let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                            let pixel_msb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-
-                            let vram_addr = 2 * (y * 1024 + x) as usize;
-
-                            // self.vram[vram_addr] = pixel;
-                            // self.vram[vram_addr + 1] = 0;
-                            self.vram[vram_addr] = pixel_lsb;
-                            self.vram[vram_addr + 1] = pixel_msb;
-                        },
-                        TextureDepth::T15Bit => {
-                            let texture_x = page_base_x + uv_x;
-                            let texture_y = page_base_y + uv_y;
-                            let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
-                            let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
-                            if pixel_lsb == 0 && pixel_msb == 0 {
-                                continue;
-                            }
-                            let vram_addr = 2 * (y * 1024 + x) as usize;
-
-                            self.vram[vram_addr] = pixel_lsb;
-                            self.vram[vram_addr + 1] = pixel_msb;
-                        }
-                    };
-                    // let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
-                    // let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
-                    //
-                    // Colour { r, g, b }
-                    // let color = interpolate_color(lambda, [*c0, *c1, c2]);
-                    // let color = apply_dithering(color, p);
-
-                    // let r = ((color.r & 0xFF) >> 3) as u16;
-                    // let g = ((color.g & 0xFF) >> 3) as u16;
-                    // let b = ((color.b & 0xFF) >> 3) as  u16;
-
-                    // let pixel = (r | (g << 5) | (b << 10)) as u16;
-                    // let [pixel_lsb, pixel_msb] = pixel.to_le_bytes();
-
-                    // let vram_addr = 2 * (y * 1024 + x) as usize;
-                    //
-                    // self.vram[vram_addr] = pixel_lsb;
-                    // self.vram[vram_addr + 1] = pixel_msb;
-                }
-            }
-        }
-
-        // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
-    }
-
-    pub fn render_triangle_texture_blend(
-        &mut self,
+        mono: Colour,
         clut: u16,
         page: u16,
         vs: &mut [Vertex; 3],
@@ -569,127 +565,82 @@ impl Gpu {
                     let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
                     let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
 
-
-                    match texture_depth {
+                    let (pixel_msb, pixel_lsb) = match texture_depth {
                         TextureDepth::T4Bit => {
                             // Width 4096...
-                            let pixel = self.vram[page_base_y * 2048 + uv_y * 4096 + 2*page_base_x + uv_x/2];
+                            let pixel = self.vram
+                                [page_base_y * 2048 + uv_y * 4096 + 2 * page_base_x + uv_x / 2];
                             let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
                             if pixel == 0 {
                                 continue;
                             }
 
-                            let mut pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                            let mut pixel_msb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-
-                            let vram_addr = 2 * (y * 1024 + x) as usize;
-
-                            if pixel_msb >> 7 == 1 {
-                                let background_lsb = self.vram[vram_addr];
-                                let background_msb = self.vram[vram_addr + 1];
-                                let pixel = u16::from_le_bytes([pixel_lsb, pixel_msb]);
-
-                                let mut r = Gpu::convert_5bit_to_8bit(pixel & 0x1F) as u16 as i16;
-                                let mut g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F) as u16 as i16;
-                                let mut b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F) as u16 as i16;
-
-                                let background = u16::from_le_bytes([background_lsb, background_msb]);
-
-                                let br = Gpu::convert_5bit_to_8bit(background & 0x1F) as u16 as i16;
-                                let bg = Gpu::convert_5bit_to_8bit((background >> 5) & 0x1F) as u16 as i16;
-                                let bb = Gpu::convert_5bit_to_8bit((background >> 10) & 0x1F) as u16 as i16;
-
-                                //     (0=B/2+F/2, 1=B+F, 2=B-F, 3=B+F/4)
-                                match (self.semi_transparency) {
-                                    0 => {
-                                        r = (r / 2 + br / 2).min(255);
-                                        g = (g / 2 + bg / 2).min(255);
-                                        b = (b / 2 + bb / 2).min(255);
-                                    },
-                                    1 => {
-                                        r = (r  + br ).min(255);
-                                        g = (g  + bg ).min(255);
-                                        b = (b  + bb ).min(255);
-                                    },
-                                    2 => {
-                                        r = ( br - r ).max(0);
-                                        g = ( bg - b ).max(0);
-                                        b = ( bb - b ).max(0);
-                                    },
-                                    3 => {
-                                        r = (r / 4 + br ).min(255);
-                                        g = (g / 4 + bg ).min(255);
-                                        b = (b / 4 + bb ).min(255);
-                                    }
-                                    _ => unreachable!("semi_transparency should be 0..=3")
-                                }
-                                let pixel = (r as u16 | ((g as u16) << 5) | ((b as u16) << 10)) as u16;
-                                let [lsb, msb] = pixel.to_le_bytes();
-                                pixel_lsb = lsb;
-                                pixel_msb = msb;
-
-                            }
-
-                            if pixel_lsb == 0 && pixel_msb == 0 {
-                                continue;
-                            }
-
-
-                            // self.vram[vram_addr] = pixel;
-                            // self.vram[vram_addr + 1] = 0;
-                            self.vram[vram_addr] = pixel_lsb;
-                            self.vram[vram_addr + 1] = pixel_msb;
-                            
-                        },
+                            let pixel_lsb =
+                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
+                            let pixel_msb =
+                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+                            (pixel_msb, pixel_lsb)
+                        }
                         TextureDepth::T8Bit => {
-                            // Width 4096...
-                            let pixel = self.vram[page_base_y * 2048 + uv_y * 2048 + 2*page_base_x + uv_x];
+                            // Width 2048...
+                            let pixel = self.vram
+                                [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x];
                             if pixel == 0 {
                                 continue;
                             }
 
-                            let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                            let pixel_msb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+                            let pixel_lsb =
+                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
+                            let pixel_msb =
+                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+                            (pixel_msb, pixel_lsb)
 
-                            let vram_addr = 2 * (y * 1024 + x) as usize;
+                            // let vram_addr = 2 * (y * 1024 + x) as usize;
 
                             // self.vram[vram_addr] = pixel;
                             // self.vram[vram_addr + 1] = 0;
-                            self.vram[vram_addr] = pixel_lsb;
-                            self.vram[vram_addr + 1] = pixel_msb;
-                        },
+                            // self.vram[vram_addr] = pixel_lsb;
+                            // self.vram[vram_addr + 1] = pixel_msb;
+                        }
                         TextureDepth::T15Bit => {
                             let texture_x = page_base_x + uv_x;
                             let texture_y = page_base_y + uv_y;
                             let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
                             let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
-                            if pixel_lsb == 0 && pixel_msb == 0 {
-                                continue;
-                            }
-                            let vram_addr = 2 * (y * 1024 + x) as usize;
+                            (pixel_msb, pixel_lsb)
+                            // let vram_addr = 2 * (y * 1024 + x) as usize;
 
-                            self.vram[vram_addr] = pixel_lsb;
-                            self.vram[vram_addr + 1] = pixel_msb;
+                            // self.vram[vram_addr] = pixel_lsb;
+                            // self.vram[vram_addr + 1] = pixel_msb;
                         }
                     };
-                    // let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
-                    // let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
-                    //
-                    // Colour { r, g, b }
-                    // let color = interpolate_color(lambda, [*c0, *c1, c2]);
-                    // let color = apply_dithering(color, p);
 
-                    // let r = ((color.r & 0xFF) >> 3) as u16;
-                    // let g = ((color.g & 0xFF) >> 3) as u16;
-                    // let b = ((color.b & 0xFF) >> 3) as  u16;
+                    if pixel_lsb == 0 && pixel_msb == 0 {
+                        continue;
+                    }
 
-                    // let pixel = (r | (g << 5) | (b << 10)) as u16;
-                    // let [pixel_lsb, pixel_msb] = pixel.to_le_bytes();
+                    let mut pixel = Colour::from_bytes(pixel_msb, pixel_lsb);
 
-                    // let vram_addr = 2 * (y * 1024 + x) as usize;
-                    //
-                    // self.vram[vram_addr] = pixel_lsb;
-                    // self.vram[vram_addr + 1] = pixel_msb;
+                    if BLEND {
+                        pixel.blend(mono);
+                    }
+
+                    let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                    if SEMI_TRANS && pixel_msb >> 7 == 1 {
+                        let background_lsb = self.vram[vram_addr];
+                        let background_msb = self.vram[vram_addr + 1];
+
+                        let background = Colour::from_bytes(background_msb, background_lsb);
+
+                        pixel.blend_with_background(background, self.semi_transparency);
+                    }
+
+                    self.vram_write_color(vram_addr, pixel);
+                    // let [lsb, msb] = pixel.to_le_bytes();
+
+                    // self.vram[vram_addr] = lsb;
+                    // self.vram[vram_addr + 1] = msb;
                 }
             }
         }
@@ -697,94 +648,602 @@ impl Gpu {
         // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
     }
 
-    pub fn gp0_quad_mono_opaque(&mut self) {
-        let color = Self::gp0_color(self.gp0_command[0]);
+    // TODO: dithering, masked bit...
+    pub fn draw_triangle_textured_shaded<const SEMI_TRANS: bool, const BLEND: bool>(
+        &mut self,
+        colors: &mut [Colour; 3],
+        clut: u16,
+        page: u16,
+        vs: &mut [Vertex; 3],
+        uv: &mut [[u16; 2]; 3],
+    ) {
+        ensure_vertex_order3(vs, uv, colors);
+
+        // bounding box
+        let mut min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
+        let mut max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
+        let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
+        let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
+
+        // clip pixels outside of the drawing area
+        min_x = cmp::max(min_x, self.drawing_area_left as i32);
+        max_x = cmp::min(max_x, self.drawing_area_right as i32);
+        min_y = cmp::max(min_y, self.drawing_area_top as i32);
+        max_y = cmp::min(max_y, self.drawing_area_bottom as i32);
+
+        // textpage stuff
+        let page_base_x = ((page & 0xf) as usize) * 64; // n * 64
+        let page_base_y = (((page >> 4) & 1) as usize) * 256; // n * 256
+        let semi_transparency = ((page >> 5) & 3) as u8;
+
+        let texture_depth = match (page >> 7) & 3 {
+            0 => TextureDepth::T4Bit,
+            1 => TextureDepth::T8Bit,
+            2 => TextureDepth::T15Bit,
+            n => panic!("Unhandled texture depth: {n}"),
+        };
+        // let texture_page_y_base2 = ((page >> 11) & 1) != 0;
+
+        // clut stuff
+        // 0-5    X coordinate X/16  (ie. in 16-halfword steps)
+        // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
+        // 15     Unused (should be 0)                      ;/
+        // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
+        let clut_x = ((clut & 0x1f) as usize) * 16;
+        let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
+
+        // println!("uv: {:?}", texture_depth);
+
+        for y in min_y..max_y {
+            for x in min_x..max_x {
+                let p = Vertex { x, y };
+                if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
+                    let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
+                    let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
+
+                    let (pixel_msb, pixel_lsb) = match texture_depth {
+                        TextureDepth::T4Bit => {
+                            // Width 4096...
+                            let pixel = self.vram
+                                [page_base_y * 2048 + uv_y * 4096 + 2 * page_base_x + uv_x / 2];
+                            let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
+                            if pixel == 0 {
+                                continue;
+                            }
+
+                            let pixel_lsb =
+                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
+                            let pixel_msb =
+                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+                            (pixel_msb, pixel_lsb)
+                        }
+                        TextureDepth::T8Bit => {
+                            // Width 2048...
+                            let pixel = self.vram
+                                [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x];
+                            if pixel == 0 {
+                                continue;
+                            }
+
+                            let pixel_lsb =
+                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
+                            let pixel_msb =
+                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+                            (pixel_msb, pixel_lsb)
+                        }
+                        TextureDepth::T15Bit => {
+                            let texture_x = page_base_x + uv_x;
+                            let texture_y = page_base_y + uv_y;
+                            let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
+                            let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
+                            (pixel_msb, pixel_lsb)
+                            // let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                            // self.vram[vram_addr] = pixel_lsb;
+                            // self.vram[vram_addr + 1] = pixel_msb;
+                        }
+                    };
+
+                    if pixel_lsb == 0 && pixel_msb == 0 {
+                        continue;
+                    }
+
+                    let mut pixel = Colour::from_bytes(pixel_msb, pixel_lsb);
+
+                    if BLEND {
+                        let color = interpolate_color(lambda, *colors);
+                        let color = apply_dithering(color, p);
+                        pixel.blend(color);
+                    }
+
+                    let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                    if SEMI_TRANS && pixel_msb >> 7 == 1 {
+                        let background_lsb = self.vram[vram_addr];
+                        let background_msb = self.vram[vram_addr + 1];
+
+                        let background = Colour::from_bytes(background_msb, background_lsb);
+
+                        pixel.blend_with_background(background, self.semi_transparency);
+                    }
+
+                    self.vram_write_color(vram_addr, pixel);
+                    // let [lsb, msb] = pixel.to_le_bytes();
+                    //
+                    // self.vram[vram_addr] = lsb;
+                    // self.vram[vram_addr + 1] = msb;
+                }
+            }
+        }
+
+        // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
+    }
+
+    pub fn clip_rect(&self, x0: i32, y0: i32, x1: i32, y1: i32) -> Option<(i32, i32, i32, i32)> {
+        if x1 - x0 > 1023 || y1 - y0 > 511 {
+            return None;
+        }
+        let l = self.drawing_area_left as i32;
+        let t = self.drawing_area_top as i32;
+        let b = self.drawing_area_bottom as i32;
+        let r = self.drawing_area_right as i32;
+
+        if x1 < l || x0 > r || y1 < t || y0 > b {
+            return None;
+        }
+        Some((x0.max(l), y0.max(t), x1.min(r), y1.min(b)))
+    }
+
+    pub fn draw_rectangle<const SEMI_TRANS: bool>(
+        &mut self,
+        mut v: Vertex,
+        side: Vertex,
+        color: Colour,
+    ) {
+        v.x += self.drawing_x_offset as i32;
+        v.y += self.drawing_y_offset as i32;
+
+        let Some((min_x, min_y, max_x, max_y)) =
+            self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1)
+        else {
+            return;
+        };
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let vram_addr = 2 * (y * 1024 + x) as usize;
+                let mut pixel = color;
+
+                if SEMI_TRANS {
+                    let background_lsb = self.vram[vram_addr];
+                    let background_msb = self.vram[vram_addr + 1];
+
+                    let background = Colour::from_bytes(background_msb, background_lsb);
+
+                    pixel.blend_with_background(background, self.semi_transparency);
+                }
+
+                // let [lsb, msb] = pixel.to_le_bytes();
+                //
+                // self.vram[vram_addr] = lsb;
+                // self.vram[vram_addr + 1] = msb;
+                self.vram_write_color(vram_addr, pixel);
+            }
+        }
+    }
+    pub fn draw_rectangle_textured<const SEMI_TRANS: bool, const BLEND: bool>(
+        &mut self,
+        mut v: Vertex,
+        side: Vertex,
+        color: Colour,
+        clut: u16,
+        uv: [u16; 2],
+    ) {
+        v.x += self.drawing_x_offset as i32;
+        v.y += self.drawing_y_offset as i32;
+
+        let Some((min_x, min_y, max_x, max_y)) =
+            self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1)
+        else {
+            return;
+        };
+
+        // textpage stuff
+        let page_base_x = (self.page_base_x as usize) * 64; // n * 64
+        let page_base_y = (self.page_base_y as usize) * 256; // n * 256
+        let semi_transparency = self.semi_transparency;
+
+        let texture_depth = self.texture_depth;
+
+        // clut stuff
+        // 0-5    X coordinate X/16  (ie. in 16-halfword steps)
+        // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
+        // 15     Unused (should be 0)                      ;/
+        // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
+        let clut_x = ((clut & 0x1f) as usize) * 16;
+        let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
+        //
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let uv_x = (uv[0] as i32) + (x as i32) - v.x;
+                let uv_y = (uv[1] as i32) + (y as i32) - v.y;
+                let (pixel_msb, pixel_lsb) = match texture_depth {
+                    TextureDepth::T4Bit => {
+                        // Width 4096...
+                        let pixel = self.vram[page_base_y * 2048
+                            + (uv_y as usize) * 4096
+                            + 2 * page_base_x
+                            + (uv_x as usize) / 2];
+                        let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
+                        if pixel == 0 {
+                            continue;
+                        }
+
+                        let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
+                        let pixel_msb =
+                            self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+                        (pixel_msb, pixel_lsb)
+                    }
+                    TextureDepth::T8Bit => {
+                        // Width 2048...
+                        let pixel = self.vram[page_base_y * 2048
+                            + (uv_y as usize) * 2048
+                            + 2 * page_base_x
+                            + (uv_x as usize)];
+                        if pixel == 0 {
+                            continue;
+                        }
+
+                        let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
+                        let pixel_msb =
+                            self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
+                        (pixel_msb, pixel_lsb)
+                    }
+                    TextureDepth::T15Bit => {
+                        let texture_x = page_base_x + (uv_x as usize);
+                        let texture_y = page_base_y + (uv_y as usize);
+                        let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
+                        let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
+                        (pixel_msb, pixel_lsb)
+                        // let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                        // self.vram[vram_addr] = pixel_lsb;
+                        // self.vram[vram_addr + 1] = pixel_msb;
+                    }
+                };
+
+                if pixel_lsb == 0 && pixel_msb == 0 {
+                    continue;
+                }
+
+                let mut pixel = Colour::from_bytes(pixel_msb, pixel_lsb);
+
+                if BLEND {
+                    pixel.blend(color);
+                }
+
+                let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                if SEMI_TRANS && pixel_msb >> 7 == 1 {
+                    let background_lsb = self.vram[vram_addr];
+                    let background_msb = self.vram[vram_addr + 1];
+
+                    let background = Colour::from_bytes(background_msb, background_lsb);
+
+                    pixel.blend_with_background(background, self.semi_transparency);
+                }
+
+                self.vram_write_color(vram_addr, pixel);
+                // let [lsb, msb] = pixel.to_le_bytes();
+
+                // self.vram[vram_addr] = lsb;
+                // self.vram[vram_addr + 1] = msb;
+            }
+        }
+    }
+
+    pub fn draw_line<const SEMI_TRANS: bool>(
+        &mut self,
+        mut v0: Vertex,
+        mut v1: Vertex,
+        mono: Colour,
+    ) {
+        v0.x += self.drawing_x_offset as i32;
+        v0.y += self.drawing_y_offset as i32;
+        v1.x += self.drawing_x_offset as i32;
+        v1.y += self.drawing_y_offset as i32;
+
+        let Some((x0, y0, x1, y1)) = self.clip_rect(v0.x, v0.y, v1.x, v1.y) else {
+            return;
+        };
+
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+
+        let sx = if x0 < x1 {1} else {-1};
+        let sy = if y0 < y1 {1} else {-1};
+
+        let mut err = dx + dy;
+        let mut x = x0;
+        let mut y = y0;
+
+        loop {
+            let mut pixel = mono;
+            let vram_addr = 2 * (y * 1024 + x) as usize;
+
+            if SEMI_TRANS {
+                let background_lsb = self.vram[vram_addr];
+                let background_msb = self.vram[vram_addr + 1];
+
+                let background = Colour::from_bytes(background_msb, background_lsb);
+
+                pixel.blend_with_background(background, self.semi_transparency);
+            }
+            pixel.apply_dithering(x, y);
+
+            self.vram_write_color(vram_addr, pixel);
+            // let [lsb, msb] = pixel.to_le_bytes();
+
+            // self.vram[vram_addr] = lsb;
+            // self.vram[vram_addr + 1] = msb;
+
+            let e2 = 2 * err;
+            if e2 >= dy {
+                if x == x1 {
+                    break;
+                }
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                if y == y1 {
+                    break;
+                }
+                err += dx;
+                y += sy;
+            }
+
+        }
+    }
+
+
+    // TODO: dither!
+    pub fn draw_line_shaded<const SEMI_TRANS: bool>(
+        &mut self,
+        mut v0: Vertex,
+        mut v1: Vertex,
+        color0: Colour,
+        color1: Colour,
+    ) {
+        v0.x += self.drawing_x_offset as i32;
+        v0.y += self.drawing_y_offset as i32;
+        v1.x += self.drawing_x_offset as i32;
+        v1.y += self.drawing_y_offset as i32;
+
+        let Some((x0, y0, x1, y1)) = self.clip_rect(v0.x, v0.y, v1.x, v1.y) else {
+            return;
+        };
+
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+
+        let sx = if x0 < x1 {1} else {-1};
+        let sy = if y0 < y1 {1} else {-1};
+
+        let mut err = dx + dy;
+        let mut x = x0;
+        let mut y = y0;
+
+        loop {
+            let mut pixel = {
+                let (num, denom) = if dx >= -dy {
+                    ((x - x0).abs(), dx)
+                } else {
+                    ((y - y0).abs(), dy)
+                };
+                if denom == 0 {
+                    color0
+                } else {
+                    let inv = denom - num;
+                    let red = ((color0.r as i32) * inv + (color1.r as i32) * num) / denom;
+                    let green = ((color0.g as i32) * inv + (color1.g as i32) * num) / denom;
+                    let blue = ((color0.b as i32) * inv + (color1.b as i32) * num) / denom;
+                    Colour { r: red as u8, g: green as u8, b: blue as u8, m: 0 }
+                }
+            };
+            let vram_addr = 2 * (y * 1024 + x) as usize;
+
+            if SEMI_TRANS {
+                let background_lsb = self.vram[vram_addr];
+                let background_msb = self.vram[vram_addr + 1];
+
+                let background = Colour::from_bytes(background_msb, background_lsb);
+
+                pixel.blend_with_background(background, self.semi_transparency);
+            }
+
+            pixel.apply_dithering(x, y);
+
+            self.vram_write_color(vram_addr, pixel);
+
+            // let [lsb, msb] = pixel.to_le_bytes();
+
+            // self.vram[vram_addr] = lsb;
+            // self.vram[vram_addr + 1] = msb;
+
+            let e2 = 2 * err;
+            if e2 >= dy {
+                if x == x1 {
+                    break;
+                }
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                if y == y1 {
+                    break;
+                }
+                err += dx;
+                y += sy;
+            }
+
+        }
+    }
+
+    pub fn gp0_line_mono<const SEMI_TRANS: bool>(&mut self) {
+        let color = Colour::from_gp0(self.gp0_command[0]);
+        let v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let v1 = Self::gp0_vertex(self.gp0_command[2]);
+
+        self.draw_line::<SEMI_TRANS>(v0, v1, color);
+    }
+
+    pub fn gp0_rect_fixed<const SIDE: i32, const SEMI_TRANS: bool>(&mut self) {
+        let color = Colour::from_gp0(self.gp0_command[0]);
+        let v = Self::gp0_vertex(self.gp0_command[1]);
+
+        self.draw_rectangle::<SEMI_TRANS>(v, Vertex { x: SIDE, y: SIDE }, color);
+        // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
+        // let [x, y] = Self::gp0_position(self.gp0_command[1]);
+        // // println!("monochrome rect 1x1");
+        // let vram_addr = 2 * (y * 1024 + x) as usize;
+        // self.vram[vram_addr] = pixel_lsb;
+        // self.vram[vram_addr + 1] = pixel_msb;
+    }
+    pub fn gp0_rect_variable<const SEMI_TRANS: bool>(&mut self) {
+        let color = Colour::from_gp0(self.gp0_command[0]);
+        let v = Self::gp0_vertex(self.gp0_command[1]);
+        let side = Self::gp0_vertex(self.gp0_command[2]);
+
+        self.draw_rectangle::<SEMI_TRANS>(v, side, color);
+    }
+    pub fn gp0_rect_texture_fixed<const SIDE: i32, const SEMI_TRANS: bool, const BLEND: bool>(
+        &mut self,
+    ) {
+        let color = Colour::from_gp0(self.gp0_command[0]);
+        let v = Self::gp0_vertex(self.gp0_command[1]);
+        let [_u, _v, clut] = Self::gp0_page_clut(self.gp0_command[2]);
+
+        self.draw_rectangle_textured::<SEMI_TRANS, BLEND>(
+            v,
+            Vertex { x: SIDE, y: SIDE },
+            color,
+            clut,
+            [_u, _v],
+        );
+    }
+
+    pub fn gp0_rect_texture_variable<const SEMI_TRANS: bool, const BLEND: bool>(&mut self) {
+        let color = Colour::from_gp0(self.gp0_command[0]);
+        let v = Self::gp0_vertex(self.gp0_command[1]);
+        let [_u, _v, clut] = Self::gp0_page_clut(self.gp0_command[2]);
+        let side = Self::gp0_vertex(self.gp0_command[3]);
+
+        self.draw_rectangle_textured::<SEMI_TRANS, BLEND>(v, side, color, clut, [_u, _v]);
+    }
+
+    pub fn gp0_poly_mono<const QUAD: bool, const SEMI_TRANS: bool>(&mut self) {
+        let color = Colour::from_gp0(self.gp0_command[0]);
         let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
         let mut v1 = Self::gp0_vertex(self.gp0_command[2]);
         let mut v2 = Self::gp0_vertex(self.gp0_command[3]);
-        let v3 = Self::gp0_vertex(self.gp0_command[4]);
 
-        self.render_triangle_mono_opaque(color, &mut v0, &mut v1, v2);
-        self.render_triangle_mono_opaque(color, &mut v1, &mut v2, v3);
+        self.render_triangle_mono::<SEMI_TRANS>(color, &mut v0, &mut v1, v2);
+        if QUAD {
+            let v3 = Self::gp0_vertex(self.gp0_command[4]);
+            self.render_triangle_mono::<SEMI_TRANS>(color, &mut v1, &mut v2, v3);
+        }
     }
 
+    pub fn gp0_poly_texture_shaded<const QUAD: bool, const SEMI_TRANS: bool, const BLEND: bool>(
+        &mut self,
+    ) {
+        let c0 = Colour::from_gp0(self.gp0_command[0]);
+        let c1 = Colour::from_gp0(self.gp0_command[3]);
+        let c2 = Colour::from_gp0(self.gp0_command[6]);
+        let v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let [_u0, _v0, clut] = Self::gp0_page_clut(self.gp0_command[2]);
+        let v1 = Self::gp0_vertex(self.gp0_command[4]);
+        let [_u1, _v1, page] = Self::gp0_page_clut(self.gp0_command[5]);
+        let v2 = Self::gp0_vertex(self.gp0_command[7]);
+        let [_u2, _v2, _] = Self::gp0_page_clut(self.gp0_command[8]);
 
-    pub fn gp0_quad_texture_opaque(&mut self) {
-        // let color = Self::gp0_color(self.gp0_command[0]);
+        let mut uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2]];
+        let mut vs0 = [v0, v1, v2];
+        let mut cs0 = [c0, c1, c2];
+        self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
+            &mut cs0, clut, page, &mut vs0, &mut uv0,
+        );
+        if QUAD {
+            let c3 = Colour::from_gp0(self.gp0_command[9]);
+            let v3 = Self::gp0_vertex(self.gp0_command[10]);
+            let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[11]);
+            let mut uv1 = [[_u1, _v1], [_u2, _v2], [_u3, _v3]];
+            let mut vs1 = [v1, v2, v3];
+            let mut cs1 = [c1, c2, c3];
+            self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
+                &mut cs1, clut, page, &mut vs1, &mut uv1,
+            );
+        }
+    }
+
+    pub fn gp0_poly_texture<const QUAD: bool, const SEMI_TRANS: bool, const BLEND: bool>(
+        &mut self,
+    ) {
+        let color = Colour::from_gp0(self.gp0_command[0]);
         let v0 = Self::gp0_vertex(self.gp0_command[1]);
         let [_u0, _v0, clut] = Self::gp0_page_clut(self.gp0_command[2]);
         let v1 = Self::gp0_vertex(self.gp0_command[3]);
         let [_u1, _v1, page] = Self::gp0_page_clut(self.gp0_command[4]);
         let v2 = Self::gp0_vertex(self.gp0_command[5]);
         let [_u2, _v2, _] = Self::gp0_page_clut(self.gp0_command[6]);
-        let v3 = Self::gp0_vertex(self.gp0_command[7]);
-        let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[8]);
-        // 9
-        // self.render_triangle_mono_opaque(color, &mut v0, &mut v1, v2);
-        // self.render_triangle_mono_opaque(color, &mut v1, &mut v2, v3);
-        let mut uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2]];
-        let mut vs0 = [v0, v1, v2];
-        let mut uv1 = [[_u1, _v1], [_u2, _v2], [_u3, _v3]];
-        let mut vs1 = [v1, v2, v3];
-        self.render_triangle_texture_opaque(clut, page, &mut vs0, &mut uv0);
-        self.render_triangle_texture_opaque(clut, page, &mut vs1, &mut uv1);
-    }
 
-    pub fn gp0_quad_texture_blend_opaque(&mut self) {
-        // let color = Self::gp0_color(self.gp0_command[0]);
-        let v0 = Self::gp0_vertex(self.gp0_command[1]);
-        let [_u0, _v0, clut] = Self::gp0_page_clut(self.gp0_command[2]);
-        let v1 = Self::gp0_vertex(self.gp0_command[3]);
-        let [_u1, _v1, page] = Self::gp0_page_clut(self.gp0_command[4]);
-        let v2 = Self::gp0_vertex(self.gp0_command[5]);
-        let [_u2, _v2, _] = Self::gp0_page_clut(self.gp0_command[6]);
-        let v3 = Self::gp0_vertex(self.gp0_command[7]);
-        let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[8]);
-        // 9
-        // self.render_triangle_mono_opaque(color, &mut v0, &mut v1, v2);
-        // self.render_triangle_mono_opaque(color, &mut v1, &mut v2, v3);
         let mut uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2]];
         let mut vs0 = [v0, v1, v2];
-        let mut uv1 = [[_u1, _v1], [_u2, _v2], [_u3, _v3]];
-        let mut vs1 = [v1, v2, v3];
-        self.render_triangle_texture_blend(clut, page, &mut vs0, &mut uv0);
-        self.render_triangle_texture_blend(clut, page, &mut vs1, &mut uv1);
+        self.draw_triangle_textured::<SEMI_TRANS, BLEND>(color, clut, page, &mut vs0, &mut uv0);
+        if QUAD {
+            let v3 = Self::gp0_vertex(self.gp0_command[7]);
+            let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[8]);
+            let mut uv1 = [[_u1, _v1], [_u2, _v2], [_u3, _v3]];
+            let mut vs1 = [v1, v2, v3];
+            self.draw_triangle_textured::<SEMI_TRANS, BLEND>(color, clut, page, &mut vs1, &mut uv1);
+        }
     }
-    pub fn gp0_triangle_shaded_opaque(&mut self) {
+    pub fn gp0_poly_shaded<const QUAD: bool, const SEMI_TRANS: bool>(&mut self) {
         // 6
-        let mut c0 = Self::gp0_colour(self.gp0_command[0]);
-        let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
-        let mut c1 = Self::gp0_colour(self.gp0_command[2]);
-        let mut v1 = Self::gp0_vertex(self.gp0_command[3]);
-        let c2 = Self::gp0_colour(self.gp0_command[4]);
-        let mut v2 = Self::gp0_vertex(self.gp0_command[5]);
-        self.render_triangle_shaded_opaque(&mut v0, &mut v1, v2, &mut c0, &mut c1, c2);
-        // self.render_triangle_mono_opaque(c0, &mut v0, &mut v1, v2);
-    }
-    pub fn gp0_quad_shaded_opaque(&mut self) {
-        // 8
-        // println!("draw shaded quad!");
         let mut c0 = Self::gp0_colour(self.gp0_command[0]);
         let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
         let mut c1 = Self::gp0_colour(self.gp0_command[2]);
         let mut v1 = Self::gp0_vertex(self.gp0_command[3]);
         let mut c2 = Self::gp0_colour(self.gp0_command[4]);
         let mut v2 = Self::gp0_vertex(self.gp0_command[5]);
-        let c3 = Self::gp0_colour(self.gp0_command[6]);
-        let mut v3 = Self::gp0_vertex(self.gp0_command[7]);
-
-        self.render_triangle_shaded_opaque(&mut v0, &mut v1, v2, &mut c0, &mut c1, c2);
-        self.render_triangle_shaded_opaque(&mut v1, &mut v2, v3, &mut c1, &mut c2, c3);
-        // self.render_triangle_mono_opaque(c0, &mut v0, &mut v1, v2);
-        // self.render_triangle_mono_opaque(c0, &mut v1, &mut v2, v3);
+        self.draw_triangle_shaded::<SEMI_TRANS>(&mut v0, &mut v1, v2, &mut c0, &mut c1, c2);
+        if QUAD {
+            let c3 = Self::gp0_colour(self.gp0_command[6]);
+            let v3 = Self::gp0_vertex(self.gp0_command[7]);
+            self.draw_triangle_shaded::<SEMI_TRANS>(&mut v1, &mut v2, v3, &mut c1, &mut c2, c3);
+        }
     }
-    pub fn gp0_monochrome_rect_1x1(&mut self) {
-        let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
-        let [x, y] = Self::gp0_position(self.gp0_command[1]);
-        // println!("monochrome rect 1x1");
-        let vram_addr = 2 * (y * 1024 + x) as usize;
-        self.vram[vram_addr] = pixel_lsb;
-        self.vram[vram_addr + 1] = pixel_msb;
+    pub fn gp0_vram_to_vram_blit(&mut self) {
+        let src = Self::gp0_vertex(self.gp0_command[1]);
+        let dst = Self::gp0_vertex(self.gp0_command[2]);
+        let size = Self::gp0_vertex(self.gp0_command[3]);
+        let width = size.x as usize;
+        let height = size.y as usize;
+
+        for y in 0..height {
+            for x in 0..width {
+                let vram_addr = 2 * ((y + src.y as usize) * 1024 + x + (src.x as usize));
+                let pixel_lsb = self.vram[vram_addr];
+                let pixel_msb = self.vram[vram_addr+1];
+
+                let vram_addr = 2 * ((y + dst.y as usize) * 1024 + x + (dst.x as usize));
+                self.vram[vram_addr] = pixel_lsb;
+                self.vram[vram_addr + 1] = pixel_msb;
+            }
+        }
+
+
+
     }
     pub fn gp0_image_load(&mut self) {
         let pos = self.gp0_command[1];
@@ -894,6 +1353,19 @@ impl Gpu {
         self.force_set_mask_bit = (val & 1) != 0;
         self.preserve_masked_pixels = (val & 2) != 0;
     }
+
+    pub fn vram_write_color(&mut self, address: usize, color: Colour) {
+        if self.preserve_masked_pixels && (self.vram[address + 1] & 0x80) != 0 {
+            return;
+        }
+        let [lsb, msb] = color.to_le_bytes();
+        let msb = msb | (self.force_set_mask_bit as u8) << 7;
+        self.vram[address] = lsb;
+        self.vram[address + 1] = msb;
+    }
+
+
+
     pub fn gp1(&mut self, val: u32) {
         let opcode = (val >> 24) & 0xff;
         match opcode {
@@ -910,7 +1382,7 @@ impl Gpu {
             _ => panic!("Unhandled GP1 command {:08X} opcode: {:02X}", val, opcode),
         }
     }
-    pub fn gp1_reset(&mut self, val: u32) {
+    pub fn gp1_reset(&mut self, _val: u32) {
         // TODO: also clear the command FIFO when we implement it
         // and texture cache
         self.page_base_x = 0;
@@ -958,10 +1430,8 @@ impl Gpu {
         self.gp0_command.clear();
         self.gp0_words_remaining = 0;
         self.gp0_mode = Gp0Mode::Command;
-        // TODO: should also clear the command FIFO
     }
     pub fn gp1_acknowledge_irq(&mut self, _: u32) {
-        println!("ack irq");
         self.interrupt = false;
     }
     pub fn gp1_display_enable(&mut self, val: u32) {
@@ -1034,11 +1504,17 @@ impl Gpu {
     }
 
     pub fn read(&mut self) -> u32 {
-        if let Gp0Mode::ImageStore { top_left, resolution, current_row, current_col } = self.gp0_mode {
+        if let Gp0Mode::ImageStore {
+            top_left,
+            resolution,
+            current_row,
+            current_col,
+        } = self.gp0_mode
+        {
             let mut current_row = current_row;
             let mut current_col = current_col;
             // 2 halfwords per GP0 read..
-            let mut word  = 0_u32;
+            let mut word = 0_u32;
             for i in 0..2 {
                 // let halfword = (word >> (16 * i)) as u16;
 
@@ -1050,8 +1526,8 @@ impl Gpu {
 
                 let lsb = self.vram[vram_addr];
                 let msb = self.vram[vram_addr + 1];
-                let halfword = u32::from_le_bytes([0, 0, msb, lsb]);
-                word |= halfword << (i*16); // FIXME: smth is wrong...
+                let halfword = u32::from_le_bytes([lsb, msb, 0, 0]);
+                word |= halfword << (i * 16);
 
                 current_col += 1;
                 if current_col == resolution.0 {
@@ -1069,7 +1545,7 @@ impl Gpu {
                     resolution,
                     current_row,
                     current_col,
-            };
+                };
             }
             // println!("transfering 0x{:X}", word);
             // 0xff
@@ -1106,18 +1582,24 @@ impl Gpu {
 
         r |= (dma_request as u32) << 25;
 
-
         // Ready to receive command:
-        let is_idle = self.gp0_words_remaining == 0 && self.gp0_mode == Gp0Mode::Command;
-        r |= (is_idle as u32) << 26;
+        // let is_idle = self.gp0_words_remaining == 0 && self.gp0_mode == Gp0Mode::Command;
+        // r |= (is_idle as u32) << 26;
+         r |= (1 as u32) << 26;
+
         // Ready to send VRAM to CPU
-        if let Gp0Mode::ImageStore{top_left,resolution, current_row, current_col} = self.gp0_mode {
+        // if let Gp0Mode::ImageStore {
+        //     top_left,
+        //     resolution,
+        //     current_row,
+        //     current_col,
+        // } = self.gp0_mode
+        {
             r |= 1 << 27;
         }
         // r |= 0 << 27;
         // ready to receive DMA block
         r |= 1 << 28;
-
 
         let dma_request = match self.dma_direction {
             DmaDirection::Off => 0,
@@ -1130,7 +1612,7 @@ impl Gpu {
 
         // should change depending even/odd/vblank line
         // (0=Even or Vblank, 1=Odd)
-        // In 480-lines mode, bit31 changes per frame. And in 240-lines mode, the bit changes per scanline. 
+        // In 480-lines mode, bit31 changes per frame. And in 240-lines mode, the bit changes per scanline.
         r |= ((!self.even & !self.in_vblank) as u32) << 31;
 
         r
@@ -1357,6 +1839,26 @@ fn ensure_vertex_order2<T: Clone>(vs: &mut [Vertex; 3], attrs: &mut [T; 3]) {
         // std::mem::swap(v0, v1);
     }
 }
+fn ensure_vertex_order3<T: Clone, E: Clone>(
+    vs: &mut [Vertex; 3],
+    attrs: &mut [T; 3],
+    attrs1: &mut [E; 3],
+) {
+    let cross_product_z =
+        (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
+    if cross_product_z < 0 {
+        let tmp = vs[0];
+        vs[0] = vs[1];
+        vs[1] = tmp;
+        let tmp = attrs[0].clone();
+        attrs[0] = attrs[1].clone();
+        attrs[1] = tmp;
+        let tmp = attrs1[0].clone();
+        attrs1[0] = attrs1[1].clone();
+        attrs1[1] = tmp;
+        // std::mem::swap(v0, v1);
+    }
+}
 
 fn ensure_vertex_and_color_order(
     v0: &mut Vertex,
@@ -1427,10 +1929,85 @@ fn compute_normal_coordinates(p: [f64; 3], vs: &[[u16; 2]; 3]) -> [usize; 2] {
 }
 
 #[derive(Clone, Copy)]
-struct Colour {
+pub struct Colour {
     r: u8,
     g: u8,
     b: u8,
+    m: u8,
+}
+
+impl Colour {
+    pub fn blend(&mut self, other: Self) {
+        self.r = (((self.r as u16) * (other.r as u16)) >> 7).min(255) as u8;
+        self.g = (((self.g as u16) * (other.g as u16)) >> 7).min(255) as u8;
+        self.b = (((self.b as u16) * (other.b as u16)) >> 7).min(255) as u8;
+    }
+
+    pub fn blend_with_background(&mut self, bg: Self, semi_transparency: u8) {
+        match semi_transparency {
+            0 => {
+                self.r = (self.r / 2 + bg.r / 2).min(255);
+                self.g = (self.g / 2 + bg.g / 2).min(255);
+                self.b = (self.b / 2 + bg.b / 2).min(255);
+            }
+            1 => {
+                self.r = (self.r + bg.r).min(255);
+                self.g = (self.g + bg.g).min(255);
+                self.b = (self.b + bg.b).min(255);
+            }
+            2 => {
+                self.r = (bg.r - self.r).max(0);
+                self.g = (bg.g - self.g).max(0);
+                self.b = (bg.b - self.b).max(0);
+            }
+            3 => {
+                self.r = (self.r / 4 + bg.r).min(255);
+                self.g = (self.g / 4 + bg.g).min(255);
+                self.b = (self.b / 4 + bg.b).min(255);
+            }
+            _ => unreachable!("wrong semi-transparency coeff"),
+        }
+    }
+
+    pub fn from_5bit(color: u16) -> Self {
+        let [lsb, msb] = color.to_le_bytes();
+        Self::from_bytes(msb, lsb)
+    }
+
+    pub fn from_gp0(color: u32) -> Self {
+        let r = (color & 0xFF) as u8;
+        let g = ((color >> 8) & 0xFF) as u8;
+        let b = ((color >> 16) & 0xFF) as u8;
+        Colour { r, g, b , m: 0}
+    }
+
+    pub fn from_bytes(msb: u8, lsb: u8) -> Self {
+        let pixel = u16::from_le_bytes([lsb, msb]);
+
+        let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
+        let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+        let b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+        let m = (pixel >> 15) as u8;
+        Colour { r, g, b, m}
+    }
+
+    pub fn to_le_bytes(&self) -> [u8; 2] {
+        let r = ((self.r & 0xFF) >> 3) as u16;
+        let g = ((self.g & 0xFF) >> 3) as u16;
+        let b = ((self.b & 0xFF) >> 3) as u16;
+        let m = self.m as u16;
+
+        let pixel = (r | (g << 5) | (b << 10) | (m << 15)) as u16;
+        // let pixel = (self.r as u16) | ((self.g as u16) << 5) | ((self.b as u16) << 10);
+        pixel.to_le_bytes()
+    }
+
+    pub fn apply_dithering(&mut self, x: i32, y: i32) {
+        let offset = DITHER_TABLE[(y & 3) as usize][(x & 3) as usize];
+        self.r =  self.r.saturating_add_signed(offset);
+        self.g = self.g.saturating_add_signed(offset);
+        self.b = self.b.saturating_add_signed(offset);
+    }
 }
 
 fn interpolate_color(lambda: [f64; 3], colors: [Colour; 3]) -> Colour {
@@ -1445,7 +2022,7 @@ fn interpolate_color(lambda: [f64; 3], colors: [Colour; 3]) -> Colour {
     let b =
         (lambda[0] * colors_b[0] + lambda[1] * colors_b[1] + lambda[2] * colors_b[2]).round() as u8;
 
-    Colour { r, g, b }
+    Colour { r, g, b, m: 0 }
 }
 
 const DITHER_TABLE: &[[i8; 4]; 4] = &[
@@ -1461,6 +2038,7 @@ fn apply_dithering(color: Colour, p: Vertex) -> Colour {
         r: color.r.saturating_add_signed(offset),
         g: color.g.saturating_add_signed(offset),
         b: color.b.saturating_add_signed(offset),
+        m: color.m
     }
 }
 const OPAQUE: bool = false;

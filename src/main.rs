@@ -533,7 +533,7 @@ impl State {
         // for _ in 0..120*735 {
         //     state.audio_sender.send([0i16, 0i16]).expect("can't send audio sample");
         // }
-        // State::sideload_exe(&mut state);
+        State::sideload_exe(&mut state);
         state.audio_stream.play()?;
         //
 
@@ -712,7 +712,9 @@ impl State {
                     scheduler::Event::VBlankStart => {
                         // TODO: produce framebuffer here?
                         self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer);
-                        self.cpu.memory_bus.irqctl.status.set_vblank(true);
+                        // if self.cpu.memory_bus.gpu.interrupt == false {
+                            self.cpu.memory_bus.irqctl.status.set_vblank(true);
+                        // }
                         timers::Timers::enter_vsync(&mut self.cpu.memory_bus);
                         self.cpu.memory_bus.gpu.enter_vsync();
                     },
@@ -743,7 +745,6 @@ impl State {
             }
             self.cpu.memory_bus.scheduler.advance(40); // 40???
             cdrom::CDRom::tick(&mut self.cpu.memory_bus);
-            Sio::tick(&mut self.cpu.memory_bus);
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -965,7 +966,7 @@ impl State {
         }
     }
     pub fn update_gamepad(&mut self) {
-        let mut prev_buttons = self.cpu.memory_bus.sio.gamepad.digital_switches;
+        let mut prev_buttons = self.cpu.memory_bus.sio.gamepad1.digital_switches;
         while let Some(Event { id, event, time, .. }) = self.gilrs.next_event() {
             // println!("{:?} New event from {}: {:?}", time, id, event);
             match event {
@@ -1042,7 +1043,7 @@ impl State {
             }
         }
         // println!("0x{:X}", prev_buttons);
-        self.cpu.memory_bus.sio.gamepad.set_buttons(prev_buttons);
+        self.cpu.memory_bus.sio.gamepad1.set_buttons(prev_buttons);
     }
 }
 

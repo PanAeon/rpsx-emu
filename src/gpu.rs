@@ -792,7 +792,8 @@ impl Gpu {
 
                         let background = Colour::from_bytes(background_msb, background_lsb);
 
-                        pixel.blend_with_background(background, semi_transparency);
+                        // TODO: what's going on here?
+                        pixel.blend_with_background(background, self.semi_transparency);
                     }
 
                     self.vram_write_color(vram_addr, pixel);
@@ -1708,18 +1709,66 @@ impl Gpu {
         FIVE_BIT_TO_8BIT[color as usize]
     }
 
-    pub fn render_vram(&self, output_frame_buffer: &mut [Color]) {
-        for y in 0..512 {
-            for x in 0..1024 {
-                let vram_addr = 2 * (1024 * y + x);
-                let pixel = u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
+    // TODO: if self.display_disabled ... return black..
 
-                let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
-                let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-                let b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+    pub fn render_vram(&self, output_frame_buffer: &mut [Color], full_ram: bool) -> (usize, usize) {
+        if full_ram {
+            for y in 0..512 {
+                for x in 0..1024 {
+                    let vram_addr = 2 * (1024 * y + x);
+                    let pixel =
+                        u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
 
-                output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
+                    let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
+                    let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+                    let b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+
+                    output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
+                }
             }
+            (1024, 512)
+        } else {
+            let (sx, sy, width, height, _interlaced) = (
+                self.display_vram_x_start as usize,
+                self.display_vram_y_start as usize,
+                self.hres.into_pixels(),
+                self.vres.into_pixels(),
+                self.interlaced,
+            );
+            match self.display_depth {
+                DisplayDepth::D15Bits => {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let vram_addr = 2 * (1024 * (sy + y) + (sx + x));
+                            let pixel =
+                                u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
+
+                            let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
+                            let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+                            let b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+
+                            output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
+                        }
+                    }
+                },
+                DisplayDepth::D24Bits => {
+                    // FIXME: do me correctly
+                    for y in sy..sy+height {
+                        for x in sx..sx+width {
+                            let vram_addr = 2 * (1024 * y + x);
+                            let pixel =
+                                u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
+
+                            let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
+                            let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+                            let b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+
+                            output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
+                        }
+                    }
+                },
+            };
+            (width,height)
         }
     }
 
@@ -1780,15 +1829,28 @@ enum Field {
 #[derive(Clone, Copy)]
 struct HorizontalRes(u8);
 
+// FIXME: into status is probably wrong...
 impl HorizontalRes {
     fn from_fields(hr1: u8, hr2: u8) -> HorizontalRes {
-        let hr = (hr2 & 1) | ((hr1 & 3) << 1);
+        // let hr = (hr2 & 1) | ((hr1 & 3) << 1);
+        let hr = (hr2 & 1 << 4) | ((hr1 & 3));
         HorizontalRes(hr)
     }
     fn into_status(self) -> u32 {
         let HorizontalRes(hr) = self;
 
         (hr as u32) << 16
+    }
+
+    fn into_pixels(self) -> usize {
+        match self.0 {
+            0 => 256,            // 256
+            1 => 320,             // 320
+            2 => 512,             // 512
+            3 => 640,             // 640
+            4 | 5 | 6 | 7 => 368, // 368
+            _ => panic!("not implemented"),
+        }
     }
 }
 
@@ -1797,6 +1859,15 @@ enum VerticalRes {
     Y240Lines = 0,
     // only for interlaced output
     Y480Lines = 1,
+}
+
+impl VerticalRes {
+    fn into_pixels(self) -> usize {
+        match self {
+            Self::Y240Lines => 240,
+            Self::Y480Lines => 480,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

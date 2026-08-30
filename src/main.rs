@@ -720,7 +720,7 @@ impl State {
                     }
                     scheduler::Event::VBlankStart => {
                         // TODO: produce framebuffer here?
-                        self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer);
+                        self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer, false);
                         // if self.cpu.memory_bus.gpu.interrupt == false {
                             self.cpu.memory_bus.irqctl.status.set_vblank(true);
                         // }

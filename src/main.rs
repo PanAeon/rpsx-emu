@@ -79,32 +79,46 @@ pub const FULLSCREEN_QUAD_CAMERA: Mat4<f32> = mat4_const_from_rows([
     [0.0, 0.0, 0.0, 1.0],
 ]);
 
-struct Camera {
-    // target: cgmath::Point3<f32>,
-    x: f32,
-    y: f32,
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    uv: [f32; 2],
 }
 
-impl Camera {
-    fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
-        return OPENGL_TO_WGPU_MATRIX;
+impl Vertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                }
+            ]
+        }
     }
 }
 
-pub const VERTEX_LAYOUT: wgpu::VertexBufferLayout = wgpu::VertexBufferLayout {
-    array_stride: 0,
-    step_mode: wgpu::VertexStepMode::Vertex,
-    attributes: &[],
-};
+const VERTICES: &[Vertex] = &[
+    Vertex { position: [0.0, 0.0, 0.0], uv: [0.0, 0.0] },
+    Vertex { position: [1.0, 0.0, 0.0], uv: [1.0, 0.0] },
+    Vertex { position: [0.0, 1.0, 0.0], uv: [0.0, 1.0] },
+    Vertex { position: [0.0, 1.0, 0.0], uv: [0.0, 1.0] },
+    Vertex { position: [1.0, 0.0, 0.0], uv: [1.0, 0.0] },
+    Vertex { position: [1.0, 1.0, 0.0], uv: [1.0, 1.0] },
+];
 
-// #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-// #[repr(C)]
-// pub struct TilesetBuffer {
-//     width: u32,
-//     height: u32,
-//     tile_width: u32,
-//     tile_height: u32,
-// }
+
+
+
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct TextureBuffer {
@@ -155,8 +169,9 @@ pub struct State {
     paused: bool,
     gilrs: Gilrs,
     active_gamepad: Option<GamepadId>,
-    audio_tick: usize,
-    // writer: BufWriter<File>
+    output_width: usize,
+    output_height: usize,
+    display_vram: bool
 }
 
 impl State {
@@ -304,12 +319,17 @@ impl State {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex_buffer"),
-            size: 1,
-            usage: wgpu::BufferUsages::VERTEX,
-            mapped_at_creation: false,
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
+        // let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: Some("vertex_buffer"),
+        //     size: 1,
+        //     usage: wgpu::BufferUsages::VERTEX,
+        //     mapped_at_creation: false,
+        // });
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("texture_bind_group_layout"),
@@ -359,7 +379,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader_module,
                 entry_point: Some(&"vert_main"),
-                buffers: &[Some(VERTEX_LAYOUT.clone())],
+                buffers: &[Some(Vertex::desc())],
                 compilation_options: Default::default(),
             },
             primitive: wgpu::PrimitiveState::default(),
@@ -519,7 +539,9 @@ impl State {
             paused: false,
             gilrs: Gilrs::new().unwrap(),
             active_gamepad: None,
-            audio_tick: 0
+            output_width: 0,
+            output_height: 0,
+            display_vram: false,
             // writer,
         };
 
@@ -607,6 +629,7 @@ impl State {
             let surface = self.surface.as_ref().unwrap();
             surface.configure(&self.device, &self.config);
             self.is_surface_configured = true;
+            self.update_vertex_buffer_if_needed(self.output_width, self.output_height, true);
             // self.depth_texture =
             //     texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
@@ -675,6 +698,54 @@ impl State {
         self.cpu.next_pc = initial_pc + 4;
     }
 
+    fn update_vertex_buffer_if_needed(&mut self, width: usize, height: usize, force: bool) {
+        if width == 0 && height == 0 {
+            return;
+        }
+        if !force && width == self.output_width && height == self.output_height {
+            return;
+        }
+
+        let scale = height as f32 / self.config.height as f32;
+        let mut w = width as f32 / scale / self.config.width as f32;
+        let mut h: f32 = 1.0;
+        let mut bx: f32 = (1.0 - w) / 2.0;
+        let mut by: f32 = 0.0;
+
+        if w * width as f32 > self.output_width as f32 {
+            let scale = width as f32 / self.config.width as f32;
+            h = height as f32 / scale / self.config.height as f32;
+            w = 1.0;
+            bx = 0.0;
+            by = (1.0 - h) / 2.0;
+        }
+
+        let u = width as f32 / 1024.0;
+        let v = height as f32 / 512.0;
+
+
+            // self.config.width = width;
+            // self.config.height = height;
+        let vertices: &[Vertex] = &[
+            Vertex { position: [bx, by, 0.0], uv: [0.0, v] },
+            Vertex { position: [bx + w, by, 0.0], uv: [u, v] },
+            Vertex { position: [bx, by + h, 0.0], uv: [0.0, 0.0] },
+
+            Vertex { position: [bx, by + h, 0.0], uv: [0.0, 0.0] },
+            Vertex { position: [bx + w, by, 0.0], uv: [u, v] },
+            Vertex { position: [bx + w, by + h, 0.0], uv: [u, 0.0] },
+            // Vertex { position: [0.0, 0.0, 0.0], uv: [0.0, 0.0] },
+            // Vertex { position: [w, 0.0, 0.0], uv: [u, 0.0] },
+            // Vertex { position: [0.0, 1.0, 0.0], uv: [0.0, v] },
+            // Vertex { position: [0.0, 1.0, 0.0], uv: [0.0, v] },
+            // Vertex { position: [w, 0.0, 0.0], uv: [u, 0.0] },
+            // Vertex { position: [w, 1.0, 0.0], uv: [u, v] },
+        ];
+        self.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
+        self.output_width = width;
+        self.output_height = height;
+    }
+
     fn update(&mut self, event_loop: &ActiveEventLoop) {
         self.update_gamepad();
         if self.paused {
@@ -720,7 +791,8 @@ impl State {
                     }
                     scheduler::Event::VBlankStart => {
                         // TODO: produce framebuffer here?
-                        self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer, false);
+                        let (w, h) = self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer, self.display_vram);
+                        self.update_vertex_buffer_if_needed(w, h, false);
                         // if self.cpu.memory_bus.gpu.interrupt == false {
                             self.cpu.memory_bus.irqctl.status.set_vblank(true);
                         // }
@@ -927,6 +999,7 @@ impl State {
     ) {
         match (code, key_state.is_pressed()) {
             (KeyCode::Space, false) => self.paused = !self.paused,
+            (KeyCode::KeyV, false) => self.display_vram = !self.display_vram,
             // (KeyCode::ArrowRight, true) => self.game_state.camera_pos.0 += 33.0,
             // (KeyCode::ArrowLeft, true) => if self.game_state.camera_pos.0 >= 33.0 {self.game_state.camera_pos.0 -= 33.0 },
             // (KeyCode::ArrowUp, true) => if self.game_state.camera_pos.1 >= 33.0  {self.game_state.camera_pos.1 -= 33.0},

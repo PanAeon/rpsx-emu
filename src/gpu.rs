@@ -1,10 +1,63 @@
-use std::cmp;
+use std::{cmp, rc::Rc, sync::{Arc, Mutex}};
 use wgpu::CurrentSurfaceTexture;
+use crossbeam::channel::{Receiver, Sender};
+use std::thread;
 
 use crate::{
     Color,
     memory_bus::{AccessWidth, Addressable},
 };
+
+pub enum GpuMsg {
+    DataGP0(u32),
+    DataGP1(u32),
+    ReadGP0,
+    ReadStatus,
+    EnterHSync,
+    EnterVSync,
+    ExitHSync,
+    ExitVSync,
+    ProduceFB(Arc<Mutex<[Color]>>, bool)
+}
+
+pub fn build_gpu() -> (Sender<GpuMsg>, Receiver<u32>) {
+    let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(4096);
+    let (from_gpu_sender, from_gpu_receiver) = crossbeam::channel::bounded(4096);
+    
+
+    let handle = thread::spawn(move || {
+        let mut gpu = Gpu::new();
+        loop {
+            let msg = match gpu_receiver.recv() {
+                Ok(msg) => msg,
+                Err(_) => return,
+            };
+            match msg {
+                GpuMsg::DataGP0(data) => gpu.gp0(data),
+                GpuMsg::DataGP1(data) => gpu.gp1(data),
+                GpuMsg::ReadGP0 => match from_gpu_sender.send(gpu.read()) {
+                    Ok(_) => (),
+                    Err(_) => return,
+                },
+                GpuMsg::ReadStatus => match from_gpu_sender.send(gpu.status()) {
+                    Ok(_) => (),
+                    Err(_) => return,
+                },
+                GpuMsg::EnterHSync => gpu.enter_hsync(),
+                GpuMsg::EnterVSync => gpu.enter_vsync(),
+                GpuMsg::ExitHSync => gpu.exit_hsync(),
+                GpuMsg::ExitVSync => gpu.exit_vsync(),
+                GpuMsg::ProduceFB(buffer, is_full_ram) => {
+                    let mut mutex = buffer.lock().unwrap();
+                    let fb = mutex.as_mut();
+                    let (w, h) = gpu.render_vram(fb, is_full_ram);
+                }
+            }
+        }
+    });
+
+    (to_gpu_sender, from_gpu_receiver)
+}
 
 pub struct Gpu {
     // Texture page base X coordinate (4 bits, 64 byte increment)

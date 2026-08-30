@@ -61,6 +61,7 @@ pub struct Gpu {
     even: bool,
     in_hblank: bool,
     in_vblank: bool,
+    read: u32,
 }
 
 impl Gpu {
@@ -111,6 +112,7 @@ impl Gpu {
             even: true,
             in_vblank: false,
             in_hblank: false,
+            read: 0,
         }
     }
 
@@ -187,8 +189,8 @@ impl Gpu {
 
                 0x40 | 0x41 | 0x44 | 0x45 => (3, Self::gp0_line_mono::<OPAQUE>),
                 0x42 | 0x43 | 0x46 | 0x47 => (3, Self::gp0_line_mono::<SEMI_TRANS>),
-                // 0x50 | 0x51 => (4, Self::gp0_line_shaded::<OPAQUE>),
-                // 0x52 | 0x53 => (4, Self::gp0_line_shaded::<SEMI_TRANS>),
+                0x50 | 0x51 => (4, Self::gp0_line_shaded::<OPAQUE>),
+                0x52 | 0x53 => (4, Self::gp0_line_shaded::<SEMI_TRANS>),
                 0x60 => (3, Self::gp0_rect_variable::<OPAQUE>),
                 0x61 => (3, Self::gp0_rect_variable::<OPAQUE>),
                 0x62 => (3, Self::gp0_rect_variable::<SEMI_TRANS>),
@@ -226,6 +228,10 @@ impl Gpu {
                 0x80 => (4, Self::gp0_vram_to_vram_blit),
                 0xA0 => (3, Gpu::gp0_image_load),
                 0xC0 => (3, Gpu::gp0_image_store),
+                0xCA => {
+                    println!("woot?");
+                    (3, Gpu::gp0_image_store)
+                }
                 0xE0 => (1, Gpu::gp0_nop),
                 0xE1 => (1, Gpu::gp0_draw_mode),
                 0xE2 => (1, Gpu::gp0_texture_window),
@@ -329,33 +335,29 @@ impl Gpu {
         }
     }
 
-    pub fn gp0_position(pos: u32) -> [u32; 2] {
-        // Parameter word contains the pixel coordinates.
-        // Vertex coordinates are technically signed 11-bit integers, and the drawing offset needs to be
-        // applied, but let's ignore that for now
-        let x = pos & 0x3FF;
-        let y = (pos >> 16) & 0x1FF;
-
-        [x, y]
-    }
     pub fn gp0_colour(color: u32) -> Colour {
         let r = (color & 0xFF) as u8;
         let g = ((color >> 8) & 0xFF) as u8;
         let b = ((color >> 16) & 0xFF) as u8;
         Colour { r, g, b, m: 0 }
     }
-    pub fn gp0_color(color: u32) -> [u8; 2] {
-        let r = (color & 0xFF) >> 3;
-        let g = ((color >> 8) & 0xFF) >> 3;
-        let b = ((color >> 16) & 0xFf) >> 3;
-
-        let pixel = (r | (g << 5) | (b << 10)) as u16;
-        pixel.to_le_bytes()
-    }
+    // pub fn gp0_color(color: u32) -> [u8; 2] {
+    //     let r = (color & 0xFF) >> 3;
+    //     let g = ((color >> 8) & 0xFF) >> 3;
+    //     let b = ((color >> 16) & 0xFf) >> 3;
+    //
+    //     let pixel = (r | (g << 5) | (b << 10)) as u16;
+    //     pixel.to_le_bytes()
+    // }
     pub fn gp0_vertex(v: u32) -> Vertex {
-        let x = (v & 0x3FF) as i32;
-        let y = ((v >> 16) & 0x1FF) as i32;
-        Vertex { x, y }
+        let x = ((v & 0xFFFF) as i16) << 5 >> 5;
+        let y = (((v >> 16) & 0xFFFF) as i16) << 5 >> 5;
+        // let x = (v & 0x3FF) as u16 as i16 as i32;
+        // let y = ((v >> 16) & 0x1FF)  as u16 as i16 as i32;
+        Vertex {
+            x: x as i32,
+            y: y as i32,
+        }
     }
     pub fn gp0_page_clut(value: u32) -> [u16; 3] {
         let u = value & 0xFF;
@@ -368,7 +370,10 @@ impl Gpu {
     pub fn gp0_fill_rect(&mut self) {
         let color = Colour::from_gp0(self.gp0_command[0]);
         let v = Self::gp0_vertex(self.gp0_command[1]);
-        let Vertex {x: width, y: height} = Self::gp0_vertex(self.gp0_command[2]);
+        let Vertex {
+            x: width,
+            y: height,
+        } = Self::gp0_vertex(self.gp0_command[2]);
 
         let min_x = v.x.max(0) as usize;
         let min_y = v.y.max(0) as usize;
@@ -382,21 +387,17 @@ impl Gpu {
                 let [pixel_lsb, pixel_msb] = color.to_le_bytes();
                 self.vram[vram_addr] = pixel_lsb;
                 self.vram[vram_addr + 1] = pixel_msb;
-
             }
         }
-
-
     }
     pub fn render_triangle_mono<const SEMI_TRANS: bool>(
         &mut self,
         mono: Colour,
-        v0: &mut Vertex,
-        v1: &mut Vertex,
-        v2: Vertex,
+        vs: &mut [Vertex; 3],
     ) {
-        ensure_vertex_order(v0, v1, v2);
+        ensure_vertex_order(vs);
         // let [pixel_lsb, pixel_msb] = color;
+        let [v0, v1, v2] = vs;
 
         // bounding box
         let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
@@ -413,7 +414,7 @@ impl Gpu {
         for y in min_y..max_y {
             for x in min_x..max_x {
                 let p = Vertex { x, y };
-                if is_inside_triangle(p, *v0, *v1, v2) {
+                if is_inside_triangle(p, *v0, *v1, *v2) {
                     let vram_addr = 2 * (y * 1024 + x) as usize;
                     let mut color = mono;
 
@@ -438,14 +439,18 @@ impl Gpu {
 
     pub fn draw_triangle_shaded<const SEMI_TRANS: bool>(
         &mut self,
-        v0: &mut Vertex,
-        v1: &mut Vertex,
-        v2: Vertex,
-        c0: &mut Colour,
-        c1: &mut Colour,
-        c2: Colour,
+        vs: &mut [Vertex; 3],
+        colors: &mut [Colour; 3],
     ) {
-        ensure_vertex_and_color_order(v0, v1, v2, c0, c1, c2);
+        ensure_vertex_order2(vs, colors);
+        vs[0].x += self.drawing_x_offset as i32;
+        vs[0].y += self.drawing_y_offset as i32;
+        vs[1].x += self.drawing_x_offset as i32;
+        vs[1].y += self.drawing_y_offset as i32;
+        vs[2].x += self.drawing_x_offset as i32;
+        vs[2].y += self.drawing_y_offset as i32;
+        let [v0, v1, v2] = vs;
+        let [c0, c1, c2] = colors;
 
         // bounding box
         let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
@@ -462,9 +467,9 @@ impl Gpu {
         for y in min_y..max_y {
             for x in min_x..max_x {
                 let p = Vertex { x, y };
-                if is_inside_triangle(p, *v0, *v1, v2) {
-                    let lambda = compute_barycentric_coordinates(p, *v0, *v1, v2);
-                    let color = interpolate_color(lambda, [*c0, *c1, c2]);
+                if is_inside_triangle(p, *v0, *v1, *v2) {
+                    let lambda = compute_barycentric_coordinates(p, *v0, *v1, *v2);
+                    let color = interpolate_color(lambda, [*c0, *c1, *c2]);
                     let mut color = apply_dithering(color, p);
                     let vram_addr = 2 * (y * 1024 + x) as usize;
 
@@ -511,6 +516,17 @@ impl Gpu {
     // ) {
     //
     // }
+    pub fn compute_texel_offset(&self, x: usize, y: usize) -> [usize; 2] {
+        let x_mask = self.texture_window_x_mask as usize;
+        let y_mask = self.texture_window_y_mask as usize;
+        let x_offset = self.texture_window_x_offset as usize;
+        let y_offset = self.texture_window_y_offset as usize;
+
+        [
+            (x & (!(x_mask * 8))) | ((x_offset & x_mask) * 8),
+            (y & (!(y_mask * 8))) | ((y_offset & y_mask) * 8),
+        ]
+    }
 
     // TODO: dithering? (should't be the case?)
     pub fn draw_triangle_textured<const SEMI_TRANS: bool, const BLEND: bool>(
@@ -522,6 +538,12 @@ impl Gpu {
         uv: &mut [[u16; 2]; 3],
     ) {
         ensure_vertex_order2(vs, uv);
+        vs[0].x += self.drawing_x_offset as i32;
+        vs[0].y += self.drawing_y_offset as i32;
+        vs[1].x += self.drawing_x_offset as i32;
+        vs[1].y += self.drawing_y_offset as i32;
+        vs[2].x += self.drawing_x_offset as i32;
+        vs[2].y += self.drawing_y_offset as i32;
 
         // bounding box
         let mut min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
@@ -539,6 +561,9 @@ impl Gpu {
         let page_base_x = ((page & 0xf) as usize) * 64; // n * 64
         let page_base_y = (((page >> 4) & 1) as usize) * 256; // n * 256
         let semi_transparency = ((page >> 5) & 3) as u8;
+        let dithering = (page >> 9) & 1 != 0;
+        let draw_to_display = (page >> 10) & 1 != 0;
+        let depth = ((page >> 7) & 3) as u8;
 
         let texture_depth = match (page >> 7) & 3 {
             0 => TextureDepth::T4Bit,
@@ -553,7 +578,7 @@ impl Gpu {
         // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
         // 15     Unused (should be 0)                      ;/
         // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
-        let clut_x = ((clut & 0x1f) as usize) * 16;
+        let clut_x = ((clut & 0x3f) as usize) * 16;
         let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
 
         // println!("uv: {:?}", texture_depth);
@@ -564,12 +589,12 @@ impl Gpu {
                 if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
                     let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
                     let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
+                    let [uv_x, uv_y] = self.compute_texel_offset(uv_x, uv_y);
 
                     let (pixel_msb, pixel_lsb) = match texture_depth {
                         TextureDepth::T4Bit => {
-                            // Width 4096...
                             let pixel = self.vram
-                                [page_base_y * 2048 + uv_y * 4096 + 2 * page_base_x + uv_x / 2];
+                                [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x / 2];
                             let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
                             if pixel == 0 {
                                 continue;
@@ -594,13 +619,6 @@ impl Gpu {
                             let pixel_msb =
                                 self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
                             (pixel_msb, pixel_lsb)
-
-                            // let vram_addr = 2 * (y * 1024 + x) as usize;
-
-                            // self.vram[vram_addr] = pixel;
-                            // self.vram[vram_addr + 1] = 0;
-                            // self.vram[vram_addr] = pixel_lsb;
-                            // self.vram[vram_addr + 1] = pixel_msb;
                         }
                         TextureDepth::T15Bit => {
                             let texture_x = page_base_x + uv_x;
@@ -633,7 +651,11 @@ impl Gpu {
 
                         let background = Colour::from_bytes(background_msb, background_lsb);
 
-                        pixel.blend_with_background(background, self.semi_transparency);
+                        pixel.blend_with_background(background, semi_transparency);
+                    }
+
+                    if dithering {
+                        pixel.apply_dithering(x, y);
                     }
 
                     self.vram_write_color(vram_addr, pixel);
@@ -658,6 +680,12 @@ impl Gpu {
         uv: &mut [[u16; 2]; 3],
     ) {
         ensure_vertex_order3(vs, uv, colors);
+        vs[0].x += self.drawing_x_offset as i32;
+        vs[0].y += self.drawing_y_offset as i32;
+        vs[1].x += self.drawing_x_offset as i32;
+        vs[1].y += self.drawing_y_offset as i32;
+        vs[2].x += self.drawing_x_offset as i32;
+        vs[2].y += self.drawing_y_offset as i32;
 
         // bounding box
         let mut min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
@@ -689,7 +717,7 @@ impl Gpu {
         // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
         // 15     Unused (should be 0)                      ;/
         // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
-        let clut_x = ((clut & 0x1f) as usize) * 16;
+        let clut_x = ((clut & 0x3f) as usize) * 16;
         let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
 
         // println!("uv: {:?}", texture_depth);
@@ -700,12 +728,12 @@ impl Gpu {
                 if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
                     let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
                     let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
+                    let [uv_x, uv_y] = self.compute_texel_offset(uv_x, uv_y);
 
                     let (pixel_msb, pixel_lsb) = match texture_depth {
                         TextureDepth::T4Bit => {
-                            // Width 4096...
                             let pixel = self.vram
-                                [page_base_y * 2048 + uv_y * 4096 + 2 * page_base_x + uv_x / 2];
+                                [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x / 2];
                             let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
                             if pixel == 0 {
                                 continue;
@@ -764,7 +792,7 @@ impl Gpu {
 
                         let background = Colour::from_bytes(background_msb, background_lsb);
 
-                        pixel.blend_with_background(background, self.semi_transparency);
+                        pixel.blend_with_background(background, semi_transparency);
                     }
 
                     self.vram_write_color(vram_addr, pixel);
@@ -859,18 +887,18 @@ impl Gpu {
         // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
         // 15     Unused (should be 0)                      ;/
         // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
-        let clut_x = ((clut & 0x1f) as usize) * 16;
+        let clut_x = ((clut & 0x3f) as usize) * 16;
         let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
         //
         for y in min_y..=max_y {
             for x in min_x..=max_x {
                 let uv_x = (uv[0] as i32) + (x as i32) - v.x;
                 let uv_y = (uv[1] as i32) + (y as i32) - v.y;
+                let [uv_x, uv_y] = self.compute_texel_offset(uv_x as usize, uv_y as usize);
                 let (pixel_msb, pixel_lsb) = match texture_depth {
                     TextureDepth::T4Bit => {
-                        // Width 4096...
                         let pixel = self.vram[page_base_y * 2048
-                            + (uv_y as usize) * 4096
+                            + (uv_y as usize) * 2048
                             + 2 * page_base_x
                             + (uv_x as usize) / 2];
                         let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
@@ -959,8 +987,8 @@ impl Gpu {
         let dx = (x1 - x0).abs();
         let dy = -(y1 - y0).abs();
 
-        let sx = if x0 < x1 {1} else {-1};
-        let sy = if y0 < y1 {1} else {-1};
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
 
         let mut err = dx + dy;
         let mut x = x0;
@@ -1001,10 +1029,8 @@ impl Gpu {
                 err += dx;
                 y += sy;
             }
-
         }
     }
-
 
     // TODO: dither!
     pub fn draw_line_shaded<const SEMI_TRANS: bool>(
@@ -1026,8 +1052,8 @@ impl Gpu {
         let dx = (x1 - x0).abs();
         let dy = -(y1 - y0).abs();
 
-        let sx = if x0 < x1 {1} else {-1};
-        let sy = if y0 < y1 {1} else {-1};
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
 
         let mut err = dx + dy;
         let mut x = x0;
@@ -1047,7 +1073,12 @@ impl Gpu {
                     let red = ((color0.r as i32) * inv + (color1.r as i32) * num) / denom;
                     let green = ((color0.g as i32) * inv + (color1.g as i32) * num) / denom;
                     let blue = ((color0.b as i32) * inv + (color1.b as i32) * num) / denom;
-                    Colour { r: red as u8, g: green as u8, b: blue as u8, m: 0 }
+                    Colour {
+                        r: red as u8,
+                        g: green as u8,
+                        b: blue as u8,
+                        m: 0,
+                    }
                 }
             };
             let vram_addr = 2 * (y * 1024 + x) as usize;
@@ -1085,7 +1116,6 @@ impl Gpu {
                 err += dx;
                 y += sy;
             }
-
         }
     }
 
@@ -1095,6 +1125,14 @@ impl Gpu {
         let v1 = Self::gp0_vertex(self.gp0_command[2]);
 
         self.draw_line::<SEMI_TRANS>(v0, v1, color);
+    }
+    pub fn gp0_line_shaded<const SEMI_TRANS: bool>(&mut self) {
+        let color0 = Colour::from_gp0(self.gp0_command[0]);
+        let v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let color1 = Colour::from_gp0(self.gp0_command[2]);
+        let v1 = Self::gp0_vertex(self.gp0_command[3]);
+
+        self.draw_line_shaded::<SEMI_TRANS>(v0, v1, color0, color1);
     }
 
     pub fn gp0_rect_fixed<const SIDE: i32, const SEMI_TRANS: bool>(&mut self) {
@@ -1143,14 +1181,14 @@ impl Gpu {
 
     pub fn gp0_poly_mono<const QUAD: bool, const SEMI_TRANS: bool>(&mut self) {
         let color = Colour::from_gp0(self.gp0_command[0]);
-        let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
-        let mut v1 = Self::gp0_vertex(self.gp0_command[2]);
-        let mut v2 = Self::gp0_vertex(self.gp0_command[3]);
+        let v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let v1 = Self::gp0_vertex(self.gp0_command[2]);
+        let v2 = Self::gp0_vertex(self.gp0_command[3]);
 
-        self.render_triangle_mono::<SEMI_TRANS>(color, &mut v0, &mut v1, v2);
+        self.render_triangle_mono::<SEMI_TRANS>(color, &mut [v0, v1, v2]);
         if QUAD {
             let v3 = Self::gp0_vertex(self.gp0_command[4]);
-            self.render_triangle_mono::<SEMI_TRANS>(color, &mut v1, &mut v2, v3);
+            self.render_triangle_mono::<SEMI_TRANS>(color, &mut [v1, v2, v3]);
         }
     }
 
@@ -1210,17 +1248,17 @@ impl Gpu {
     }
     pub fn gp0_poly_shaded<const QUAD: bool, const SEMI_TRANS: bool>(&mut self) {
         // 6
-        let mut c0 = Self::gp0_colour(self.gp0_command[0]);
-        let mut v0 = Self::gp0_vertex(self.gp0_command[1]);
-        let mut c1 = Self::gp0_colour(self.gp0_command[2]);
-        let mut v1 = Self::gp0_vertex(self.gp0_command[3]);
-        let mut c2 = Self::gp0_colour(self.gp0_command[4]);
-        let mut v2 = Self::gp0_vertex(self.gp0_command[5]);
-        self.draw_triangle_shaded::<SEMI_TRANS>(&mut v0, &mut v1, v2, &mut c0, &mut c1, c2);
+        let c0 = Self::gp0_colour(self.gp0_command[0]);
+        let v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let c1 = Self::gp0_colour(self.gp0_command[2]);
+        let v1 = Self::gp0_vertex(self.gp0_command[3]);
+        let c2 = Self::gp0_colour(self.gp0_command[4]);
+        let v2 = Self::gp0_vertex(self.gp0_command[5]);
+        self.draw_triangle_shaded::<SEMI_TRANS>(&mut [v0, v1, v2], &mut [c0, c1, c2]);
         if QUAD {
             let c3 = Self::gp0_colour(self.gp0_command[6]);
             let v3 = Self::gp0_vertex(self.gp0_command[7]);
-            self.draw_triangle_shaded::<SEMI_TRANS>(&mut v1, &mut v2, v3, &mut c1, &mut c2, c3);
+            self.draw_triangle_shaded::<SEMI_TRANS>(&mut [v1, v2, v3], &mut [c1, c2, c3]);
         }
     }
     pub fn gp0_vram_to_vram_blit(&mut self) {
@@ -1234,16 +1272,13 @@ impl Gpu {
             for x in 0..width {
                 let vram_addr = 2 * ((y + src.y as usize) * 1024 + x + (src.x as usize));
                 let pixel_lsb = self.vram[vram_addr];
-                let pixel_msb = self.vram[vram_addr+1];
+                let pixel_msb = self.vram[vram_addr + 1];
 
                 let vram_addr = 2 * ((y + dst.y as usize) * 1024 + x + (dst.x as usize));
                 self.vram[vram_addr] = pixel_lsb;
                 self.vram[vram_addr + 1] = pixel_msb;
             }
         }
-
-
-
     }
     pub fn gp0_image_load(&mut self) {
         let pos = self.gp0_command[1];
@@ -1364,8 +1399,6 @@ impl Gpu {
         self.vram[address + 1] = msb;
     }
 
-
-
     pub fn gp1(&mut self, val: u32) {
         let opcode = (val >> 24) & 0xff;
         match opcode {
@@ -1467,15 +1500,44 @@ impl Gpu {
 
     pub fn gp1_get_gpu_info(&mut self, val: u32) {
         let v = val % 8;
-        match v {
-            0 | 1 => {} // nop
-            //           02h     = Read Texture Window setting  ;GP0(E2h) ;20bit/MSBs=Nothing
-            //           03h     = Read Draw area top left      ;GP0(E3h) ;19bit/MSBs=Nothing
-            //           04h     = Read Draw area bottom right  ;GP0(E4h) ;19bit/MSBs=Nothing
-            //           05h     = Read Draw offset             ;GP0(E5h) ;22bit
-            6 | 7 => {} // nop
+        self.read = match v {
+            0 | 1 => self.read, // nop
+            2 => self.texture_window_setting(),
+            3 => self.draw_area_top_left(),
+            4 => self.draw_area_bottom_right(),
+            5 => self.draw_offset(),
+            6 | 7 => self.read, // nop
             _ => unreachable!("v could be 0...7"),
         }
+    }
+    pub fn texture_window_setting(&self) -> u32 {
+        let mask_x = self.texture_window_x_mask as u32;
+        let mask_y = self.texture_window_y_mask as u32;
+
+        let offs_x = self.texture_window_x_offset as u32;
+        let offs_y = self.texture_window_y_offset as u32;
+
+        (mask_x & 31) | ((mask_y & 31) << 5) | ((offs_x & 31) << 10) | ((offs_y & 31) << 15)
+    }
+    pub fn draw_offset(&self) -> u32 {
+        let x = self.drawing_x_offset as u32;
+        let y = self.drawing_y_offset as u32;
+
+        ((y & 0x3FF) << 11) | (x & 0x7FF)
+    }
+
+    pub fn draw_area_top_left(&self) -> u32 {
+        let x = self.drawing_area_left as u32;
+        let y = self.drawing_area_top as u32;
+
+        ((y & 0x1FF) << 10) | (x & 0x3FF)
+    }
+
+    pub fn draw_area_bottom_right(&self) -> u32 {
+        let x = self.drawing_area_right as u32;
+        let y = self.drawing_area_bottom as u32;
+
+        ((y & 0x1FF) << 10) | (x & 0x3FF)
     }
 
     pub fn gp1_display_vram_start(&mut self, val: u32) {
@@ -1551,7 +1613,7 @@ impl Gpu {
             // 0xff
             word
         } else {
-            0x0
+            self.read
         }
     }
 
@@ -1585,7 +1647,7 @@ impl Gpu {
         // Ready to receive command:
         // let is_idle = self.gp0_words_remaining == 0 && self.gp0_mode == Gp0Mode::Command;
         // r |= (is_idle as u32) << 26;
-         r |= (1 as u32) << 26;
+        r |= (1 as u32) << 26;
 
         // Ready to send VRAM to CPU
         // if let Gp0Mode::ImageStore {
@@ -1678,16 +1740,16 @@ impl Gpu {
     pub fn exit_hsync(&mut self) {
         self.in_hblank = false;
     }
-    // pub fn get_clock_divider(&self) -> u16 {
-    //     match self.hres.0 {
-    //         256 => 10,
-    //         320 => 8,
-    //         368 => 7,
-    //         512 => 5,
-    //         640 => 4,
-    //         _ => panic!("not implemented")
-    //     }
-    // }
+    pub fn get_clock_divider(&self) -> u16 {
+        match self.hres.0 {
+            0 => 10,            // 256
+            1 => 8,             // 320
+            2 => 7,             // 512
+            3 => 5,             // 640
+            4 | 5 | 6 | 7 => 4, // 368
+            _ => panic!("not implemented"),
+        }
+    }
 }
 
 const FIVE_BIT_TO_8BIT: [u8; 32] = {
@@ -1819,10 +1881,12 @@ pub struct Vertex {
 }
 
 // clockwise order (psx has inverted y coord)
-fn ensure_vertex_order(v0: &mut Vertex, v1: &mut Vertex, v2: Vertex) {
-    let cross_product_z = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+fn ensure_vertex_order(vs: &mut [Vertex; 3]) {
+    let cross_product_z =
+        (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
     if cross_product_z < 0 {
-        std::mem::swap(v0, v1);
+        vs.swap(0, 1);
+        // std::mem::swap(v0, v1);
     }
 }
 
@@ -1860,20 +1924,20 @@ fn ensure_vertex_order3<T: Clone, E: Clone>(
     }
 }
 
-fn ensure_vertex_and_color_order(
-    v0: &mut Vertex,
-    v1: &mut Vertex,
-    v2: Vertex,
-    c0: &mut Colour,
-    c1: &mut Colour,
-    _: Colour,
-) {
-    let cross_product_z = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
-    if cross_product_z < 0 {
-        std::mem::swap(v0, v1);
-        std::mem::swap(c0, c1);
-    }
-}
+// fn ensure_vertex_and_color_order(
+//     v0: &mut Vertex,
+//     v1: &mut Vertex,
+//     v2: Vertex,
+//     c0: &mut Colour,
+//     c1: &mut Colour,
+//     _: Colour,
+// ) {
+//     let cross_product_z = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+//     if cross_product_z < 0 {
+//         std::mem::swap(v0, v1);
+//         std::mem::swap(c0, c1);
+//     }
+// }
 
 fn cross_product_z(v0: Vertex, v1: Vertex, v2: Vertex) -> i32 {
     (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x)
@@ -1978,7 +2042,7 @@ impl Colour {
         let r = (color & 0xFF) as u8;
         let g = ((color >> 8) & 0xFF) as u8;
         let b = ((color >> 16) & 0xFF) as u8;
-        Colour { r, g, b , m: 0}
+        Colour { r, g, b, m: 0 }
     }
 
     pub fn from_bytes(msb: u8, lsb: u8) -> Self {
@@ -1988,7 +2052,7 @@ impl Colour {
         let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
         let b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F);
         let m = (pixel >> 15) as u8;
-        Colour { r, g, b, m}
+        Colour { r, g, b, m }
     }
 
     pub fn to_le_bytes(&self) -> [u8; 2] {
@@ -2004,7 +2068,7 @@ impl Colour {
 
     pub fn apply_dithering(&mut self, x: i32, y: i32) {
         let offset = DITHER_TABLE[(y & 3) as usize][(x & 3) as usize];
-        self.r =  self.r.saturating_add_signed(offset);
+        self.r = self.r.saturating_add_signed(offset);
         self.g = self.g.saturating_add_signed(offset);
         self.b = self.b.saturating_add_signed(offset);
     }
@@ -2038,7 +2102,7 @@ fn apply_dithering(color: Colour, p: Vertex) -> Colour {
         r: color.r.saturating_add_signed(offset),
         g: color.g.saturating_add_signed(offset),
         b: color.b.saturating_add_signed(offset),
-        m: color.m
+        m: color.m,
     }
 }
 const OPAQUE: bool = false;
@@ -2047,3 +2111,24 @@ const BLEND: bool = true;
 const RAW: bool = false;
 const QUAD: bool = true;
 const TRI: bool = false;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Clut {
+    base_x: usize,
+    base_y: usize,
+}
+
+impl Clut {
+    pub fn new(data: u16) -> Self {
+        Self {
+            base_x: ((data & 0x3f) as usize) * 16, // in 16 halfword steps
+            base_y: (((data >> 6) & 0x1ff) as usize), // in 1 line steps
+        }
+    }
+
+    pub fn get_color(&self, gpu: &Gpu, index: u8) -> (u8, u8) {
+        let pixel_lsb = gpu.vram[2 * (self.base_y * 1024 + self.base_x + index as usize)];
+        let pixel_msb = gpu.vram[2 * (self.base_y * 1024 + self.base_x + index as usize) + 1];
+        (pixel_lsb, pixel_msb)
+    }
+}

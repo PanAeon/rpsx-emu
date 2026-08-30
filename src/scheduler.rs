@@ -1,5 +1,7 @@
 use arrayvec::ArrayVec;
 
+use crate::cdrom::ResponseType;
+
 pub const LINE_DURATION: u64 = 2172;
 pub const HBLANK_DURATION: u64 = 390;
 pub const SPU_INTERVAL: u64 = 668;
@@ -12,7 +14,7 @@ pub struct TimerInterrupt {
     pub toggle: bool,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Event {
     VBlankStart,
     VBlankEnd,
@@ -20,7 +22,7 @@ pub enum Event {
     HBlankEnd,
     SpuTick,
     Timer(TimerInterrupt),
-    CDRom(u8, [u8;16],usize),
+    CDRomResultIrq(ResponseType),
     SerialSend,
     DsrOff,
 }

@@ -44,6 +44,7 @@ mod scheduler;
 mod cdrom;
 mod gte;
 mod sio;
+mod mdec;
 
 mod resources;
 
@@ -449,6 +450,7 @@ impl State {
     // let spu = spu::Spu::default();
     let irqctl = irq::InterruptController::default();
     let sio = sio::Sio::new();
+    let mdec = mdec::Mdec::new();
 //
 //     // let bytes = fs::read("/foo/SCPH1001.BIN")?;
 //     for i in (0..40).step_by(4) {
@@ -462,7 +464,7 @@ impl State {
     let mut scheduler = scheduler::Scheduler::default();
     scheduler.init();
     let timers = timers::Timers::new();
-    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers, cdrom, sio);
+    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers, cdrom, sio, mdec);
     let cpu = cpu::Cpu::new(memory_bus);
 
     let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
@@ -614,7 +616,9 @@ impl State {
         // let filename = "/foo/psxtest_cpu.exe";
         // let filename = "/foo/psx/PSX/CPUTest/CPU/LOADSTORE/LB/CPULB.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/MemoryTransfer/MemoryTransfer16BPP.exe";
-        let filename = "/foo/psx/PSX/Cube/Cube.exe";
+        // let filename = "/foo/psx/PSX/Cube/Cube.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT4BPP/RenderTextureRectangleCLUT4BPP.exe";
+        let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT8BPP/RenderTextureRectangleCLUT8BPP.exe";
         let mut file = match std::fs::File::open(filename) {
             Ok(file) => file,
             Err(e) => panic!("Can't load exe {}", e),
@@ -691,11 +695,11 @@ impl State {
                          let sample = self.cpu.memory_bus.spu.mix();
                          self.audio_sender.send(sample).expect("can't send audio sample");
 
-                        self.audio_tick += 1;
-                        if self.audio_tick == 735 {
-                            self.audio_tick = 0;
-                           break;
-                        }
+                        // self.audio_tick += 1;
+                        // if self.audio_tick == 735 {
+                        //     self.audio_tick = 0;
+                        //    break;
+                        // }
 
                         // self.audio_buffer.push(sample);
                         // if self.audio_buffer.len() == 20*735 {
@@ -726,6 +730,7 @@ impl State {
                     scheduler::Event::VBlankEnd => {
                         self.cpu.memory_bus.gpu.exit_vsync();
                         timers::Timers::exit_vsync(&mut self.cpu.memory_bus);
+                        break;
                     },
                     scheduler::Event::HBlankStart => {
                         self.cpu.memory_bus.gpu.enter_hsync();
@@ -735,8 +740,8 @@ impl State {
                         self.cpu.memory_bus.gpu.exit_hsync();
                         timers::Timers::exit_hsync(&mut self.cpu.memory_bus);
                     },
-                    scheduler::Event::CDRom(irq, response,n) => {
-                        cdrom::CDRom::process_interrupt(&mut self.cpu.memory_bus, irq, response, n);
+                    scheduler::Event::CDRomResultIrq(resp) => {
+                        cdrom::CDRom::process_response(&mut self.cpu.memory_bus, resp);
                     },
                     scheduler::Event::Timer(i) => timers::Timers::process_interrupt(&mut self.cpu.memory_bus, i),
                     scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.cpu.memory_bus),
@@ -748,7 +753,6 @@ impl State {
                 self.cpu.check_for_tty_output();
             }
             self.cpu.memory_bus.scheduler.advance(40); // 40???
-            cdrom::CDRom::tick(&mut self.cpu.memory_bus);
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -1005,6 +1009,12 @@ impl State {
                     gilrs::Button::DPadRight => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Right as usize));
                     },
+                    gilrs::Button::LeftTrigger => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::L1 as usize));
+                    }
+                    gilrs::Button::RightTrigger => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::R1 as usize));
+                    }
                     _ => {}, // ignore..
                 },
                 gilrs::EventType::ButtonReleased(button, _) => match button {
@@ -1038,6 +1048,12 @@ impl State {
                     gilrs::Button::DPadRight => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Right as usize));
                     },
+                    gilrs::Button::LeftTrigger => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::L1 as usize);
+                    }
+                    gilrs::Button::RightTrigger => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::R1 as usize);
+                    }
                     _ => {}, // ignore..
                 },
                 gilrs::EventType::AxisChanged(axis, value, _) => {},

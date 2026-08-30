@@ -1,64 +1,208 @@
-use crate::memory_bus::{Addressable, MemoryBus};
+use std::collections::VecDeque;
+use std::{io::Read, ops::Div};
+use std::fs::File;
+
+use arrayvec::ArrayVec;
+
+use crate::{memory_bus::{Addressable, MemoryBus}, scheduler::Event};
+
+const SECTOR_SIZE: usize = 0x930;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackType {
+    Audio,
+    Mode2352,
+}
+
+pub struct TrackIndex {
+    pub id: u8,
+    pub lba: usize,
+}
+
+pub struct Track {
+    pub id: u8,
+    pub track_type: TrackType,
+    pub indexes: Vec<TrackIndex>
+
+}
+
+pub struct Image {
+    read_head: usize,
+    data: Box<[u8]>,
+    tracks: Vec<Track>,
+}
+
+impl Image {
+    pub fn new() -> Self {
+        // let path = "/foo/psx/celeste-collection.bin";
+        let path = "/foo/psx/Crash Bandicoot (USA).bin";
+        // let path = "/foo/psx/Earthworm Jim 2 (Europe) (Track 01).bin";
+        // let path = "/foo/psx/Mortal Kombat Trilogy (USA) (v1.1) (Track 01).bin";
+        // let path = "/foo/psx/Final Fantasy VII (USA) (Disc 1).bin";
+        // let path = "/foo/psx/Mega Man X4 (USA).bin";
+        let mut file = match File::open(path) {
+            Ok(f) => f,
+            Err(_) => panic!("can't read file")
+        };
+        let mut data: Vec<u8> = vec![0u8; 2 * 75 * SECTOR_SIZE];
+        // let mut data: Vec<u8> = vec![];
+        match file.read_to_end(&mut data) {
+            Ok(_) => {},
+            Err(_) => panic!("file read error")
+        };
+        // file.read_to_end(&mut data);
+        Self {
+            read_head: 0,
+            data: data.into_boxed_slice(),
+            tracks: vec![Track {
+                id: 0,
+                track_type: TrackType::Mode2352,
+                indexes: vec![TrackIndex { id: 1, lba: 0}]
+            }]
+        }
+    }
+
+    pub fn seek_location(&mut self, mins: u8, secs: u8, sect: u8) {
+        let sectors = ((mins as usize) * 75 * 60) + ((secs as usize) * 75) + (sect as usize);
+        self.read_head = sectors * SECTOR_SIZE;
+    }
+
+    pub fn advance_sector(&mut self) -> Vec<u8> {
+        let start = self.read_head;
+        self.read_head += SECTOR_SIZE;
+        self.data[start..self.read_head].to_vec()
+    }
+
+    pub fn reset_read_head(&mut self) {
+        self.read_head = SECTOR_SIZE * 75 * 2;
+    }
+
+    pub fn first_track_id(&self) -> u8 {
+        self.tracks.first().expect("first track").id
+    }
+    pub fn last_track_id(&self) -> u8 {
+        self.tracks.first().expect("last track").id
+    }
+
+    pub fn track_mm_ss_ff(&self, track_id: u8) -> (u8, u8, u8) {
+        let track = &self.tracks[track_id as usize - 1];
+
+        let start = if track.indexes[0].id == 1 {
+            track.indexes[0].lba
+        } else {
+            track.indexes[1].lba
+        };
+        self.mm_ss_ff(start)
+    }
+
+    pub fn last_track_end(&self) -> (u8, u8, u8) {
+        self.mm_ss_ff(self.data.len())
+    }
+
+    pub fn mm_ss_ff(&self, read_head: usize) -> (u8, u8, u8) {
+        let sectors = read_head / SECTOR_SIZE;
+        let secs = sectors / 75;
+        let sect = sectors % 75;
+        let mins = secs / 60;
+        let secs = mins % 60;
+        (mins as u8, secs as u8, sect as u8)
+    }
+}
 
 
-#[derive(Default)]
 pub struct CDRom {
+    status: Status,
     hsts: HSTS,
     adpctl: ADPCTL,
     hintmsk: HINTMSK,
     mode: Mode,
-    param_buffer: [u8;16],
-    param_idx: usize,
-    response_buffer: [u8;16],
-    response_idx: usize,
-    response_read_idx: usize,
-    shell_open: bool,
+    parameters: ArrayVec<u8,1024>,
+    // param_buffer: [u8;16],
+    // param_idx: usize,
+    results: ArrayVec<u8, 16>,
+    // response_buffer: [u8;16],
+    // response_idx: usize,
+    // response_read_idx: usize,
+    // shell_open: bool,
     hinsts: HINTSTS,
-    pending_interrupt: Option<(u64, u8, [u8;16], usize)>
+    hcpctl: HCHPCTL,
+    disk: Option<Image>,
+    data_buffer: VecDeque<u8>,
+    audio_muted: bool,
+    l2l_volume: u8,
+    l2r_volume: u8,
+    r2l_volume: u8,
+    r2r_volume: u8,
+    // pending_interrupt: Option<(u64, u8, [u8;16], usize)>
+}
+
+impl Default for CDRom {
+    fn default() -> Self {
+        Self {
+            status: Status(0),
+            hsts: HSTS(0x18),
+            adpctl: ADPCTL::default(),
+            hintmsk: HINTMSK::default(),
+            mode: Mode::default(),
+            parameters: ArrayVec::default(),
+            results: ArrayVec::default(),
+            hinsts: HINTSTS::default(),
+            hcpctl: HCHPCTL::default(),
+            disk: Some(Image::new()),
+            data_buffer: VecDeque::default(),
+            audio_muted: false,
+            l2l_volume: 0,
+            l2r_volume: 0,
+            r2l_volume: 0,
+            r2r_volume: 0,
+        }
+    }
 }
 
 impl CDRom {
-    pub fn store<T:Addressable>(&mut self, offset: u32, value: T) {
+    pub fn store<T:Addressable>(memory_bus: &mut MemoryBus, offset: u32, value: T) {
+        let cdrom = &mut memory_bus.cdrom;
         let width = T::width() as usize;
         if width != 1 {
             panic!("cdrom store width other than 1 byte not impl, got: {:?}", T::width());
         }
         let v = value.as_u32() as u8;
-        match self.hsts.current_bank() {
+        // println!("cdrom store {:X} {:X}",offset, value.as_u32());
+        match cdrom.hsts.current_bank() {
             0 => {
                 match offset {
-                  0 => self.hsts.set_current_bank(v),
-                  1 => self.process_command(v),
-                  2 => self.push_parameter(v),
-                  // 3 => {},
-                  _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(),self.hsts.current_bank(),  offset, v),
+                  0 => cdrom.hsts.set_current_bank(v),
+                  1 => Self::process_command(memory_bus, v),
+                  2 => cdrom.push_parameter(v),
+                  3 => cdrom.hcpctl.0 = v,
+                  _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(),cdrom.hsts.current_bank(),  offset, v),
                 }
             },
             1 => {
                 match offset {
-                  0 => self.hsts.set_current_bank(v),
+                  0 => cdrom.hsts.set_current_bank(v),
                   // 1 => {}, // wrdata
-                  2 => {self.hintmsk.0 = v; self.hintmsk.set_reserved(0xFF);},
-                  3 => self.set_hclrctl(v),
-                  _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(),self.hsts.current_bank(),  offset, v),
+                  2 => {cdrom.hintmsk.0 = v; cdrom.hintmsk.set_reserved(0xFF);},
+                  3 => cdrom.set_hclrctl(v),
+                  _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(),cdrom.hsts.current_bank(),  offset, v),
                 }
             },
             2 => {
                 match offset {
-                  0 => self.hsts.set_current_bank(v),
+                  0 => cdrom.hsts.set_current_bank(v),
                   // 1 => {},
-                  // 2 => {},
-                  // 3 => {},
-                  _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(),self.hsts.current_bank(),  offset, v),
+                  2 => {cdrom.l2l_volume = v.as_u32() as u8;},
+                  3 => {cdrom.l2r_volume = v.as_u32() as u8;},
+                  _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(),cdrom.hsts.current_bank(),  offset, v),
                 }
             },
             3 => {
                 match offset {
-                  0 => self.hsts.set_current_bank(v),
-                  // 1 => {},
-                  // 2 => {},
-                  3 => self.adpctl.0 = v,
-                  _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(), self.hsts.current_bank(), offset, v),
+                  0 => cdrom.hsts.set_current_bank(v),
+                  1 => {cdrom.r2r_volume = v.as_u32() as u8;},
+                  2 => {cdrom.r2l_volume = v.as_u32() as u8;},
+                  3 => cdrom.adpctl.0 = v,
+                  _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(), cdrom.hsts.current_bank(), offset, v),
                 }
             },
             _ => unreachable!("banks are 0..4"),
@@ -66,150 +210,335 @@ impl CDRom {
     }
 
     pub fn push_parameter(&mut self, v: u8) {
-        if self.param_idx < 16 {
-            self.param_buffer[self.param_idx] = v;
-            self.param_idx += 1;
+        if self.parameters.is_empty() {
+            self.hsts.set_param_empty(true);
+        }
+        self.parameters.push(v);
+
+        if self.parameters.is_full() {
+            self.hsts.set_param_write_ready(false);
         }
     }
 
-    pub fn set_int(&mut self, interrupt: u8) {
-        self.hinsts.set_intsts(interrupt);
-    }
-    pub fn push_status(&mut self) {
-        self.response_read_idx = 0;
-        self.response_idx = 1;
-        let status = self.get_status();
-        self.response_buffer[0] = status.0;
-        self.hsts.set_result_read_ready(true);
-        // TODO: populate status
-    }
 
-    pub fn get_status(&self) -> Status {
-        let mut status = Status(0);
-        status.set_shell_open(self.shell_open);
-        status
-    }
 
-    pub fn process_command(&mut self, cmd: u8) {
-        match cmd {
-            0x00 => self.cmd_unused(),
-            0x01 => self.cmd_nop(),
-            0x0a => self.cmd_init(),
-            0x19 => self.cmd_test(),
-            0x1a => self.cmd_getid(),
-            0x13 => self.cmd_gettn(),
+    pub fn process_command(memory_bus: &mut MemoryBus, cmd: u8) {
+        let cdrom = &mut memory_bus.cdrom;
+        if let 0x08..=0x09 = cmd {
+            memory_bus.scheduler.unschedule(&Event::CDRomResultIrq(ResponseType::INT1));
+        }
+        let response = match cmd {
+            0x00 => cdrom.cmd_unused(),
+            0x01 => cdrom.cmd_nop(),
+            0x02 => cdrom.cmd_setloc(),
+            0x06 => cdrom.cmd_readn(),
+            0x08 => cdrom.cmd_stop(),
+            0x09 => cdrom.cmd_pause(),
+            0x0a => cdrom.cmd_init(),
+            0x0c => cdrom.cmd_demute(),
+            0x0e => cdrom.cmd_setmode(),
+            0x14 => cdrom.cmd_gettd(),
+            0x15 => cdrom.cmd_seekl(),
+            0x19 => cdrom.cmd_test(),
+            0x1a => cdrom.cmd_getid(),
+            0x1b => cdrom.cmd_reads(),
+            0x13 => cdrom.cmd_gettn(),
 
             _ => panic!("Unhandled command: 0x{:x}", cmd),
+        };
+        cdrom.parameters.clear();
+        cdrom.hsts.set_result_read_ready(true);
+        cdrom.hsts.set_param_write_ready(true);
+        response.responses.into_iter().for_each(|(res_type, delay)| {
+            let repeat = match res_type {
+                ResponseType::INT1 => Some(cdrom.mode.speed().transform(AVG_RATE_INT1)),
+                _ => None
+            };
+            memory_bus.scheduler.schedule(Event::CDRomResultIrq(res_type), delay, repeat);
+        });
+    }
+    pub fn cmd_unused(&mut self) -> CommandResponse {
+        // self.set_int(5);
+        // self.response_idx = 2;
+        // self.response_buffer[0] = 0x11;
+        // self.response_buffer[1] = 0x40;
+        // self.response_read_idx = 0;
+        // self.hsts.set_result_read_ready(true);
+        CommandResponse::new().int5([0x11, 0x40], AVG_1ST_RESP_GENERIC)
+    }
+
+    pub fn invalid(&mut self) -> CommandResponse {
+        error_response(&self.status, 0x40, "invalid cmd")
+    }
+
+    pub fn cmd_nop(&mut self) -> CommandResponse { // nop, clears tray open bit, response: INT3: status
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "nop takes no params")
         }
-    }
-    pub fn cmd_unused(&mut self) {
-        self.set_int(5);
-        self.response_idx = 2;
-        self.response_buffer[0] = 0x11;
-        self.response_buffer[1] = 0x40;
-        self.response_read_idx = 0;
-        self.hsts.set_result_read_ready(true);
+        CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
     }
 
-    pub fn cmd_nop(&mut self) { // nop, clears tray open bit, response: INT3: status
-        self.shell_open = false;
-        self.set_int(3);
-        self.push_status();
-    }
-
-    pub fn cmd_test(&mut self) {
-        let subcmd = self.param_buffer[0];
+    pub fn cmd_test(&mut self) -> CommandResponse {
+        if self.parameters.len() != 1 {
+            return error_response(&self.status, 0x20, "test expects one param")
+        }
+        println!("CDROM command test");
+        let subcmd = self.parameters[0];
         match subcmd {
             0x20 => { // INT3(yy,mm,dd,ver) ;Get cdrom BIOS date/version (yy,mm,dd,ver) INT3(yy,mm,dd,ver) ;Get cdrom BIOS date/version (yy,mm,dd,ver)
-                self.set_int(3);
-                self.response_idx = 4;
-                self.response_buffer[0] = 149;
-                self.response_buffer[1] = 5;
-                self.response_buffer[2] = 22;
-                self.response_buffer[3] = 193;
-                self.response_read_idx = 0;
-                self.hsts.set_result_read_ready(true);
+                println!("cdrom get version");
+                CommandResponse::new().int3([149, 5, 22, 193], AVG_1ST_RESP_GENERIC)
             },
             _ => panic!("Unhandled 0x19 (test) subcmd: 0x{:x}", subcmd)
         }
     }
+    pub fn cmd_setloc(&mut self) -> CommandResponse {
+        if self.parameters.len() != 3 {
+            return error_response(&self.status, 0x20, "setloc takes 3 params")
+        }
+        let amm_opt = from_bcd(self.parameters[0]);
+        let ass_opt = from_bcd(self.parameters[1]).filter(|x| *x < 60);
+        let asect_opt = from_bcd(self.parameters[2]).filter(|x| *x < 75);
+        let Some(amm) = amm_opt else {
+            return error_response(&self.status, 0x10, "amm is incorrect");
+        };
+        let Some(ass) = ass_opt else {
+            return error_response(&self.status, 0x10, "ass is incorrect");
+        };
+        let Some(asect) = asect_opt else {
+            return error_response(&self.status, 0x10, "asect is incorrect");
+        };
 
-    pub fn cmd_getid(&mut self) {
-        self.set_int(3);
-        self.push_status();
+        self.disk.as_mut().expect("set_loc disk present")
+            .seek_location(amm, ass, asect);
+        // self.disk
+
+        println!("CDROM setloc amm: {amm} ass: {ass} asect: {asect}");
+        CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
+    }
+
+    pub fn cmd_seekl(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "seekl doesn't takes parameters")
+        }
+
+        let mut seeking = self.status.clone();
+        seeking.set_seek(true);
+        self.status.set_seek(false);
+        println!("CDROM seekl");
+        CommandResponse::new()
+            .int3([seeking.0], AVG_1ST_RESP_GENERIC)
+            .int2([self.status.0], AVG_1ST_RESP_GENERIC + AVG_2ND_RESP_SEEKL)
+    }
+
+    pub fn cmd_setmode(&mut self) -> CommandResponse {
+        if self.parameters.len() != 1 {
+            return error_response(&self.status, 0x20, "setmode takes 1 params")
+        }
+        let mode = self.parameters[0];
+
+        self.mode.0 = mode;
+
+        println!("CDROM setmode 0x{:X}, {:?}", mode, self.mode);
+
+
+
+        CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
+    }
+
+    pub fn cmd_readn(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "readn doesn't takes parameters")
+        }
+        println!("CDROM readn!!");
+
+        self.status.set_read(true);
+        CommandResponse::new()
+            .int3([self.status.0], AVG_1ST_RESP_GENERIC)
+            .int1( AVG_1ST_RESP_GENERIC + self.mode.speed().transform(AVG_RATE_INT1))
+    }
+
+    pub fn cmd_reads(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "reads doesn't takes parameters")
+        }
+        println!("CDROM reads!!");
+
+        self.status.set_read(true);
+        CommandResponse::new()
+            .int3([self.status.0], AVG_1ST_RESP_GENERIC)
+            .int1( AVG_1ST_RESP_GENERIC + self.mode.speed().transform(AVG_RATE_INT1))
+    }
+
+    pub fn cmd_demute(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "pause doesn't takes parameters")
+        }
+        // turn on audio streaming to spu
+        println!("CDROM demute");
+        self.audio_muted = false;
+
+        CommandResponse::new()
+            .int3([self.status.0], AVG_1ST_RESP_GENERIC)
+    }
+    pub fn cmd_pause(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "pause doesn't takes parameters")
+        }
+        println!("CDROM pause!!");
+
+        let current = self.status.clone();
+        self.status.set_read(false);
+        CommandResponse::new()
+            .int3([current.0], AVG_1ST_RESP_GENERIC)
+            .int2([self.status.0], AVG_1ST_RESP_GENERIC + AVG_2ND_RESP_PAUSE)
+    }
+
+    pub fn cmd_getid(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "get id takes no params")
+        }
+        println!("CDROM get id");
+        // self.set_int(3);
+        // self.push_status();
         // then we need to schedule response...
-        let mut data = [0;16];
-        data[0] = 0x8;
-        data[1] = 0x40;
-        self.pending_interrupt = Some((0x4A00, 0x5, data, 8)); // it works!!!! (no-cd)
+        // let mut data = [0;16];
+        // data[0] = 0x8;
+        // data[1] = 0x40;
+        // self.pending_interrupt = Some((0x4A00, 0x5, data, 8)); // it works!!!! (no-cd)
+        CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
+            .int2([0x02, 0x00, 0x20, 0x00, b'S', b'C', b'E', b'A'], 
+                AVG_1ST_RESP_GENERIC + AVG_2ND_RESP_GET_ID)
 
-        // let mut data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x41,0,0,0,0,0,0,0,0]; // na
-        // let mut data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x45,0,0,0,0,0,0,0,0]; //eu
+        // let  data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x41,0,0,0,0,0,0,0,0]; // na
+        // let  data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x45,0,0,0,0,0,0,0,0]; //eu
         //
         // self.pending_interrupt = Some((0x4A00, 0x3, data, 8));
     }
 
-    pub fn cmd_init(&mut self) {
+    pub fn cmd_init(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "init takes no params")
+        }
+        println!("CDROM init");
         // Sets mode=20h, activates drive motor, Standby, abort all commands.
         self.mode.0 = 0x20;
-        self.set_int(3);
-        self.push_status();
-        let mut data = [0;16];
-        data[0] = self.get_status().0;
-        self.pending_interrupt = Some((0x4A00, 0x2, data, 1));
+
+        if let Some(disk) = self.disk.as_mut() {
+            disk.reset_read_head();
+        }
+
+        // reset read head?
+
+        let old_status = self.status.clone();
+        self.status.set_spindle_motor(true);
+        CommandResponse::new().int3([old_status.0], AVG_1ST_RESP_GENERIC)
+            .int2([self.status.0], AVG_1ST_RESP_GENERIC + AVG_2ND_RESP_SEEKL)
     }
-    pub fn cmd_gettn(&mut self) { // int3 bcd
-        // let mut data = [0;16];
-        self.set_int(3);
-        self.response_buffer[0] = self.get_status().0;
-        self.response_buffer[1] = 0x1;
-        self.response_buffer[2] = 0x1;
-        self.response_idx = 3;
-        self.response_read_idx = 0;
-        self.hsts.set_result_read_ready(true);
-        // self.pending_interrupt = Some((0x4A00, 0x3, data, 3));
+    pub fn cmd_gettn(&mut self) -> CommandResponse { // int3 bcd
+        println!("cdrom gettn");
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "gettn takes no params")
+        }
+        let disk = self.disk.as_ref().expect("gettn inserted disk");
+
+        let first_track = to_bcd(disk.first_track_id()).expect("valid bcd");
+        let last_track = to_bcd(disk.last_track_id()).expect("valid bcd");
+        CommandResponse::new().int3([self.status.0, first_track, last_track], AVG_1ST_RESP_INIT)
+    }
+    pub fn cmd_gettd(&mut self) -> CommandResponse { // int3 bcd
+        println!("cdrom gettd");
+        if self.parameters.len() != 1 {
+            return error_response(&self.status, 0x20, "gettd takes 1 param")
+        }
+        let disk = self.disk.as_ref().expect("gettd inserted disk");
+        let last_track = disk.last_track_id();
+
+        let Some(track) = from_bcd(self.parameters[0]).filter(|&x| x <= last_track) else {
+            return error_response(&self.status, 0x10, "gettd wrong track bcd")
+        };
+
+        let (mm, ss, _) = if track != 0 {
+            disk.track_mm_ss_ff(track)
+        } else {
+            disk.last_track_end()
+        };
+        // error_response(&self.status, 0x10, "gettd not impl")
+        CommandResponse::new().int3([self.status.0, to_bcd(mm).expect("bcd"), to_bcd(ss).expect("bcd")], AVG_1ST_RESP_INIT)
+        // unimplemented!()
+    }
+
+    pub fn cmd_stop(&mut self) -> CommandResponse { // int3 bcd
+        println!("cdrom stop");
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "gettn takes no params")
+        }
+
+        if let Some(disk) = self.disk.as_mut() {
+            disk.reset_read_head();
+        }
+
+        self.status.set_read(false);
+        let first_status = self.status.clone();
+        self.status.set_spindle_motor(false);
+
+        let delay = match self.mode.speed() {
+            Speed::Normal => 0x0D3_8ACA,
+            Speed::Double => 0x18A_6076,
+        };
+        CommandResponse::new().int3([first_status.0], AVG_1ST_RESP_INIT)
+            .int2([self.status.0], delay)
     }
 
 
 
+
+    pub fn read_sector_data<T:Addressable>(&mut self) -> T {
+        let mut bytes = [0_u8;4];
+        (0..T::width() as usize).for_each(|i|{
+            bytes[i] = self.pop_from_data_buffer();
+        });
+
+        T::from_u32(u32::from_le_bytes(bytes))
+    }
     pub fn load<T:Addressable>(&mut self, offset: u32) -> T {
         let width = T::width() as usize;
+        // println!("cdrom load {}",offset);
+        if offset == 2 {
+            return self.read_sector_data::<T>();
+        }
         if width != 1 {
-            panic!("cdrom store width other than 1 byte not impl, got: {:?}", T::width());
+            panic!("cdrom load width other than 1 byte not impl, got: {:?}", T::width());
         }
         let result = match self.hsts.current_bank() {
             0 => {
                 match offset {
-                  0 => self.getHSTS(),
+                  0 => self.get_hsts(),
                   1 => self.read_response(),
-                  // 2 => {},
-                  // 3 => {},
+                  3 => self.hintmsk.0,
                   _  => panic!("Unhandled cdrom load {:?}, bank: {}, offset: {:08x}", T::width(),self.hsts.current_bank(),  offset),
                 }
             },
             1 => {
                 match offset {
-                  0 => self.getHSTS(),
+                  0 => self.get_hsts(),
                   1 => self.read_response(),
-                  // 2 => {},
                   3 => self.hinsts.0,
                   _  => panic!("Unhandled cdrom load {:?}, bank: {}, offset: {:08x}", T::width(),self.hsts.current_bank(),  offset),
                 }
             },
             2 => {
                 match offset {
-                  0 => self.getHSTS(),
+                  0 => self.get_hsts(),
                   1 => self.read_response(),
-                  // 2 => {},
-                  // 3 => {},
+                  3 => self.hintmsk.0,
                   _  => panic!("Unhandled cdrom load {:?}, bank: {}, offset: {:08x}", T::width(),self.hsts.current_bank(),  offset),
                 }
             },
             3 => {
                 match offset {
-                  0 => self.getHSTS(),
+                  0 => self.get_hsts(),
                   1 => self.read_response(),
-                  // 2 => {},
                   3 => self.hinsts.0,
                   _  => panic!("Unhandled cdrom load {:?}, bank: {}, offset: {:08x}", T::width(),self.hsts.current_bank(),  offset),
                 }
@@ -218,22 +547,21 @@ impl CDRom {
         };
         T::from_u32(result as u32)
     }
-    pub fn getHSTS(&mut self) -> u8 {
-        self.hsts.set_param_write_ready(self.param_idx < 16);
-        self.hsts.set_param_empty(self.param_idx == 0);
+    pub fn get_hsts(&mut self) -> u8 {
         self.hsts.0
     }
 
     pub fn set_hclrctl(&mut self, v: u8) {
-        let x = HCLRCTL(v);
-        self.hinsts.set_intsts(self.hinsts.intsts() & !x.clrint());
-        self.hinsts.set_bfempt(self.hinsts.bfempt() & !x.clrbfempt());
-        self.hinsts.set_bfwrdy(self.hinsts.bfwrdy() & !x.clrbfwrdy());
+        self.hinsts.0 &= !(v & 0x1F);
+        let _ = HCLRCTL(v);
+        // self.hinsts.set_intsts(self.hinsts.intsts() & !x.clrint());
+        // self.hinsts.set_bfempt(self.hinsts.bfempt() & !x.clrbfempt());
+        // self.hinsts.set_bfwrdy(self.hinsts.bfwrdy() & !x.clrbfwrdy());
     // enbfempt, _: 3;
     // enbfwrdy, _: 4;
-        if x.clrint() != 0 || x.clrbfempt() || x.clrbfwrdy() {
-            self.param_idx = 0;
-        }
+        // if x.clrint() != 0 || x.clrbfempt() || x.clrbfwrdy() {
+        //     self.param_idx = 0;
+        // }
 //         Setting bits 0-4 resets the corresponding flags in HINTSTS; 
         //         normally one should write 07h to reset the HC05 interrupt flags, or 1Fh to acknowledge all IRQs. 
         //         Acknowledging individual HC05 flags (e.g. writing 01h to change INT3 to INT2) is possible, 
@@ -244,43 +572,114 @@ impl CDRom {
     }
 
     pub fn read_response(&mut self) -> u8 {
-        let mut res = self.response_buffer[self.response_read_idx];
-        self.response_read_idx += 1;
-        if self.response_read_idx == self.response_idx {
+        let val = self.results.remove(0);
+        if self.results.is_empty() {
             self.hsts.set_result_read_ready(false);
         }
-        if self.response_read_idx >= self.response_idx {
-            res = 0;
-        }
-        if self.response_read_idx == 16 {
-            self.response_read_idx = 0;
-        }
-        res
-        // clears RSLRRDY
+        // if self.response_read_idx >= self.response_idx {
+        //     res = 0;
+        // }
+        // if self.response_read_idx == 16 {
+        //     self.response_read_idx = 0;
+        // }
+        val
     }
 
-    pub fn tick(memory_bus: &mut MemoryBus) {
-        if   (memory_bus.cdrom.hintmsk.enint() & memory_bus.cdrom.hinsts.intsts() != 0) 
-          || (memory_bus.cdrom.hintmsk.enbfwrdy() & memory_bus.cdrom.hinsts.bfwrdy())
-          || (memory_bus.cdrom.hintmsk.enbfempt() & memory_bus.cdrom.hinsts.bfempt()) {
-            memory_bus.irqctl.status.set_cdrom(true);
+    pub fn pop_from_data_buffer(&mut self) -> u8 {
+        let data = self.data_buffer.pop_front().unwrap_or_else(|| {
+            println!("CDROM warn! pop from empty buffer");
+            0
+        });
+        if self.data_buffer.is_empty() {
+            self.hsts.set_data_request(false);
         }
-        if let Some((cycles, irq, data, len)) = memory_bus.cdrom.pending_interrupt {
-            memory_bus.scheduler.schedule(crate::scheduler::Event::CDRom(irq, data, len), cycles, None); // TODO: ????
-            memory_bus.cdrom.pending_interrupt = None;
-        }
+        data
     }
 
-    pub fn process_interrupt(memory_bus: &mut MemoryBus, irq: u8, response: [u8; 16], n: usize) {
-        memory_bus.cdrom.hinsts.set_intsts(irq);
-        memory_bus.cdrom.response_idx = n;
-        memory_bus.cdrom.response_read_idx = 0; // TODO: clear ready bit...
-        memory_bus.cdrom.response_buffer.copy_from_slice(&response);
-        memory_bus.cdrom.hsts.set_result_read_ready(true);
+    pub fn process_sector(&mut self, sector: Vec<u8>) -> bool {
+        if self.status.playing() {
+            assert!(self.mode.cdda());
+            // push to audio buffer
+            return true;
+        }
 
-        if   memory_bus.cdrom.hintmsk.enint() & memory_bus.cdrom.hinsts.intsts() != 0 {
+        let sector_mode = sector[0xF];
+        let file = sector[0x10];
+        let channel = sector[0x11];
+        let submode = sector[0x12];
+        let is_realtime_audio = (submode & 0x44) == 0x44;
+        let is_form2 = submode & (1 << 5) != 0;
+        let mode = &self.mode;
+
+        if sector_mode == 2 {
+
+        }
+
+        let mut sector_data = VecDeque::from(sector);
+        match mode.sector_size() {
+            SectorSize::DataOnly => {
+                sector_data.drain(0x818..);
+                sector_data.drain(..0x18);
+            },
+            SectorSize::WholeSectorExceptSyncBytes => {
+                sector_data.drain(..0xC);
+            },
+        }
+        self.data_buffer = sector_data;
+        self.hsts.set_data_request(true);
+        false
+    }
+
+    // pub fn tick(memory_bus: &mut MemoryBus) {
+    //     if   (memory_bus.cdrom.hintmsk.enint() & memory_bus.cdrom.hinsts.intsts() != 0) 
+    //       || (memory_bus.cdrom.hintmsk.enbfwrdy() & memory_bus.cdrom.hinsts.bfwrdy())
+    //       || (memory_bus.cdrom.hintmsk.enbfempt() & memory_bus.cdrom.hinsts.bfempt()) {
+    //         memory_bus.irqctl.status.set_cdrom(true);
+    //     }
+    //     if let Some((cycles, irq, data, len)) = memory_bus.cdrom.pending_interrupt {
+    //         memory_bus.scheduler.schedule(crate::scheduler::Event::CDRom(irq, data, len), cycles, None); // TODO: ????
+    //         memory_bus.cdrom.pending_interrupt = None;
+    //     }
+    // }
+
+    pub fn process_response(memory_bus: &mut MemoryBus, response: ResponseType) {
+        let cdrom = &mut memory_bus.cdrom;
+
+        let irq = u8::from(&response);
+        cdrom.results.clear();
+
+        match response {
+            ResponseType::INT5(xs) => cdrom.results.extend(xs),
+            ResponseType::INT2(xs) => cdrom.results.extend(xs),
+            ResponseType::INT3(xs) => cdrom.results.extend(xs),
+            ResponseType::INT1 => {
+                // assert disk is inserted..
+                let sector = cdrom.disk.as_mut().expect("int1 disk present")
+                    .advance_sector();
+                let is_audio = cdrom.process_sector(sector);
+
+                if is_audio {
+                    return;
+                }
+                // advance sector and process audio if available
+                // if sector is not audio
+                cdrom.results.push(cdrom.status.0);
+
+            }
+        };
+
+        cdrom.hinsts.set_intsts(irq);
+        cdrom.hsts.set_result_read_ready(true);
+        if cdrom.hintmsk.enint() & cdrom.hinsts.intsts() != 0 {
             memory_bus.irqctl.status.set_cdrom(true);
         }
+
+        // memory_bus.cdrom.hinsts.set_intsts(irq);
+        // memory_bus.cdrom.response_idx = n;
+        // memory_bus.cdrom.response_read_idx = 0; // TODO: clear ready bit...
+        // memory_bus.cdrom.response_buffer.copy_from_slice(&response);
+        // memory_bus.cdrom.hsts.set_result_read_ready(true);
+        //
         
     }
 }
@@ -352,9 +751,9 @@ bitfield::bitfield! {
   // 1  Spindle Motor (0=Motor off, or in spin-up phase, 1=Motor on)
   // 0  Error         Invalid Command/parameters (followed by Error Byte)
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Clone, Copy)]
     pub struct Status(u8);
-    _, set_play: 7;
+    playing, set_play: 7;
     _, set_seek: 6;
     _, set_read: 5;
     _, set_shell_open: 4;
@@ -364,12 +763,64 @@ bitfield::bitfield! {
     _, set_error: 0;
 }
 
+impl Status {
+    pub fn with_error(&self) -> u8 {
+        self.0 | 0x01
+    }
+}
+
 bitfield::bitfield! {
     #[derive(Default)]
     pub struct HINTSTS(u8);
     intsts, set_intsts: 2,0;
     bfempt, set_bfempt: 3;
     bfwrdy, set_bfwrdy: 4;
+}
+
+
+#[derive(Clone, Copy, Debug)]
+pub enum Speed {
+    Normal = 0,
+    Double = 1
+}
+
+impl From<u8> for Speed {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Speed::Normal,
+            1 => Speed::Double,
+            _ => unreachable!("speed could be 0/1")
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SectorSize {
+    DataOnly = 0,
+    WholeSectorExceptSyncBytes = 1
+}
+
+impl From<u8> for SectorSize {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => SectorSize::DataOnly,
+            1 => SectorSize::WholeSectorExceptSyncBytes,
+            _ => unreachable!("sector size could be 0/1")
+        }
+    }
+}
+
+
+impl Speed {
+    fn transform<T>(self, value: T) -> T
+      where 
+        T: Div<u64, Output = T>,
+    {
+        match self {
+            Speed::Normal => value,
+            Speed::Double => value / 2
+        }
+    }
 }
   // 7   Speed       (0=Normal speed, 1=Double speed)
   // 6   XA-ADPCM    (0=Off, 1=Send XA-ADPCM sectors to SPU Audio Input)
@@ -383,14 +834,23 @@ bitfield::bitfield! {
 bitfield::bitfield! {
     #[derive(Default)]
     pub struct Mode(u8);
-    speed, _: 7;
+    impl Debug;
+    into Speed, speed, _: 7,7;
     xa_adpcm, _: 6;
-    sector_size, _: 5;
+    into SectorSize, sector_size, _: 5,5;
     ignore_bit, _: 4;
     xa_filter, _: 3;
     report, _: 2;
     auto_pause, _: 1;
     cdda, _: 0;
+}
+
+bitfield::bitfield! {
+    #[derive(Default)]
+    pub struct HCHPCTL(u8);
+    smen, _: 5;
+    bfwr, _: 6;
+    bfrd, _: 7;
 }
 
 pub const AVG_1ST_RESP_GENERIC: u64 = 0xC4E1;
@@ -402,3 +862,79 @@ pub const AVG_2ND_RESP_SEEKL: u64 = 0x6E1CD;
 
 pub const AVG_RATE_INT1: u64 = 0x6E1CD;
 
+#[derive(PartialEq, Eq, Clone)]
+pub enum ResponseType {
+    INT3(ArrayVec<u8, 8>),
+    INT2(ArrayVec<u8, 8>),
+    INT5([u8;2]),
+    INT1
+}
+
+impl From<&ResponseType> for u8 {
+    fn from(value: &ResponseType) -> Self {
+        match value {
+            ResponseType::INT1 => 1,
+            ResponseType::INT2(_) => 2,
+            ResponseType::INT3(_) => 3,
+            ResponseType::INT5(_) => 5,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct CommandResponse {
+    pub responses: ArrayVec<(ResponseType,u64), 2>
+}
+
+impl CommandResponse {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn int3<const N: usize>(mut self, data: [u8;N], delay: u64) -> Self {
+        let arr = ArrayVec::from_iter(data);
+        self.responses.push((ResponseType::INT3(arr), delay));
+        self
+    }
+
+    pub fn int2<const N: usize>(mut self, data: [u8;N], delay: u64) -> Self {
+        let arr = ArrayVec::from_iter(data);
+        self.responses.push((ResponseType::INT2(arr), delay));
+        self
+    }
+
+    pub fn int5(mut self, data: [u8;2], delay: u64) -> Self {
+        self.responses.push((ResponseType::INT5(data), delay));
+        self
+    }
+
+    pub fn int1(mut self, delay: u64) -> Self {
+        self.responses.push((ResponseType::INT1, delay));
+        self
+    }
+}
+
+fn error_response(stat: &Status, err_byte: u8, err: &str) -> CommandResponse {
+    println!("CDROM error {}", err);
+    CommandResponse::new().int5([stat.with_error(), err_byte], AVG_1ST_RESP_INIT)
+}
+
+const fn from_bcd(val: u8) -> Option<u8> {
+    let ones = val & 0xF;
+    let tens = val >> 4;
+    if tens <= 9 && ones <= 9 {
+        Some(10 * tens + ones)
+    } else {
+        None
+    }
+}
+
+const fn to_bcd(val: u8) -> Option<u8> {
+    if val > 99 {
+        return None;
+    }
+
+    let tens = val / 10;
+    let ones = val % 10;
+
+    Some((tens << 4) | ones)
+}

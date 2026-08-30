@@ -587,6 +587,7 @@ impl Spu {
                     0x8 => return T::from_u32(self.voices[i].envelope.reg.0),
                     0xA => return T::from_u32((self.voices[i].envelope.reg.0 >> 16) as u32),
                     0xC => return T::from_u32(self.voices[i].envelope.level as u32),
+                    0xE => return T::from_u32(self.voices[i].repeat_address as u32), // self.voices[ip
 
                     _ => panic!(
                         "unhandled {:?} load from voices, offset: 0x{:X}",
@@ -595,15 +596,85 @@ impl Spu {
                     ),
                 }
             }
+            0x1F801E00..=0x1F801E5F => {
+                let addr = address - 0x1F801E00;
+                let i = (addr / 0x4) as usize;
+                let r = addr % 0x4;
+                match r {
+                    // current volume internal registers
+                    0 => return T::from_u32(self.voices[i].volume_left as u32),
+                    2 => return T::from_u32(self.voices[i].volume_right as u32),
+                    _ => panic!(
+                        "unhandled {:?} load from voices, offset: 0x{:X}",
+                        T::width(),
+                        r
+                    ),
+                }
+            },
+
+            0x1F801D80 => return T::from_u32(self.main_volume_left as u32),
+            0x1F801D82 => return T::from_u32(self.main_volume_right as u32),
+            0x1F801D84 => return T::from_u32(self.reverb.output_volume_left as u32),
+            0x1F801D86 => return T::from_u32(self.reverb.output_volume_right as u32),
+            0x1F801D90 => return T::from_u32(self.get_pitch_modulation_enabled::<0>() as u32),
+            0x1F801D92 => return T::from_u32(self.get_pitch_modulation_enabled::<1>() as u32),
+            0x1F801D94 => return T::from_u32(self.get_noise_mode_enabled::<0>() as u32),
+            0x1F801D96 => return T::from_u32(self.get_noise_mode_enabled::<1>() as u32),
+            0x1F801D98 => return T::from_u32(self.get_reverb_mode::<0>() as u32),
+            0x1F801D9A => return T::from_u32(self.get_reverb_mode::<1>() as u32),
+            // 0x1F801DA2 => return T::from_u32(self.reverb.set_base_address(val),
+            0x1F801DA4 => return T::from_u32(self.memory.irq_address as u32),
+            0x1F801DB0 => return T::from_u32(self.cd_audio_input_volume_left as u32), //  (for normal CD-DA, and compressed XA-ADPCM)
+            0x1F801DB2 => return T::from_u32(self.cd_audio_input_volume_right as u32), //  (for normal CD-DA, and compressed XA-ADPCM)
+            0x1F801DB4 => return T::from_u32(self.external_audio_input_volume_left as u32),
+            0x1F801DB6 => return T::from_u32(self.external_audio_input_volume_right as u32),
+            0x1F801DC0 => return T::from_u32(self.reverb.d_apf1 as u32),
+            0x1F801DC2 => return T::from_u32(self.reverb.d_apf2 as u32),
+            // 0x1F801DA8 => return T::from_u32(self.push_to_data_transfer_fifo(val),
+            0x1F801DC4 => return T::from_u32(self.reverb.v_iir as u32),
+            0x1F801DC6 => return T::from_u32(self.reverb.v_comb1 as u32),
+            0x1F801DC8 => return T::from_u32(self.reverb.v_comb2 as u32),
+            0x1F801DCA => return T::from_u32(self.reverb.v_comb3 as u32),
+            0x1F801DCC => return T::from_u32(self.reverb.v_comb4 as u32),
+            0x1f801DCE => return T::from_u32(self.reverb.v_wall as u32),
+            0x1f801DD0 => return T::from_u32(self.reverb.v_apf1 as u32),
+            0x1f801DD2 => return T::from_u32(self.reverb.v_apf2 as u32),
+            0x1f801DD4 => return T::from_u32(self.reverb.ml_same as u32),
+            0x1f801DD6 => return T::from_u32(self.reverb.mr_same as u32),
+            0x1f801DD8 => return T::from_u32(self.reverb.ml_comb1 as u32),
+            0x1f801DDA => return T::from_u32(self.reverb.mr_comb1 as u32),
+            0x1f801DDC => return T::from_u32(self.reverb.ml_comb2 as u32),
+            0x1f801DDE => return T::from_u32(self.reverb.mr_comb2 as u32),
+            0x1f801DE0 => return T::from_u32(self.reverb.dl_same as u32),
+            0x1f801DE2 => return T::from_u32(self.reverb.dr_same as u32),
+            0x1f801DE4 => return T::from_u32(self.reverb.ml_diff as u32),
+            0x1f801DE6 => return T::from_u32(self.reverb.mr_diff as u32),
+            0x1f801DE8 => return T::from_u32(self.reverb.ml_comb3 as u32),
+            0x1f801DEA => return T::from_u32(self.reverb.mr_comb3 as u32),
+            0x1f801DEC => return T::from_u32(self.reverb.ml_comb4 as u32),
+            0x1f801DEE => return T::from_u32(self.reverb.mr_comb4 as u32),
+            0x1f801DF0 => return T::from_u32(self.reverb.dl_diff as u32),
+            0x1f801DF2 => return T::from_u32(self.reverb.dr_diff as u32),
+            0x1f801DF4 => return T::from_u32(self.reverb.ml_apf1 as u32),
+            0x1f801DF6 => return T::from_u32(self.reverb.mr_apf1 as u32),
+            0x1f801DF8 => return T::from_u32(self.reverb.ml_apf2 as u32),
+            0x1f801DFA => return T::from_u32(self.reverb.mr_apf2 as u32),
+            0x1f801DFC => return T::from_u32(self.reverb.input_volume_left as u32),
+            0x1f801DFE => return T::from_u32(self.reverb.input_volume_right as u32),
+
+
             0x1F801D88 => return T::from_u32(self.voice_key_on),
             0x1F801D8A => return T::from_u32(self.voice_key_on >> 16),
             0x1F801D8C => return T::from_u32(self.voice_key_off),
             0x1F801D8E => return T::from_u32(self.voice_key_off >> 16),
+            0x1F801DA6 => return T::from_u32(self.data_transfer_address as u32),
             0x1F801D9C => return T::from_u32(self.endx::<0>() as u32),
             0x1F801D9E => return T::from_u32(self.endx::<1>() as u32),
             0x1F801DAA => return T::from_u32(self.control.0 as u32),
             0x1F801DAE => return T::from_u32(self.spu_stat()),
             0x1F801DAC => return T::from_u32(self.get_sound_ram_data_transfer_control() as u32),
+            0x1F801DB8 => return T::from_u32(self.main_volume_left as u32),
+            0x1F801DBA => return T::from_u32(self.main_volume_right as u32),
             _ => panic!(
                 "unhandled {:?} load from spu, address: 0x{:X}",
                 T::width(),
@@ -667,6 +738,8 @@ impl Spu {
             0x1F801D96 => self.noise_mode_enable::<1>(val),
             0x1F801D98 => self.reverb_mode::<0>(val),
             0x1F801D9A => self.reverb_mode::<1>(val),
+            0x1F801D9C => {},// ro
+            0x1F801D9E => {},// ro
             0x1F801DA2 => self.reverb.set_base_address(val),
             0x1F801DA4 => self.memory.irq_address = (val as usize) * 8,
             0x1F801DB0 => self.cd_audio_input_volume_left = val as i16, //  (for normal CD-DA, and compressed XA-ADPCM)
@@ -786,6 +859,17 @@ impl Spu {
         }
     }
 
+    pub fn get_pitch_modulation_enabled<const HIGH: usize>(&self) -> u16 {
+        let mut v = 0_u16;
+        let base = HIGH * 16;
+        let count = if HIGH == 1 { 8 } else { 15 };
+        let start = if HIGH == 1 { 0 } else { 1 };
+        for i in start..count {
+            v |= (self.voices[base + i].modulation_enabled as u16) << i;
+        }
+        v
+    }
+
     pub fn noise_mode_enable<const HIGH: usize>(&mut self, value: u16) {
         let mut v = value;
         let base = HIGH * 16;
@@ -796,7 +880,16 @@ impl Spu {
         }
     }
 
-    // TODO: R/W
+    pub fn get_noise_mode_enabled<const HIGH: usize>(&self) -> u16 {
+        let mut v = 0;
+        let base = HIGH * 16;
+        let count = if HIGH == 1 { 8 } else { 16 };
+        for i in 0..count {
+            v |= (self.voices[base + i].noise_mode as u16) << i;
+        }
+        v
+    }
+
     pub fn reverb_mode<const HIGH: usize>(&mut self, value: u16) {
         let mut v = value;
         let base = HIGH * 16;
@@ -805,6 +898,15 @@ impl Spu {
             self.voices[base + i].reverb_mode = v & 0x1 == 1;
             v = v >> 1;
         }
+    }
+    pub fn get_reverb_mode<const HIGH: usize>(&self) -> u16 {
+        let mut v = 0_u16;
+        let base = HIGH * 16;
+        let count = if HIGH == 1 { 8 } else { 16 };
+        for i in 0..count {
+            v |= (self.voices[base + i].reverb_mode as u16) << i;
+        }
+        v
     }
 
     /*

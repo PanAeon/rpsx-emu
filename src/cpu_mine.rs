@@ -106,7 +106,7 @@ impl Cpu {
             load: (0, 0),
             branch: false,
             delay_slot: false,
-            gte: Gte::new(),
+            gte: Gte::default(),
         }
     }
     pub fn run_next_instruction(&mut self) {
@@ -792,10 +792,10 @@ impl Cpu {
         self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
-    // load word to coprocessor 2
+    // load word in coprocessor 2
     pub fn op_lwc2(&mut self, instr: Instruction) {
         let i = instr.imm_se();
-        let cop_r = instr.rt() as u8;
+        let cop_r = instr.rt();
         let s = instr.rs();
 
         let addr = self.reg(s).wrapping_add(i);
@@ -822,21 +822,8 @@ impl Cpu {
         self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
-    // store word from comprocessor 2
     pub fn op_swc2(&mut self, instr: Instruction) {
-        let i = instr.imm_se();
-        let cop_r = instr.rt() as u8;
-        let s = instr.rs();
-
-        let addr = self.reg(s).wrapping_add(i);
-        let v = self.gte.data(cop_r);
-        self.delayed_load();
-
-        if addr.is_multiple_of(4) {
-            self.store::<u32>(addr, v);
-        } else {
-            self.exception(Exception::LoadAddressError);
-        }
+        println!("unhandled GTE SWC: {:x}", instr.0);
     }
     pub fn op_swc3(&mut self, _: Instruction) {
         self.delayed_load();
@@ -865,7 +852,6 @@ impl Cpu {
 
         if cop_opcode & 0x10 != 0 {
             // GTE command
-            self.delayed_load();
             self.gte.command(instr.0);
         } else {
             match cop_opcode {
@@ -873,6 +859,8 @@ impl Cpu {
                 0b00010 => self.op_cfc2(instr),
                 0b00100 => self.op_mtc2(instr),
                 0b00110 => self.op_ctc2(instr),
+                // 0b00100 => self.op_mtc2(instr),
+                // 0b10000 => self.op_rfe(instr),
                 _ => panic!(
                     "Unhandled cop2 instruction:  {:02X} ({:b})",
                     instr.cop_opcode(),
@@ -886,12 +874,10 @@ impl Cpu {
     }
     // move from coprocessor 2 data register
     pub fn op_mfc2(&mut self, instr: Instruction) {
-        let cpu_r = instr.rt();
-        let cop_r = instr.rd() as u8;
-
-        let v = self.gte.data(cop_r);
-
-        self.delayed_load_chain(cpu_r, v);
+        let v = match instr.rd() {
+            x => {println!("op_mfc2: unhandled read from the cop2r{} register", x); 0_u32},
+        };
+        self.delayed_load_chain(instr.rt(), v);
     }
     // move from coprocessor 2 control register
     pub fn op_cfc2(&mut self, instr: Instruction) {
@@ -900,14 +886,7 @@ impl Cpu {
     }
     // move to coprocessor 2 data register
     pub fn op_mtc2(&mut self, instr: Instruction) {
-        let cpu_r = instr.rt();
-        let cop_r = instr.rd();
-
-        let v = self.reg(cpu_r);
-
-        self.delayed_load();
-
-        self.gte.set_data(cop_r as u8, v);
+        println!("unhandled op_mtc2")
 
     }
     // move to coprocessor 2 control register
@@ -919,7 +898,7 @@ impl Cpu {
 
         self.delayed_load();
 
-        self.gte.set_control(cop_r as u8, v);
+        self.gte.set_control(cop_r, v);
 
     }
     pub fn op_mfc0(&mut self, instr: Instruction) {

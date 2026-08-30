@@ -1,3 +1,5 @@
+use crate::{irq::InterruptController, memory_bus::MemoryBus};
+
 
 pub struct Dma {
     control: u32,
@@ -48,16 +50,36 @@ impl Dma {
         r
     }
 
-    pub fn set_interrupt(&mut self, val: u32) {
-        self.irq_dummy = (val & 0x3f) as u8;
+    pub fn set_interrupt(memory_bus: &mut MemoryBus, val: u32) {
+        let prev_irq = memory_bus.dma.irq();
+        memory_bus.dma.irq_dummy = (val & 0x3f) as u8;
 
-        self.force_irq = (val >> 15) & 1 != 0;
-        self.channel_irq_enable = ((val >> 16) & 0x7f) as u8;
-        self.irq_enable = (val >> 23) & 1 != 0;
+        memory_bus.dma.force_irq = (val >> 15) & 1 != 0;
+        memory_bus.dma.channel_irq_enable = ((val >> 16) & 0x7f) as u8;
+        memory_bus.dma.irq_enable = (val >> 23) & 1 != 0;
 
         // writing 1 to a flag resets it
         let ack = ((val >> 24) & 0x3f) as u8;
-        self.channel_irq_flags &= !ack; // TODO: (and, additionally, IRQ3 (DMA) must be acknowledged via Port 1F801070h).
+        memory_bus.dma.channel_irq_flags &= !ack; // TODO: (and, additionally, IRQ3 (DMA) must be acknowledged via Port 1F801070h).
+
+        if !prev_irq && memory_bus.dma.irq() {
+            memory_bus.irqctl.status.set_dma(true);
+        }
+    }
+
+    pub fn done(memory_bus: &mut MemoryBus, port: Port) {
+        memory_bus.dma.channel_mut(port).done();
+
+        let prev_irq = memory_bus.dma.irq();
+
+        let it_en = memory_bus.dma.channel_irq_enable & (1 << (port as usize));
+
+        memory_bus.dma.channel_irq_flags |= it_en;
+
+        if !prev_irq && memory_bus.dma.irq() {
+            memory_bus.irqctl.status.set_dma(true);
+        }
+
     }
 
     pub fn channel(&self, port: Port) -> Channel {
@@ -200,7 +222,6 @@ impl Channel {
     }
 
     pub fn done(&mut self) {
-        // FIXME: set other fields, particularly interrupts
         self.enable = false;
         self.trigger = false;
     }

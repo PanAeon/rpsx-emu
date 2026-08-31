@@ -100,10 +100,7 @@ pub struct MemoryBus {
     pub cdrom: CDRom,
     pub sio: Sio,
     pub mdec: Mdec,
-    pub gpu_sender: Sender<GpuMsg>,
-    pub gpu_receiver: Receiver<u32>,
-    pub gpu_ctrl_receiver: Receiver<(usize, usize)>,
-    pub gpu_handle: JoinHandle<()>
+    pub gpu: Gpu,
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -120,10 +117,10 @@ pub fn mask_region(addr: u32) -> u32 {
 
 impl MemoryBus {
     pub fn new(bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, spu: Spu, irqctl: InterruptController,
-        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu_sender: Sender<GpuMsg>, gpu_receiver: Receiver<u32>, gpu_ctrl_receiver: Receiver<(usize, usize)>, gpu_handle: JoinHandle<()>) -> MemoryBus {
+        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu) -> MemoryBus {
     
         MemoryBus { bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
-        gpu_sender, gpu_receiver, gpu_ctrl_receiver, gpu_handle}
+        gpu}
     }
     pub fn load<T:Addressable>(&mut self, addr: u32) -> T {
         let address = mask_region(addr);
@@ -134,8 +131,8 @@ impl MemoryBus {
             return self.ram.load(offset);
         }
         if let Some(offset) = map::GPU.contains(address) {
-            return gpu::load(self, offset);
-            // return  self.gpu.load(offset)
+            // return gpu::load(self, offset);
+            return  self.gpu.load(offset)
         }
         if let Some(_) = map::SPU.contains(address) {
             // return crate::spu::load(&self.spu, addr);
@@ -201,8 +198,8 @@ impl MemoryBus {
             return self.ram.store(offset, value);
         }
         if let Some(offset) = map::GPU.contains(address) {
-            gpu::store(self, offset, value);
-            // self.gpu.store(offset, value);
+            // gpu::store(self, offset, value);
+            self.gpu.store(offset, value);
             // println!("GPU store32 {:x} = {:x}", offset, value);
             return;
         }
@@ -375,8 +372,8 @@ impl MemoryBus {
                     let src_word = self.ram.load::<u32>(cur_addr);
                     match port {
                         Port::Gpu => {
-                            gpu::store(self, 0, src_word);
-                            // self.gpu.gp0(src_word);
+                            // gpu::store(self, 0, src_word);
+                            self.gpu.gp0(src_word);
                             // println!("GPU data: {:08x}", src_word);
                         },
                         Port::Spu => {
@@ -396,8 +393,8 @@ impl MemoryBus {
                             _ => addr.wrapping_sub(4) & 0x1fffff, // pointer to the prev entry
                         },
                         Port::Gpu => {
-                            gpu::load(self, 0)
-                            // self.gpu.read()
+                            // gpu::load(self, 0)
+                            self.gpu.read()
                         },
                         Port::CdRom => {
                             self.cdrom.load::<u32>(2)
@@ -440,8 +437,8 @@ impl MemoryBus {
                 let command = self.ram.load::<u32>(addr);
 
                 // println!("GPU command: {:08X}", command);
-                gpu::store(self, 0, command);
-                // self.gpu.gp0(command);
+                // gpu::store(self, 0, command);
+                self.gpu.gp0(command);
                 remsz -= 1;
             }
             if header & 0x800000 != 0 {

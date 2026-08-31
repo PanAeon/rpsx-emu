@@ -46,6 +46,7 @@ mod cdrom;
 mod gte;
 mod sio;
 mod mdec;
+mod renderer;
 
 mod resources;
 
@@ -485,9 +486,9 @@ impl State {
     let mut scheduler = scheduler::Scheduler::default();
     scheduler.init();
     let timers = timers::Timers::new();
-    let (gpu_sender, gpu_receiver, gpu_ctrl_receiver, gpu_handle) = gpu::build_gpu();
+    let gpu = gpu::Gpu::new();
     let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
-        gpu_sender, gpu_receiver, gpu_ctrl_receiver, gpu_handle);
+        gpu);
     let cpu = cpu::Cpu::new(memory_bus);
 
 
@@ -803,32 +804,32 @@ impl State {
                         // }
                     }
                     scheduler::Event::VBlankStart => {
-                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
-                        // let (w, h) = self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer, self.display_vram);
-                        // self.update_vertex_buffer_if_needed(w, h, false);
+                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
+                        let (w, h) = self.cpu.memory_bus.gpu.render_fb(&mut self.framebuffer, self.display_vram);
+                        self.update_vertex_buffer_if_needed(w, h, false);
                         // if self.cpu.memory_bus.gpu.interrupt == false {
                             self.cpu.memory_bus.irqctl.status.set_vblank(true);
                         // }
                         timers::Timers::enter_vsync(&mut self.cpu.memory_bus);
-                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
-                        // self.cpu.memory_bus.gpu.enter_vsync();
+                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
+                        self.cpu.memory_bus.gpu.enter_vsync();
                     },
                     scheduler::Event::VBlankEnd => {
-                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
-                        // self.cpu.memory_bus.gpu.exit_vsync();
+                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
+                        self.cpu.memory_bus.gpu.exit_vsync();
                         timers::Timers::exit_vsync(&mut self.cpu.memory_bus);
-                        let (w, h) = self.cpu.memory_bus.gpu_ctrl_receiver.recv().expect("ok");
-                        self.update_vertex_buffer_if_needed(w, h, false);
+                        // let (w, h) = self.cpu.memory_bus.gpu_ctrl_receiver.recv().expect("ok");
+                        // self.update_vertex_buffer_if_needed(w, h, false);
                         break;
                     },
                     scheduler::Event::HBlankStart => {
-                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
-                        // self.cpu.memory_bus.gpu.enter_hsync();
+                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
+                        self.cpu.memory_bus.gpu.enter_hsync();
                         timers::Timers::enter_hsync(&mut self.cpu.memory_bus);
                     },
                     scheduler::Event::HBlankEnd => {
-                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
-                        // self.cpu.memory_bus.gpu.exit_hsync();
+                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
+                        self.cpu.memory_bus.gpu.exit_hsync();
                         timers::Timers::exit_hsync(&mut self.cpu.memory_bus);
                     },
                     scheduler::Event::CDRomResultIrq(resp) => {

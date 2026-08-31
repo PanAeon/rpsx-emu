@@ -221,6 +221,11 @@ impl Gpu {
                 0x03 => (1, Gpu::gp0_nop),
                 0x04..=0x1E => (1, Gpu::gp0_nop),
 
+                0x48 | 0x4C => { self.gp0_mode = Gp0Mode::Polyline(false); (2, Self::gp0_line_mono_poly::<OPAQUE>)},
+                0x4A | 0x4E => { self.gp0_mode = Gp0Mode::Polyline(false); (2, Self::gp0_line_mono_poly::<SEMI_TRANS>)},
+                0x58 | 0x5C => { self.gp0_mode = Gp0Mode::Polyline(true); (2, Self::gp0_line_shaded_poly::<OPAQUE>)},
+                0x5A | 0x5E => { self.gp0_mode = Gp0Mode::Polyline(true); (2, Self::gp0_line_shaded_poly::<SEMI_TRANS>)},
+
                 0x20 => (4, Self::gp0_poly_mono::<TRI, OPAQUE>),
                 0x21 => (4, Self::gp0_poly_mono::<TRI, OPAQUE>),
                 0x22 => (4, Self::gp0_poly_mono::<TRI, SEMI_TRANS>),
@@ -366,8 +371,47 @@ impl Gpu {
                 // self.gp0_words_remaining = 0;
                 // self.gp0_mode = Gp0Mode::Command;
                 // self.gp0(val);
-            }
+            },
+            Gp0Mode::Polyline(color) => {
+                if (val & 0xF000F000) == 0x50005000 {
+                    self.gp0_mode = Gp0Mode::Command;
+                    self.gp0_words_remaining = 0;
+                    return;
+                }
+                self.gp0_command.push_word(val);
+                if color {
+                    if self.gp0_command.len == 4 {
+                       (self.gp0_command_method)(self);
+                        self.gp0_command.buffer[0] = self.gp0_command[2];
+                        self.gp0_command.buffer[1] = self.gp0_command[3];
+                        self.gp0_command.len = self.gp0_command.len - 2;
+                    }
+                } else {
+                    if self.gp0_command.len == 3 {
+                       (self.gp0_command_method)(self);
+                        self.gp0_command.buffer[1] = self.gp0_command[2];
+                        self.gp0_command.len = self.gp0_command.len - 1;
+                    }
+                }
+                self.gp0_words_remaining = 2;
+            },
         }
+    }
+
+    pub fn gp0_line_mono_poly<const SEMI_TRANS: bool>(&mut self) {
+        let color = Colour::from_gp0(self.gp0_command[0]);
+        let v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let v1 = Self::gp0_vertex(self.gp0_command[2]);
+
+        self.draw_line::<SEMI_TRANS>(v0, v1, color);
+    }
+    pub fn gp0_line_shaded_poly<const SEMI_TRANS: bool>(&mut self) {
+        let color0 = Colour::from_gp0(self.gp0_command[0]);
+        let v0 = Self::gp0_vertex(self.gp0_command[1]);
+        let color1 = Colour::from_gp0(self.gp0_command[2]);
+        let v1 = Self::gp0_vertex(self.gp0_command[3]);
+
+        self.draw_line_shaded::<SEMI_TRANS>(v0, v1, color0, color1);
     }
 
     pub fn process_cpu_to_vram_copy(
@@ -630,31 +674,8 @@ impl Gpu {
         min_y = cmp::max(min_y, self.drawing_area_top as i32);
         max_y = cmp::min(max_y, self.drawing_area_bottom as i32);
 
-        // textpage stuff
-        let page_base_x = ((page & 0xf) as usize) * 64; // n * 64
-        let page_base_y = (((page >> 4) & 1) as usize) * 256; // n * 256
-        let semi_transparency = ((page >> 5) & 3) as u8;
-        let dithering = (page >> 9) & 1 != 0;
-        let draw_to_display = (page >> 10) & 1 != 0;
-        let depth = ((page >> 7) & 3) as u8;
-
-        let texture_depth = match (page >> 7) & 3 {
-            0 => TextureDepth::T4Bit,
-            1 => TextureDepth::T8Bit,
-            2 => TextureDepth::T15Bit,
-            n => panic!("Unhandled texture depth: {n}"),
-        };
-        // let texture_page_y_base2 = ((page >> 11) & 1) != 0;
-
-        // clut stuff
-        // 0-5    X coordinate X/16  (ie. in 16-halfword steps)
-        // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
-        // 15     Unused (should be 0)                      ;/
-        // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
-        let clut_x = ((clut & 0x3f) as usize) * 16;
-        let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
-
-        // println!("uv: {:?}", texture_depth);
+        let clut = Clut::new(clut);
+        let texture = Texture::new(page, clut);
 
         for y in min_y..max_y {
             for x in min_x..max_x {
@@ -662,55 +683,13 @@ impl Gpu {
                 if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
                     let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
                     let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
-                    let [uv_x, uv_y] = self.compute_texel_offset(uv_x, uv_y);
 
-                    let (pixel_msb, pixel_lsb) = match texture_depth {
-                        TextureDepth::T4Bit => {
-                            let pixel = self.vram
-                                [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x / 2];
-                            let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
-                            // if pixel == 0 {
-                            //     continue;
-                            // }
+                    let mut pixel = texture.get_texel(self, uv_x, uv_y);
 
-                            let pixel_lsb =
-                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                            let pixel_msb =
-                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-                            (pixel_msb, pixel_lsb)
-                        }
-                        TextureDepth::T8Bit => {
-                            // Width 2048...
-                            let pixel = self.vram
-                                [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x];
-                            // if pixel == 0 {
-                            //     continue;
-                            // }
 
-                            let pixel_lsb =
-                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                            let pixel_msb =
-                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-                            (pixel_msb, pixel_lsb)
-                        }
-                        TextureDepth::T15Bit => {
-                            let texture_x = page_base_x + uv_x;
-                            let texture_y = page_base_y + uv_y;
-                            let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
-                            let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
-                            (pixel_msb, pixel_lsb)
-                            // let vram_addr = 2 * (y * 1024 + x) as usize;
-
-                            // self.vram[vram_addr] = pixel_lsb;
-                            // self.vram[vram_addr + 1] = pixel_msb;
-                        }
-                    };
-
-                    if pixel_lsb == 0 && pixel_msb == 0 {
+                    if pixel.is_black() {
                         continue;
                     }
-
-                    let mut pixel = Colour::from_bytes(pixel_msb, pixel_lsb);
 
                     if BLEND {
                         pixel.blend(mono);
@@ -718,16 +697,16 @@ impl Gpu {
 
                     let vram_addr = 2 * (y * 1024 + x) as usize;
 
-                    if SEMI_TRANS && pixel_msb >> 7 == 1 {
+                    if SEMI_TRANS && pixel.m == 1 {
                         let background_lsb = self.vram[vram_addr];
                         let background_msb = self.vram[vram_addr + 1];
 
                         let background = Colour::from_bytes(background_msb, background_lsb);
 
-                        pixel.blend_with_background(background, semi_transparency);
+                        pixel.blend_with_background(background, texture.semi_transparency);
                     }
 
-                    if dithering {
+                    if texture.dithering {
                         pixel.apply_dithering(x, y);
                     }
 
@@ -772,28 +751,10 @@ impl Gpu {
         min_y = cmp::max(min_y, self.drawing_area_top as i32);
         max_y = cmp::min(max_y, self.drawing_area_bottom as i32);
 
-        // textpage stuff
-        let page_base_x = ((page & 0xf) as usize) * 64; // n * 64
-        let page_base_y = (((page >> 4) & 1) as usize) * 256; // n * 256
-        let semi_transparency = ((page >> 5) & 3) as u8;
 
-        let texture_depth = match (page >> 7) & 3 {
-            0 => TextureDepth::T4Bit,
-            1 => TextureDepth::T8Bit,
-            2 => TextureDepth::T15Bit,
-            n => panic!("Unhandled texture depth: {n}"),
-        };
-        // let texture_page_y_base2 = ((page >> 11) & 1) != 0;
+        let clut = Clut::new(clut);
+        let texture = Texture::new(page, clut);
 
-        // clut stuff
-        // 0-5    X coordinate X/16  (ie. in 16-halfword steps)
-        // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
-        // 15     Unused (should be 0)                      ;/
-        // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
-        let clut_x = ((clut & 0x3f) as usize) * 16;
-        let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
-
-        // println!("uv: {:?}", texture_depth);
 
         for y in min_y..max_y {
             for x in min_x..max_x {
@@ -801,49 +762,13 @@ impl Gpu {
                 if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
                     let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
                     let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
-                    let [uv_x, uv_y] = self.compute_texel_offset(uv_x, uv_y);
 
-                    let (pixel_msb, pixel_lsb) = match texture_depth {
-                        TextureDepth::T4Bit => {
-                            let pixel = self.vram
-                                [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x / 2];
-                            let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
+                    let mut pixel = texture.get_texel(self, uv_x, uv_y);
 
-                            let pixel_lsb =
-                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                            let pixel_msb =
-                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-                            (pixel_msb, pixel_lsb)
-                        }
-                        TextureDepth::T8Bit => {
-                            // Width 2048...
-                            let pixel = self.vram
-                                [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x];
-
-                            let pixel_lsb =
-                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                            let pixel_msb =
-                                self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-                            (pixel_msb, pixel_lsb)
-                        }
-                        TextureDepth::T15Bit => {
-                            let texture_x = page_base_x + uv_x;
-                            let texture_y = page_base_y + uv_y;
-                            let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
-                            let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
-                            (pixel_msb, pixel_lsb)
-                            // let vram_addr = 2 * (y * 1024 + x) as usize;
-
-                            // self.vram[vram_addr] = pixel_lsb;
-                            // self.vram[vram_addr + 1] = pixel_msb;
-                        }
-                    };
-
-                    if pixel_lsb == 0 && pixel_msb == 0 {
+                    if pixel.is_black() {
                         continue;
                     }
 
-                    let mut pixel = Colour::from_bytes(pixel_msb, pixel_lsb);
 
                     if BLEND {
                         let color = interpolate_color(lambda, *colors);
@@ -853,7 +778,7 @@ impl Gpu {
 
                     let vram_addr = 2 * (y * 1024 + x) as usize;
 
-                    if SEMI_TRANS && pixel_msb >> 7 == 1 {
+                    if SEMI_TRANS && pixel.m == 1 {
                         let background_lsb = self.vram[vram_addr];
                         let background_msb = self.vram[vram_addr + 1];
 
@@ -943,69 +868,28 @@ impl Gpu {
             return;
         };
 
-        // textpage stuff
-        let page_base_x = (self.page_base_x as usize) * 64; // n * 64
-        let page_base_y = (self.page_base_y as usize) * 256; // n * 256
-        let semi_transparency = self.semi_transparency;
+        let clut = Clut::new(clut);
+        let texture = Texture { 
+            base_x:  (self.page_base_x as usize) * 64,
+            base_y: (self.page_base_y as usize) * 256,
+            semi_transparency: self.semi_transparency,
+            depth: self.texture_depth,
+            clut,
+            dithering: self.dithering,
+            draw_to_display: self.draw_to_display,
+        };
 
-        let texture_depth = self.texture_depth;
 
-        // clut stuff
-        // 0-5    X coordinate X/16  (ie. in 16-halfword steps)
-        // 6-14   Y coordinate 0-511 (ie. in 1-line steps)  ;\on v0 GPU (max 1 MB VRAM)
-        // 15     Unused (should be 0)                      ;/
-        // 6-15   Y coordinate 0-1023 (ie. in 1-line steps) ;on v2 GPU (max 2 MB VRAM)
-        let clut_x = ((clut & 0x3f) as usize) * 16;
-        let clut_y = ((clut >> 6) & 0x1FF) as usize; // y coord 0-511 (on v0 GPU)
-        //
         for y in min_y..=max_y {
             for x in min_x..=max_x {
                 let uv_x = (uv[0] as i32) + (x as i32) - v.x;
                 let uv_y = (uv[1] as i32) + (y as i32) - v.y;
-                let [uv_x, uv_y] = self.compute_texel_offset(uv_x as usize, uv_y as usize);
-                let (pixel_msb, pixel_lsb) = match texture_depth {
-                    TextureDepth::T4Bit => {
-                        let pixel = self.vram[page_base_y * 2048
-                            + (uv_y as usize) * 2048
-                            + 2 * page_base_x
-                            + (uv_x as usize) / 2];
-                        let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
 
-                        let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                        let pixel_msb =
-                            self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-                        (pixel_msb, pixel_lsb)
-                    }
-                    TextureDepth::T8Bit => {
-                        // Width 2048...
-                        let pixel = self.vram[page_base_y * 2048
-                            + (uv_y as usize) * 2048
-                            + 2 * page_base_x
-                            + (uv_x as usize)];
-
-                        let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
-                        let pixel_msb =
-                            self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize) + 1];
-                        (pixel_msb, pixel_lsb)
-                    }
-                    TextureDepth::T15Bit => {
-                        let texture_x = page_base_x + (uv_x as usize);
-                        let texture_y = page_base_y + (uv_y as usize);
-                        let pixel_lsb = self.vram[2 * (texture_y * 1024 + texture_x)];
-                        let pixel_msb = self.vram[2 * (texture_y * 1024 + texture_x) + 1];
-                        (pixel_msb, pixel_lsb)
-                        // let vram_addr = 2 * (y * 1024 + x) as usize;
-
-                        // self.vram[vram_addr] = pixel_lsb;
-                        // self.vram[vram_addr + 1] = pixel_msb;
-                    }
-                };
-
-                if pixel_lsb == 0 && pixel_msb == 0 {
+                let mut pixel = texture.get_texel(self, uv_x as usize, uv_y as usize);
+                if pixel.is_black() {
                     continue;
                 }
 
-                let mut pixel = Colour::from_bytes(pixel_msb, pixel_lsb);
 
                 if BLEND {
                     pixel.blend(color);
@@ -1013,7 +897,7 @@ impl Gpu {
 
                 let vram_addr = 2 * (y * 1024 + x) as usize;
 
-                if SEMI_TRANS && pixel_msb >> 7 == 1 {
+                if SEMI_TRANS && pixel.m == 1 {
                     let background_lsb = self.vram[vram_addr];
                     let background_msb = self.vram[vram_addr + 1];
 
@@ -1815,18 +1699,12 @@ impl Gpu {
                     }
                 }
                 DisplayDepth::D24Bits => {
-                    // FIXME: do me correctly
-                    for y in sy..sy + height {
-                        for x in sx..sx + width {
-                            let vram_addr = 2 * (1024 * y + x);
-                            let pixel = u16::from_le_bytes([
-                                self.vram[vram_addr],
-                                self.vram[vram_addr + 1],
-                            ]);
-
-                            let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
-                            let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-                            let b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+                    for y in 0..height {
+                        for x in 0..width {
+                            let vram_addr = 2 * (1024 * (y+sy) ) + 3*sx + 3 * x;
+                            let r =    self.vram[vram_addr];
+                            let g =    self.vram[vram_addr + 1];
+                            let b =    self.vram[vram_addr + 2];
 
                             output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
                         }
@@ -2008,6 +1886,7 @@ enum Gp0Mode {
         current_row: u16,
         current_col: u16,
     },
+    Polyline(bool),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2189,6 +2068,10 @@ impl Colour {
         let b = Gpu::convert_5bit_to_8bit((pixel >> 10) & 0x1F);
         let m = (pixel >> 15) as u8;
         Colour { r, g, b, m }
+    }
+
+    pub fn is_black(&self) -> bool {
+        self.r == 0 && self.b == 0 && self.g == 0
     }
 
     pub fn to_le_bytes(&self) -> [u8; 2] {

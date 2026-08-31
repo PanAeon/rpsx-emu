@@ -35,10 +35,10 @@ pub struct Image {
 impl Image {
     pub fn new() -> Self {
         // let path = "/foo/psx/celeste-collection.bin";
-        let path = "/foo/psx/Crash Bandicoot (USA).bin";
+        // let path = "/foo/psx/Crash Bandicoot (USA).bin";
         // let path = "/foo/psx/Earthworm Jim 2 (Europe) (Track 01).bin";
         // let path = "/foo/psx/Mortal Kombat Trilogy (USA) (v1.1) (Track 01).bin";
-        // let path = "/foo/psx/Final Fantasy VII (USA) (Disc 1).bin";
+        let path = "/foo/psx/Final Fantasy VII (USA) (Disc 1).bin";
         // let path = "/foo/psx/Mega Man X4 (USA).bin";
         let mut file = match File::open(path) {
             Ok(f) => f,

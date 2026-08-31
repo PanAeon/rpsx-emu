@@ -651,7 +651,8 @@ impl State {
         // let filename = "/foo/psx/PSX/GPU/16BPP/MemoryTransfer/MemoryTransfer16BPP.exe";
         // let filename = "/foo/psx/PSX/Cube/Cube.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT4BPP/RenderTextureRectangleCLUT4BPP.exe";
-        let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT8BPP/RenderTextureRectangleCLUT8BPP.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT8BPP/RenderTextureRectangleCLUT8BPP.exe";
+        let filename = "/foo/psx/PSX/GPU/16BPP/RenderLine/RenderLine16BPP.exe";
         let mut file = match std::fs::File::open(filename) {
             Ok(file) => file,
             Err(e) => panic!("Can't load exe {}", e),
@@ -710,6 +711,8 @@ impl State {
 
     fn update_vertex_buffer_if_needed(&mut self, width: usize, height: usize, force: bool) {
         if width == 0 && height == 0 {
+            self.output_width = width;
+            self.output_height = height;
             return;
         }
         if !force && width == self.output_width && height == self.output_height {

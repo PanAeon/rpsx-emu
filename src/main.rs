@@ -6,6 +6,7 @@ use env_logger::init;
 use std::cmp::min;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Read, Write};
+use std::sync::Mutex;
 use std::{iter, sync::Arc};
 use wgpu::util::DeviceExt;
 use winit::dpi::LogicalSize;
@@ -160,7 +161,7 @@ pub struct State {
     texture: wgpu::Texture,
     texture_bind_group: wgpu::BindGroup,
     // dimensions: (u32, u32),
-    framebuffer: Vec<Color>,
+    framebuffer: Arc<Mutex<Vec<Color>>>,
     // image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
     cpu: cpu::Cpu,
     texture_size: wgpu::Extent3d,
@@ -464,7 +465,7 @@ impl State {
     let ram = ram::Ram::new();
     let scratchpad = scratchpad::Scratchpad::new();
     let dma = dma::Dma::new();
-    let gpu = gpu::Gpu::new();
+    // let gpu = gpu::Gpu::new();
     let spu = spu::Spu::new();
     let cdrom = CDRom::default();
     // let spu = spu::Spu::default();
@@ -484,8 +485,17 @@ impl State {
     let mut scheduler = scheduler::Scheduler::default();
     scheduler.init();
     let timers = timers::Timers::new();
-    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers, cdrom, sio, mdec);
+    let (gpu_sender, gpu_receiver, gpu_ctrl_receiver, gpu_handle) = gpu::build_gpu();
+    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
+        gpu_sender, gpu_receiver, gpu_ctrl_receiver, gpu_handle);
     let cpu = cpu::Cpu::new(memory_bus);
+
+
+    let core_ids = core_affinity::get_core_ids().unwrap();
+    let res = core_affinity::set_for_current(core_ids[0]);
+    if res {
+        println!("main thread pinned to 0"); 
+    }
 
     let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
          // let file = File::create("output.pcm")?;
@@ -523,7 +533,7 @@ impl State {
             // tilemap_index_texture,
             texture_bind_group,
             texture,
-            framebuffer: vec![Color {r:0, g:0 ,b:0, a: 255}; 1024 * 512],
+            framebuffer: Arc::new(Mutex::new(vec![Color {r:0, g:0 ,b:0, a: 255}; 1024 * 512])),
             texture_size,
             // image_rgba,
             // dimensions, 
@@ -611,7 +621,7 @@ impl State {
                 aspect: wgpu::TextureAspect::All,
             },
             // The actual pixel data
-            bytemuck::cast_slice(&self.framebuffer),
+            bytemuck::cast_slice(&self.framebuffer.lock().expect("ok")),
             // The layout of the texture
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
@@ -790,26 +800,32 @@ impl State {
                         // }
                     }
                     scheduler::Event::VBlankStart => {
-                        // TODO: produce framebuffer here?
-                        let (w, h) = self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer, self.display_vram);
-                        self.update_vertex_buffer_if_needed(w, h, false);
+                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
+                        // let (w, h) = self.cpu.memory_bus.gpu.render_vram(&mut self.framebuffer, self.display_vram);
+                        // self.update_vertex_buffer_if_needed(w, h, false);
                         // if self.cpu.memory_bus.gpu.interrupt == false {
                             self.cpu.memory_bus.irqctl.status.set_vblank(true);
                         // }
                         timers::Timers::enter_vsync(&mut self.cpu.memory_bus);
-                        self.cpu.memory_bus.gpu.enter_vsync();
+                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
+                        // self.cpu.memory_bus.gpu.enter_vsync();
                     },
                     scheduler::Event::VBlankEnd => {
-                        self.cpu.memory_bus.gpu.exit_vsync();
+                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
+                        // self.cpu.memory_bus.gpu.exit_vsync();
                         timers::Timers::exit_vsync(&mut self.cpu.memory_bus);
+                        let (w, h) = self.cpu.memory_bus.gpu_ctrl_receiver.recv().expect("ok");
+                        self.update_vertex_buffer_if_needed(w, h, false);
                         break;
                     },
                     scheduler::Event::HBlankStart => {
-                        self.cpu.memory_bus.gpu.enter_hsync();
+                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
+                        // self.cpu.memory_bus.gpu.enter_hsync();
                         timers::Timers::enter_hsync(&mut self.cpu.memory_bus);
                     },
                     scheduler::Event::HBlankEnd => {
-                        self.cpu.memory_bus.gpu.exit_hsync();
+                        self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
+                        // self.cpu.memory_bus.gpu.exit_hsync();
                         timers::Timers::exit_hsync(&mut self.cpu.memory_bus);
                     },
                     scheduler::Event::CDRomResultIrq(resp) => {

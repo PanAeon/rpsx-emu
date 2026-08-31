@@ -148,7 +148,7 @@ impl Timers {
         match memory_bus.timers.clock_source(which) {
             ClockSource::Cpu => ticks,
             ClockSource::CpuDiv8 => ticks * 8,
-            ClockSource::Dot => ticks * (memory_bus.gpu.get_clock_divider() as u64),
+            ClockSource::Dot => ticks * 5, // FIXME: (memory_bus.gpu.get_clock_divider() as u64),
             ClockSource::HBlank => ticks * LINE_DURATION,
         }
     }
@@ -217,7 +217,7 @@ impl Timers {
         let delta = match memory_bus.timers.clock_source(which) {
             ClockSource::Cpu => clock_delta,
             ClockSource::CpuDiv8 => clock_delta / 8,
-            ClockSource::Dot => clock_delta / (memory_bus.gpu.get_clock_divider() as u32),
+            ClockSource::Dot => clock_delta / 5, // FIXME: (memory_bus.gpu.get_clock_divider() as u32),
             ClockSource::HBlank => {
                 let h = memory_bus.timers.hblanks;
                 memory_bus.timers.hblanks = 0;

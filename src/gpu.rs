@@ -1,11 +1,16 @@
-use std::{cmp, rc::Rc, sync::{Arc, Mutex}};
-use wgpu::CurrentSurfaceTexture;
 use crossbeam::channel::{Receiver, Sender};
 use std::thread;
+use std::{
+    cmp,
+    rc::Rc,
+    sync::{Arc, Mutex},
+    thread::JoinHandle,
+};
+use wgpu::CurrentSurfaceTexture;
 
 use crate::{
     Color,
-    memory_bus::{AccessWidth, Addressable},
+    memory_bus::{AccessWidth, Addressable, MemoryBus},
 };
 
 pub enum GpuMsg {
@@ -17,16 +22,27 @@ pub enum GpuMsg {
     EnterVSync,
     ExitHSync,
     ExitVSync,
-    ProduceFB(Arc<Mutex<[Color]>>, bool)
+    ProduceFB(Arc<Mutex<Vec<Color>>>, bool),
 }
 
-pub fn build_gpu() -> (Sender<GpuMsg>, Receiver<u32>) {
+// FIXME: move renderer to another thread, keep gpu..
+pub fn build_gpu() -> (
+    Sender<GpuMsg>,
+    Receiver<u32>,
+    Receiver<(usize, usize)>,
+    JoinHandle<()>,
+) {
     let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(4096);
     let (from_gpu_sender, from_gpu_receiver) = crossbeam::channel::bounded(4096);
-    
+    let (ctrl_sender, ctrl_receiver) = crossbeam::channel::bounded(32);
 
     let handle = thread::spawn(move || {
         let mut gpu = Gpu::new();
+        let core_ids = core_affinity::get_core_ids().unwrap();
+        let res = core_affinity::set_for_current(core_ids[1]);
+        if res {
+            println!("gpu thread pinned to 1");
+        }
         loop {
             let msg = match gpu_receiver.recv() {
                 Ok(msg) => msg,
@@ -51,12 +67,16 @@ pub fn build_gpu() -> (Sender<GpuMsg>, Receiver<u32>) {
                     let mut mutex = buffer.lock().unwrap();
                     let fb = mutex.as_mut();
                     let (w, h) = gpu.render_vram(fb, is_full_ram);
+                    match ctrl_sender.send((w, h)) {
+                        Ok(_) => (),
+                        Err(_) => return,
+                    };
                 }
             }
         }
     });
 
-    (to_gpu_sender, from_gpu_receiver)
+    (to_gpu_sender, from_gpu_receiver, ctrl_receiver, handle)
 }
 
 pub struct Gpu {
@@ -649,9 +669,9 @@ impl Gpu {
                             let pixel = self.vram
                                 [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x / 2];
                             let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
-                            if pixel == 0 {
-                                continue;
-                            }
+                            // if pixel == 0 {
+                            //     continue;
+                            // }
 
                             let pixel_lsb =
                                 self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
@@ -663,9 +683,9 @@ impl Gpu {
                             // Width 2048...
                             let pixel = self.vram
                                 [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x];
-                            if pixel == 0 {
-                                continue;
-                            }
+                            // if pixel == 0 {
+                            //     continue;
+                            // }
 
                             let pixel_lsb =
                                 self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
@@ -788,9 +808,6 @@ impl Gpu {
                             let pixel = self.vram
                                 [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x / 2];
                             let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
-                            if pixel == 0 {
-                                continue;
-                            }
 
                             let pixel_lsb =
                                 self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
@@ -802,9 +819,6 @@ impl Gpu {
                             // Width 2048...
                             let pixel = self.vram
                                 [page_base_y * 2048 + uv_y * 2048 + 2 * page_base_x + uv_x];
-                            if pixel == 0 {
-                                continue;
-                            }
 
                             let pixel_lsb =
                                 self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
@@ -956,9 +970,6 @@ impl Gpu {
                             + 2 * page_base_x
                             + (uv_x as usize) / 2];
                         let pixel = (pixel >> 4 * (uv_x & 1)) & 0xF;
-                        if pixel == 0 {
-                            continue;
-                        }
 
                         let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
                         let pixel_msb =
@@ -971,9 +982,6 @@ impl Gpu {
                             + (uv_y as usize) * 2048
                             + 2 * page_base_x
                             + (uv_x as usize)];
-                        if pixel == 0 {
-                            continue;
-                        }
 
                         let pixel_lsb = self.vram[2 * (clut_y * 1024 + clut_x + pixel as usize)];
                         let pixel_msb =
@@ -1793,8 +1801,10 @@ impl Gpu {
                     for y in 0..height {
                         for x in 0..width {
                             let vram_addr = 2 * (1024 * (sy + y) + (sx + x));
-                            let pixel =
-                                u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
+                            let pixel = u16::from_le_bytes([
+                                self.vram[vram_addr],
+                                self.vram[vram_addr + 1],
+                            ]);
 
                             let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
                             let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
@@ -1803,14 +1813,16 @@ impl Gpu {
                             output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
                         }
                     }
-                },
+                }
                 DisplayDepth::D24Bits => {
                     // FIXME: do me correctly
-                    for y in sy..sy+height {
-                        for x in sx..sx+width {
+                    for y in sy..sy + height {
+                        for x in sx..sx + width {
                             let vram_addr = 2 * (1024 * y + x);
-                            let pixel =
-                                u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
+                            let pixel = u16::from_le_bytes([
+                                self.vram[vram_addr],
+                                self.vram[vram_addr + 1],
+                            ]);
 
                             let r = Gpu::convert_5bit_to_8bit(pixel & 0x1F);
                             let g = Gpu::convert_5bit_to_8bit((pixel >> 5) & 0x1F);
@@ -1819,9 +1831,9 @@ impl Gpu {
                             output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
                         }
                     }
-                },
+                }
             };
-            (width,height)
+            (width, height)
         }
     }
 
@@ -1886,7 +1898,7 @@ struct HorizontalRes(u8);
 impl HorizontalRes {
     fn from_fields(hr1: u8, hr2: u8) -> HorizontalRes {
         // let hr = (hr2 & 1) | ((hr1 & 3) << 1);
-        let hr = (hr2 & 1 << 4) | ((hr1 & 3));
+        let hr = (hr2 & 1 << 4) | (hr1 & 3);
         HorizontalRes(hr)
     }
     fn into_status(self) -> u32 {
@@ -1897,7 +1909,7 @@ impl HorizontalRes {
 
     fn into_pixels(self) -> usize {
         match self.0 {
-            0 => 256,            // 256
+            0 => 256,             // 256
             1 => 320,             // 320
             2 => 512,             // 512
             3 => 640,             // 640
@@ -2255,4 +2267,114 @@ impl Clut {
         let pixel_msb = gpu.vram[2 * (self.base_y * 1024 + self.base_x + index as usize) + 1];
         (pixel_lsb, pixel_msb)
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Texture {
+    base_x: usize,
+    base_y: usize,
+    semi_transparency: u8,
+    dithering: bool,
+    draw_to_display: bool,
+    depth: TextureDepth,
+    clut: Clut,
+}
+
+impl Texture {
+    pub fn new(data: u16, clut: Clut) -> Self {
+        let base_x = ((data & 0xf) as usize) * 64; // n * 64
+        let base_y = (((data >> 4) & 1) as usize) * 256; // n * 256
+        let semi_transparency = ((data >> 5) & 3) as u8;
+        let dithering = (data >> 9) & 1 != 0;
+        let draw_to_display = (data >> 10) & 1 != 0;
+        // let depth = ((data >> 7) & 3) as u8;
+
+        let depth = match (data >> 7) & 3 {
+            0 => TextureDepth::T4Bit,
+            1 => TextureDepth::T8Bit,
+            2 => TextureDepth::T15Bit,
+            n => unreachable!("Unhandled texture depth: {n}"),
+        };
+        Texture {
+            base_x,
+            base_y,
+            semi_transparency,
+            dithering,
+            draw_to_display,
+            depth,
+            clut,
+        }
+    }
+
+    pub fn get_texel(&self, gpu: &Gpu, uv_x: usize, uv_y: usize) -> Colour {
+        let [uv_x, uv_y] = gpu.compute_texel_offset(uv_x, uv_y);
+
+        let (pixel_lsb, pixel_msb) = match self.depth {
+            TextureDepth::T4Bit => {
+                let pixel = gpu.vram[self.base_y * 2048 + uv_y * 2048 + 2 * self.base_x + uv_x / 2];
+                let index = (pixel >> 4 * (uv_x & 1)) & 0xF;
+
+                self.clut.get_color(gpu, index)
+            }
+            TextureDepth::T8Bit => {
+                // Width 2048...
+                let index = gpu.vram[self.base_y * 2048 + uv_y * 2048 + 2 * self.base_x + uv_x];
+
+                self.clut.get_color(gpu, index)
+            }
+            TextureDepth::T15Bit => {
+                let texture_x = self.base_x + uv_x;
+                let texture_y = self.base_y + uv_y;
+                let pixel_lsb = gpu.vram[2 * (texture_y * 1024 + texture_x)];
+                let pixel_msb = gpu.vram[2 * (texture_y * 1024 + texture_x) + 1];
+                (pixel_lsb, pixel_msb)
+                // let vram_addr = 2 * (y * 1024 + x) as usize;
+
+                // self.vram[vram_addr] = pixel_lsb;
+                // self.vram[vram_addr + 1] = pixel_msb;
+            }
+        };
+
+        Colour::from_bytes(pixel_msb, pixel_lsb)
+    }
+}
+
+pub fn load<T: Addressable>(memory_bus: &mut MemoryBus, offset: u32) -> T {
+    if T::width() != AccessWidth::Word {
+        panic!("Unhandled {:?} GPU load", T::width());
+    }
+    let r = match offset {
+        0 => {
+            memory_bus.gpu_sender.send(GpuMsg::ReadGP0).expect("ok");
+            memory_bus.gpu_receiver.recv().expect("ok")
+        }
+        4 => {
+            memory_bus.gpu_sender.send(GpuMsg::ReadStatus).expect("ok");
+            memory_bus.gpu_receiver.recv().expect("ok")
+        }
+        // 0 => self.read(),
+        // 4 => self.status(), // 0x1c000000,
+        _ => panic!("Unhandled GPU read {offset}"),
+    };
+    T::from_u32(r)
+}
+
+pub fn store<T: Addressable>(memory_bus: &mut MemoryBus, offset: u32, value: T) {
+    if T::width() != AccessWidth::Word {
+        panic!("Unhandled {:?} GPU load", T::width());
+    }
+    let val = value.as_u32();
+    match offset {
+        0 => memory_bus
+            .gpu_sender
+            .send(GpuMsg::DataGP0(val))
+            .expect("ok"),
+        4 => memory_bus
+            .gpu_sender
+            .send(GpuMsg::DataGP1(val))
+            .expect("ok"),
+        // 0 => self.gp0(val),
+        // 4 => self.gp1(val),
+        _ => panic!("GPU write {}: {:08X}", offset, val),
+    };
 }

@@ -1,5 +1,9 @@
 
-use crate::{bios::Bios, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, gpu::Gpu, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
+use std::thread::JoinHandle;
+
+use crossbeam::channel::{Receiver, Sender};
+
+use crate::{bios::Bios, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, gpu::{self, Gpu, GpuMsg}, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
 
 mod map {
     pub struct Range(u32, u32);
@@ -88,7 +92,7 @@ pub struct MemoryBus {
     pub ram: Ram,
     scratchpad: Scratchpad,
     pub dma: Dma,
-    pub gpu: Gpu,
+    // pub gpu: Gpu,
     pub spu: Spu,
     pub irqctl: InterruptController,
     pub scheduler: Scheduler,
@@ -96,6 +100,10 @@ pub struct MemoryBus {
     pub cdrom: CDRom,
     pub sio: Sio,
     pub mdec: Mdec,
+    pub gpu_sender: Sender<GpuMsg>,
+    pub gpu_receiver: Receiver<u32>,
+    pub gpu_ctrl_receiver: Receiver<(usize, usize)>,
+    pub gpu_handle: JoinHandle<()>
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -111,9 +119,11 @@ pub fn mask_region(addr: u32) -> u32 {
 }
 
 impl MemoryBus {
-    pub fn new(bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, gpu: Gpu, spu: Spu, irqctl: InterruptController,
-        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec) -> MemoryBus {
-        MemoryBus { bios, ram, scratchpad, dma, gpu, spu, irqctl, scheduler, timers, cdrom, sio, mdec }
+    pub fn new(bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, spu: Spu, irqctl: InterruptController,
+        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu_sender: Sender<GpuMsg>, gpu_receiver: Receiver<u32>, gpu_ctrl_receiver: Receiver<(usize, usize)>, gpu_handle: JoinHandle<()>) -> MemoryBus {
+    
+        MemoryBus { bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
+        gpu_sender, gpu_receiver, gpu_ctrl_receiver, gpu_handle}
     }
     pub fn load<T:Addressable>(&mut self, addr: u32) -> T {
         let address = mask_region(addr);
@@ -124,7 +134,8 @@ impl MemoryBus {
             return self.ram.load(offset);
         }
         if let Some(offset) = map::GPU.contains(address) {
-            return  self.gpu.load(offset)
+            return gpu::load(self, offset);
+            // return  self.gpu.load(offset)
         }
         if let Some(_) = map::SPU.contains(address) {
             // return crate::spu::load(&self.spu, addr);
@@ -190,7 +201,8 @@ impl MemoryBus {
             return self.ram.store(offset, value);
         }
         if let Some(offset) = map::GPU.contains(address) {
-            self.gpu.store(offset, value);
+            gpu::store(self, offset, value);
+            // self.gpu.store(offset, value);
             // println!("GPU store32 {:x} = {:x}", offset, value);
             return;
         }
@@ -342,7 +354,7 @@ impl MemoryBus {
         }
     }
     pub fn do_dma_block(&mut self, port: Port) {
-        let channel = self.dma.channel_mut(port);
+        let channel = self.dma.channel(port);
 
         let increment  = match channel.step() {
             Step::Increment => 4,
@@ -363,7 +375,8 @@ impl MemoryBus {
                     let src_word = self.ram.load::<u32>(cur_addr);
                     match port {
                         Port::Gpu => {
-                            self.gpu.gp0(src_word);
+                            gpu::store(self, 0, src_word);
+                            // self.gpu.gp0(src_word);
                             // println!("GPU data: {:08x}", src_word);
                         },
                         Port::Spu => {
@@ -383,7 +396,8 @@ impl MemoryBus {
                             _ => addr.wrapping_sub(4) & 0x1fffff, // pointer to the prev entry
                         },
                         Port::Gpu => {
-                            self.gpu.read()
+                            gpu::load(self, 0)
+                            // self.gpu.read()
                         },
                         Port::CdRom => {
                             self.cdrom.load::<u32>(2)
@@ -426,7 +440,8 @@ impl MemoryBus {
                 let command = self.ram.load::<u32>(addr);
 
                 // println!("GPU command: {:08X}", command);
-                self.gpu.gp0(command);
+                gpu::store(self, 0, command);
+                // self.gpu.gp0(command);
                 remsz -= 1;
             }
             if header & 0x800000 != 0 {

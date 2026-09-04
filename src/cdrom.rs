@@ -4,6 +4,7 @@ use std::fs::File;
 
 use arrayvec::ArrayVec;
 
+use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
 use crate::{memory_bus::{Addressable, MemoryBus}, scheduler::Event};
 
 const SECTOR_SIZE: usize = 0x930;
@@ -34,11 +35,13 @@ pub struct Image {
 
 impl Image {
     pub fn new() -> Self {
+        // let path = "/foo/psx/Spyro the Dragon (USA).bin";
+        // let path = "/foo/psx/Silent Hill (USA).bin";
         // let path = "/foo/psx/celeste-collection.bin";
-        // let path = "/foo/psx/Crash Bandicoot (USA).bin";
+        let path = "/foo/psx/Crash Bandicoot (USA).bin";
         // let path = "/foo/psx/Earthworm Jim 2 (Europe) (Track 01).bin";
         // let path = "/foo/psx/Mortal Kombat Trilogy (USA) (v1.1) (Track 01).bin";
-        let path = "/foo/psx/Final Fantasy VII (USA) (Disc 1).bin";
+        // let path = "/foo/psx/Final Fantasy VII (USA) (Disc 1).bin";
         // let path = "/foo/psx/Mega Man X4 (USA).bin";
         let mut file = match File::open(path) {
             Ok(f) => f,
@@ -107,6 +110,36 @@ impl Image {
         let secs = mins % 60;
         (mins as u8, secs as u8, sect as u8)
     }
+
+    pub fn current_position_info(&self) -> [u8;8] {
+          let current_track = self
+            .tracks
+            .partition_point(|t| t.indexes[0].lba <= self.read_head)
+            .saturating_sub(1);
+
+        let current_track = &self.tracks[current_track];
+
+        let current_index = current_track
+            .indexes
+            .partition_point(|i| i.lba <= self.read_head)
+            .saturating_sub(1);
+
+        let current_index = &current_track.indexes[current_index];
+
+        let track_pos = self.mm_ss_ff(self.read_head.saturating_sub(current_index.lba));
+        let disk_pos = self.mm_ss_ff(self.read_head);
+
+        [
+            current_track.id,
+            current_index.id,
+            track_pos.0,
+            track_pos.1,
+            track_pos.2,
+            disk_pos.0,
+            disk_pos.1,
+            disk_pos.2,
+        ]
+    }
 }
 
 
@@ -133,6 +166,15 @@ pub struct CDRom {
     l2r_volume: u8,
     r2l_volume: u8,
     r2r_volume: u8,
+
+    filter_file: u8,
+    filter_channel: u8,
+    audio_buffer: VecDeque<i16>,
+
+    // Left, Right, Mono
+    adpcm_history: [AdpcmHistory; 3],
+    high_res_resamplers: [HighResResampler; 3],
+    low_res_resamplers: [LowResResampler; 3],
     // pending_interrupt: Option<(u64, u8, [u8;16], usize)>
 }
 
@@ -155,6 +197,12 @@ impl Default for CDRom {
             l2r_volume: 0,
             r2l_volume: 0,
             r2r_volume: 0,
+            filter_file: 0,
+            filter_channel: 0,
+            audio_buffer: VecDeque::default(),
+            adpcm_history: Default::default(),
+            high_res_resamplers: Default::default(),
+            low_res_resamplers: Default::default(),
         }
     }
 }
@@ -237,6 +285,8 @@ impl CDRom {
             0x0a => cdrom.cmd_init(),
             0x0c => cdrom.cmd_demute(),
             0x0e => cdrom.cmd_setmode(),
+            0x0d => cdrom.cmd_set_filter(),
+            0x11 => cdrom.get_locp(),
             0x14 => cdrom.cmd_gettd(),
             0x15 => cdrom.cmd_seekl(),
             0x19 => cdrom.cmd_test(),
@@ -344,6 +394,34 @@ impl CDRom {
 
 
         CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
+    }
+
+    pub fn cmd_set_filter(&mut self) -> CommandResponse {
+        if self.parameters.len() != 2 {
+            return error_response(&self.status, 0x20, "setfilter takes 2 params")
+        }
+        let file = self.parameters[0];
+        let channel = self.parameters[1];
+
+        self.filter_file = file;
+        self.filter_channel = channel;
+
+        println!("CDROM setfilter 0x{:X}, 0x{:X}", file, channel);
+
+        CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
+    }
+
+    pub fn get_locp(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "get_locp doesn't takes parameters")
+        }
+        println!("CDROM get_locp!!");
+
+        let disk = self.disk.as_ref().expect("get_locp inserted disk");
+
+        CommandResponse::new()
+            .int3(disk.current_position_info().
+                map(|x| to_bcd(x).expect("track position is valid bcd")), AVG_1ST_RESP_GENERIC)
     }
 
     pub fn cmd_readn(&mut self) -> CommandResponse {
@@ -596,10 +674,23 @@ impl CDRom {
         data
     }
 
+    pub fn push_to_audio_buffer(&mut self, data: &[u8]) {
+        let samples: Vec<i16> = data
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        self.audio_buffer.extend(samples);
+    }
+
+    pub fn get_audio_sample(&mut self) -> i16 {
+        let sample = self.audio_buffer.pop_front().unwrap_or(0);
+        if self.audio_muted { 0 } else { sample }
+    }
+
     pub fn process_sector(&mut self, sector: Vec<u8>) -> bool {
         if self.status.playing() {
             assert!(self.mode.cdda());
-            // push to audio buffer
+            self.push_to_audio_buffer(&sector);
             return true;
         }
 
@@ -612,6 +703,36 @@ impl CDRom {
         let mode = &self.mode;
 
         if sector_mode == 2 {
+
+            if self.mode.xa_filter() &&  (file != self.filter_file || channel != self.filter_channel) {
+                return false;
+            }
+
+            if self.mode.xa_adpcm() && is_realtime_audio {
+                let audio_header = cdxa::AudioHeader(sector[0x13]);
+
+                let audio_samples = match (audio_header.channel(), audio_header.sample_rate()) {
+                    (cdxa::Channel::Mono, cdxa::SampleRate::R37800) => 
+                        decode_audio_sector::<false>(&sector, &mut self.adpcm_history, &mut self.high_res_resamplers),
+                    (cdxa::Channel::Mono, cdxa::SampleRate::R18900) => 
+                        decode_audio_sector::<false>(&sector, &mut self.adpcm_history, &mut self.low_res_resamplers),
+                    (cdxa::Channel::Mono, cdxa::SampleRate::Reserved) => unimplemented!(),
+                    (cdxa::Channel::Stereo, cdxa::SampleRate::R37800) => 
+                        decode_audio_sector::<true>(&sector, &mut self.adpcm_history, &mut self.high_res_resamplers),
+                    (cdxa::Channel::Stereo, cdxa::SampleRate::R18900) => 
+                        decode_audio_sector::<true>(&sector, &mut self.adpcm_history, &mut self.low_res_resamplers),
+                    (cdxa::Channel::Stereo, cdxa::SampleRate::Reserved) => todo!(),
+                    (cdxa::Channel::Reserved, cdxa::SampleRate::R37800) => unimplemented!(),
+                    (cdxa::Channel::Reserved, cdxa::SampleRate::R18900) => unimplemented!(),
+                    (cdxa::Channel::Reserved, cdxa::SampleRate::Reserved) => unimplemented!(),
+                };
+                self.audio_buffer.extend(audio_samples);
+                return true;
+            }
+
+            if self.mode.xa_filter() && is_realtime_audio {
+                return false;
+            }
 
         }
 

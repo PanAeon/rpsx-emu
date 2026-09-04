@@ -55,15 +55,31 @@ impl Instruction {
 }
 
 enum Exception {
-    ExternalInterrupt = 0x0,
-    LoadAddressError = 0x4,
-    StoreAddressError = 0x5,
-    BusErrorOnFetch = 0x6,
-    SysCall = 0x8,
-    Break = 0x9,
-    IllegalInstruction = 0xa,
-    CoprocessorError = 0xb,
-    Overflow = 0xc,
+    ExternalInterrupt,
+    LoadAddressError(u32),
+    StoreAddressError(u32),
+    BusErrorOnFetch,
+    SysCall,
+    Break,
+    IllegalInstruction,
+    CoprocessorError,
+    Overflow,
+}
+
+impl Exception {
+    pub fn code(&self) -> u32 {
+        match self {
+            Exception::ExternalInterrupt => 0x0,
+            Exception::LoadAddressError(_) => 0x4,
+            Exception::StoreAddressError(_) => 0x5,
+            Exception::BusErrorOnFetch => 0x6,
+            Exception::SysCall => 0x8,
+            Exception::Break => 0x9,
+            Exception::IllegalInstruction => 0xa,
+            Exception::CoprocessorError => 0xb,
+            Exception::Overflow => 0xc,
+        }
+    }
 }
 
 pub struct Cpu {
@@ -111,7 +127,7 @@ impl Cpu {
     }
     pub fn run_next_instruction(&mut self) {
         if self.pc & 3 != 0 {
-            return self.exception(Exception::LoadAddressError);
+            return self.exception(Exception::LoadAddressError(self.pc));
         }
         let instr = Instruction(self.load::<u32>(self.pc));
         self.current_pc = self.pc;
@@ -124,7 +140,6 @@ impl Cpu {
         self.branch = false;
 
 
-        // TODO: check if below handling is correct
         let is_gte = (instr.0 & 0xFE00_0000) == 0x4A00_0000;
         let pending_interrupt = self.check_for_pending_interrupts();
 
@@ -290,9 +305,9 @@ impl Cpu {
     }
     pub fn delayed_load_chain(&mut self, reg:u32, val:u32) {
         let (pending_reg, pending_val) = self.load;
-        if pending_reg != reg {
+        // if pending_reg != reg {
             self.set_reg(pending_reg, pending_val);
-        }
+        // }
         self.load = (reg, val);
     }
 
@@ -341,7 +356,7 @@ impl Cpu {
         let v = self.reg(instr.rt());
         if addr % 4 != 0 {
             self.delayed_load();
-            return self.exception(Exception::StoreAddressError);
+            return self.exception(Exception::StoreAddressError(addr));
         }
         self.delayed_load();
         self.store::<u32>(addr, v);
@@ -351,7 +366,7 @@ impl Cpu {
         let v = self.reg(instr.rt());
         self.delayed_load();
         if addr % 2 != 0 {
-            return self.exception(Exception::StoreAddressError);
+            return self.exception(Exception::StoreAddressError(addr));
         }
         self.store::<u16>(addr, v as u16);
     }
@@ -365,7 +380,7 @@ impl Cpu {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
         if addr % 2 != 0 {
             self.delayed_load();
-            return self.exception(Exception::LoadAddressError);
+            return self.exception(Exception::LoadAddressError(addr));
         }
         let v = (self.load::<u16>(addr) as u16) as i16;
         self.delayed_load_chain(instr.rt(), v as u32);
@@ -374,7 +389,7 @@ impl Cpu {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
         if addr % 2 != 0 {
             self.delayed_load();
-            return self.exception(Exception::LoadAddressError);
+            return self.exception(Exception::LoadAddressError(addr));
         }
         let v = self.load::<u16>(addr);
         self.delayed_load_chain(instr.rt(), v as u32);
@@ -383,7 +398,7 @@ impl Cpu {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
         if addr % 4 != 0 {
             self.delayed_load();
-            return self.exception(Exception::LoadAddressError);
+            return self.exception(Exception::LoadAddressError(addr));
         }
         // if self.sr & 0x10000 != 0 {
         //     println!("Cache is isolated, ignoring read to {:08x}", addr);
@@ -475,12 +490,9 @@ impl Cpu {
     }
     pub fn op_lb(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
-        if addr == 0xfffffcac {
-            println!("gotcha!!!");
-            println!("next_pc {:X}", self.next_pc);
-            self.debug_print();
-        }
         let v = (self.load::<u8>(addr) as u8) as i8;
+        // self.load = (instr.rt(), v as u32);
+        // self.delayed_load();
         self.delayed_load_chain(instr.rt(), v as u32);
     }
     pub fn op_lbu(&mut self, instr: Instruction) {
@@ -646,8 +658,6 @@ impl Cpu {
     }
     pub fn op_j(&mut self, instr: Instruction) {
         self.next_pc = (self.current_pc & 0xf000_0000) | (instr.imm26() << 2);
-        // self.next_pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2) + 4;
-        // self.next_pc = (self.next_pc & 0xf000_0000) | (instr.imm26() << 2);
         self.branch = true;
         self.delayed_load();
     }
@@ -718,7 +728,7 @@ impl Cpu {
         self.delayed_load();
 
         if is_link {
-            let ra = self.pc;
+            let ra = self.pc.wrapping_add(4); // self.pc??
             self.set_reg(31, ra);
         }
         if test != 0 {
@@ -754,7 +764,7 @@ impl Cpu {
         self.sr |= (mode << 2) & 0x3f;
 
         self.cause &= !0x7c;
-        self.cause = (cause as u32) << 2;
+        self.cause = (cause.code() as u32) << 2;
 
         if self.delay_slot { // this what happend?
             self.epc = self.current_pc.wrapping_sub(4);
@@ -770,6 +780,10 @@ impl Cpu {
             } else {
             0x80000080
         };
+
+        if let Exception::LoadAddressError(x) | Exception::StoreAddressError(x) = cause {
+            self.baddr = x;
+        }
 
         self.pc = handler;
         self.next_pc = handler.wrapping_add(4);
@@ -806,7 +820,7 @@ impl Cpu {
             let v = self.load::<u32>(addr);
             self.gte.set_data(cop_r, v);
         } else {
-            self.exception(Exception::LoadAddressError);
+            self.exception(Exception::LoadAddressError(addr));
         }
     }
     pub fn op_lwc3(&mut self, _: Instruction) {
@@ -822,7 +836,7 @@ impl Cpu {
         self.delayed_load();
         self.exception(Exception::CoprocessorError);
     }
-    // store word from comprocessor 2
+    // store word from coprocessor 2
     pub fn op_swc2(&mut self, instr: Instruction) {
         let i = instr.imm_se();
         let cop_r = instr.rt() as u8;
@@ -835,7 +849,7 @@ impl Cpu {
         if addr.is_multiple_of(4) {
             self.store::<u32>(addr, v);
         } else {
-            self.exception(Exception::LoadAddressError);
+            self.exception(Exception::LoadAddressError(addr));
         }
     }
     pub fn op_swc3(&mut self, _: Instruction) {
@@ -924,7 +938,7 @@ impl Cpu {
     }
     pub fn op_mfc0(&mut self, instr: Instruction) {
         let v = match instr.rd() {
-            6  => {println!(">>>>> jumpdest"); 0}, // jumpdest..
+            6  => { 0}, // jumpdest..
             7  => 0, // not used (0)
             8  => self.baddr,// bad virtual address (R),
             12 => self.sr,

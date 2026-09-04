@@ -170,7 +170,6 @@ impl Mdec {
     fn decode_macoblock(&mut self, depth: Depth, is_signed: bool, b15: bool, parameters: &Vec<u32>) {
         let raw: &[u16] = bytemuck::cast_slice(parameters.as_slice());
         let mut source: VecDeque<u16> = raw.iter().copied().collect();
-        println!("decode macroblock");
 
          match depth {
                     Depth::Bit4 => {

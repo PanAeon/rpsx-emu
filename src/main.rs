@@ -49,6 +49,7 @@ mod mdec;
 mod renderer;
 
 mod resources;
+mod cdxa;
 
 fn main() {
     run().unwrap();
@@ -486,7 +487,8 @@ impl State {
     let mut scheduler = scheduler::Scheduler::default();
     scheduler.init();
     let timers = timers::Timers::new();
-    let gpu = gpu::Gpu::new();
+    let (sender, receiver, handle) = renderer::Renderer::create();
+    let gpu = gpu::Gpu::new(sender, receiver, handle);
     let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
         gpu);
     let cpu = cpu::Cpu::new(memory_bus);
@@ -568,7 +570,7 @@ impl State {
         // for _ in 0..120*735 {
         //     state.audio_sender.send([0i16, 0i16]).expect("can't send audio sample");
         // }
-        // State::sideload_exe(&mut state);
+        State::sideload_exe(&mut state);
         state.audio_stream.play()?;
         //
 
@@ -647,13 +649,15 @@ impl State {
     }
 
     fn sideload_exe(&mut self) {
-        // let filename = "/foo/psxtest_cpu.exe";
+        let filename = "/foo/psxtest_cpu.exe";
+        // let filename = "/foo/psxtest_gte.exe";
+        // let filename = "/foo/psxtest_gpu.exe";
         // let filename = "/foo/psx/PSX/CPUTest/CPU/LOADSTORE/LB/CPULB.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/MemoryTransfer/MemoryTransfer16BPP.exe";
         // let filename = "/foo/psx/PSX/Cube/Cube.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT4BPP/RenderTextureRectangleCLUT4BPP.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT8BPP/RenderTextureRectangleCLUT8BPP.exe";
-        let filename = "/foo/psx/PSX/GPU/16BPP/RenderLine/RenderLine16BPP.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderLine/RenderLine16BPP.exe";
         let mut file = match std::fs::File::open(filename) {
             Ok(file) => file,
             Err(e) => panic!("Can't load exe {}", e),
@@ -777,7 +781,9 @@ impl State {
                     scheduler::Event::SpuTick => {
                         Spu::clock(&mut self.cpu.memory_bus);
                          // self.cpu.memory_bus.spu.clock();
-                         let sample = self.cpu.memory_bus.spu.mix();
+                         // let spu = &mut self.cpu.memory_bus.spu;
+                        let cdrom = &mut self.cpu.memory_bus.cdrom;
+                         let sample = self.cpu.memory_bus.spu.mix(cdrom);
                          self.audio_sender.send(sample).expect("can't send audio sample");
 
                         // self.audio_tick += 1;
@@ -805,7 +811,7 @@ impl State {
                     }
                     scheduler::Event::VBlankStart => {
                         // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
-                        let (w, h) = self.cpu.memory_bus.gpu.render_fb(&mut self.framebuffer, self.display_vram);
+                        let (w, h) = self.cpu.memory_bus.gpu.render_fb(self.framebuffer.clone(), self.display_vram);
                         self.update_vertex_buffer_if_needed(w, h, false);
                         // if self.cpu.memory_bus.gpu.interrupt == false {
                             self.cpu.memory_bus.irqctl.status.set_vblank(true);
@@ -956,14 +962,14 @@ impl State {
         // tilemap stuff end
         // output.present();
         // TODO: must move up..
-        self.frame_num += 1;
+        // self.frame_num += 1;
 
         // Ok(())
     }
 
     fn handle_mouse_moved(&mut self, x: f64, y: f64) {
-        self.clear_color.r = x / self.config.width as f64;
-        self.clear_color.g = y / self.config.height as f64;
+        // self.clear_color.r = x / self.config.width as f64;
+        // self.clear_color.g = y / self.config.height as f64;
     }
 
     fn acquire_surface(&mut self, window: Arc<Window>) -> Option<wgpu::SurfaceTexture> {
@@ -1211,24 +1217,24 @@ impl ApplicationHandler<State> for App {
             },
             WindowEvent::Resized(size) => state.resize(size.width, size.height),
             WindowEvent::RedrawRequested => {
-        let before = web_time::Instant::now();
-        let elapsed = before.duration_since(state.render_finished);
-        const FRAME_TIME: u128 = 16666;
-        if elapsed.as_micros() < FRAME_TIME {
-            let sl = FRAME_TIME - elapsed.as_micros();
-            // std::thread::sleep(std::time::Duration::new(0, 1000 * sl as u32));
-        }
-        let after = web_time::Instant::now();
-        state.render_time_ms = after
-            .checked_duration_since(state.render_finished)
-            .unwrap()
-            .subsec_nanos()
-            / 1000;
-        if state.frame_num % 60 == 1 {
-            // println!("ms: {}",  (self.render_time_ms) as f32 / 100_000.0);
-            let msg = format!("fps: {}", 1_000_000.0 / (state.render_time_ms) as f32);
-            println!("{}", msg);
-        }
+        // let before = web_time::Instant::now();
+        // let elapsed = before.duration_since(state.render_finished);
+        // const FRAME_TIME: u128 = 16666;
+        // if elapsed.as_micros() < FRAME_TIME {
+        //     let sl = FRAME_TIME - elapsed.as_micros();
+        //     // std::thread::sleep(std::time::Duration::new(0, 1000 * sl as u32));
+        // }
+        // let after = web_time::Instant::now();
+        // state.render_time_ms = after
+        //     .checked_duration_since(state.render_finished)
+        //     .unwrap()
+        //     .subsec_nanos()
+        //     / 1000;
+        // if state.frame_num % 60 == 1 {
+        //     // println!("ms: {}",  (self.render_time_ms) as f32 / 100_000.0);
+        //     let msg = format!("fps: {}", 1_000_000.0 / (state.render_time_ms) as f32);
+        //     println!("{}", msg);
+        // }
 
                 state.update(event_loop);
                 if self.occluded {
@@ -1287,297 +1293,8 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-struct CameraController {
-    speed: f32,
-    is_forward_pressed: bool,
-    is_backward_pressed: bool,
-    is_left_pressed: bool,
-    is_right_pressed: bool,
-}
 
-impl CameraController {
-    fn new(speed: f32) -> Self {
-        Self {
-            speed,
-            is_forward_pressed: false,
-            is_backward_pressed: false,
-            is_left_pressed: false,
-            is_right_pressed: false,
-        }
-    }
 
-    fn handle_key(&mut self, code: KeyCode, is_pressed: bool) -> bool {
-        match code {
-            KeyCode::KeyW | KeyCode::ArrowUp => {
-                self.is_forward_pressed = is_pressed;
-                true
-            }
-            KeyCode::KeyA | KeyCode::ArrowLeft => {
-                self.is_left_pressed = is_pressed;
-                true
-            }
-            KeyCode::KeyS | KeyCode::ArrowDown => {
-                self.is_backward_pressed = is_pressed;
-                true
-            }
-            KeyCode::KeyD | KeyCode::ArrowRight => {
-                self.is_right_pressed = is_pressed;
-                true
-            }
-            _ => false,
-        }
-    }
-}
-
-struct Instance {
-    position: cgmath::Vector3<f32>,
-    rotation: cgmath::Quaternion<f32>,
-}
-
-// Create a new `TilemapPipeline` capable of rendering to the provided `texture_format`.
-// pub fn new(
-//     device: &wgpu::Device,
-//     texture_format: wgpu::TextureFormat,
-//     depth_stencil: Option<wgpu::DepthStencilState>,
-// ) -> TilemapPipeline {
-// }
-/*
-/// Upload a list of tilesets to the GPU, replacing the previous set of tilesets, and reusing texture allocations if the sizes are compatible.
-pub fn upload_tileset(
-    state: &State,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    tileset: &TilesetData,
-) {
-    let params = TilesetBuffer {
-        width: 2048,     //tileset.pixel_size.x,
-        height: 2048,    //tileset.pixel_size.y,
-        tile_width: 16,  //tileset.size_of_tile.x,
-        tile_height: 16, //tileset.size_of_tile.y,
-    };
-
-    // self.tilesets.allocate_and_upload(
-    // (tileset.pixel_size, tileset.size_of_tile),
-    // device,
-    // queue,
-    // |device, (size, tilesize)| {
-    // TilemapPipeline::allocate_tilesets(
-    //     device,
-    //     &self.tileset_bind_group_layout,
-    //     size,
-    //     tilesize,
-    // )
-    // },
-    // &params,
-    // |i, datum| {
-    // self.active_tilesets
-    //     .push(((tileset.pixel_size, tileset.size_of_tile), i as u32));
-    let texture_data = &tileset.data;
-    let idl = wgpu::TexelCopyBufferLayout {
-        offset: 0,
-        bytes_per_row: Some(4 * 2048),
-        rows_per_image: Some(2048),
-    };
-    let extent = wgpu::Extent3d {
-        width: 2048,
-        height: 2048,
-        depth_or_array_layers: 1, //tile_size.x * tile_size.y,
-    };
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &state.tileset_texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        bytemuck::cast_slice::<u32, u8>(&texture_data),
-        idl,
-        extent,
-    );
-    queue.write_buffer(
-        &state.tileset_params_buffer,
-        0,
-        &bytemuck::bytes_of(&[params])[..],
-    );
-}
-
-/// Upload a list of tilesets to the GPU, replacing the previous set of tilesets, and reusing texture allocations if the sizes are compatible.
-pub fn upload_fonts(
-    state: &State,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    tileset: &TilesetData,
-) {
-    let params = TilesetBuffer {
-        width: 2048,     //tileset.pixel_size.x,
-        height: 2048,    //tileset.pixel_size.y,
-        tile_width: 16,  //tileset.size_of_tile.x,
-        tile_height: 16, //tileset.size_of_tile.y,
-    };
-
-    // self.tilesets.allocate_and_upload(
-    // (tileset.pixel_size, tileset.size_of_tile),
-    // device,
-    // queue,
-    // |device, (size, tilesize)| {
-    // TilemapPipeline::allocate_tilesets(
-    //     device,
-    //     &self.tileset_bind_group_layout,
-    //     size,
-    //     tilesize,
-    // )
-    // },
-    // &params,
-    // |i, datum| {
-    // self.active_tilesets
-    //     .push(((tileset.pixel_size, tileset.size_of_tile), i as u32));
-    let texture_data = &tileset.data;
-    let idl = wgpu::TexelCopyBufferLayout {
-        offset: 0,
-        bytes_per_row: Some(4 * 2048),
-        rows_per_image: Some(2048),
-    };
-    let extent = wgpu::Extent3d {
-        width: 2048,
-        height: 2048,
-        depth_or_array_layers: 1, //tile_size.x * tile_size.y,
-    };
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &state.fonts_texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        bytemuck::cast_slice::<u32, u8>(&texture_data),
-        idl,
-        extent,
-    );
-    queue.write_buffer(
-        &state.tileset_params_buffer,
-        0,
-        &bytemuck::bytes_of(&[params])[..],
-    );
-}
-
-pub fn upload_tilemap(
-    state: &State,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    tilemap_draw_data: &TilemapDrawData,
-) {
-    let TilemapDrawData {
-        transform,
-        tilemap,
-        tileset,
-    } = tilemap_draw_data;
-    let size = tilemap.tile_size;
-    let params = TilemapBuffer {
-        transform: transform.into_row_arrays(),
-        // transform: transform.into_col_arrays(),
-        width: size.x,
-        height: size.y,
-        _noise_data: Default::default(),
-        _pad: Default::default(),
-    };
-    // state.draw_calls.allocate_and_upload(
-    // size,
-    // device,
-    // queue,
-    // |device, size| {
-    // TilemapPipeline::allocate_draw_call(
-    // device,
-    // &state.tilemap_bind_group_layout,
-    // size,
-    // )
-    // },
-    // &params,
-    // |_, call| {
-    let texture_data = &tilemap.data;
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &state.tilemap_index_texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        bytemuck::cast_slice::<u16, u8>(texture_data.as_ref()),
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * 64), //(4*tilemap.tile_size.x),//4*128),
-            rows_per_image: Some(64),    //(tilemap.tile_size.y)//128),
-        },
-        wgpu::Extent3d {
-            width: 64,  //size.x,
-            height: 64, //size.y,
-            depth_or_array_layers: 16,
-        },
-    );
-    // state.tilemap_params_buffer = params.;
-    queue.write_buffer(
-        &state.tilemap_params_buffer,
-        0,
-        &bytemuck::bytes_of(&[params])[..],
-    );
-}
-
-pub fn upload_sprites(
-    state: &State,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    tilemap_draw_data: &TilemapDrawData,
-) {
-    let TilemapDrawData {
-        transform,
-        tilemap,
-        tileset,
-    } = tilemap_draw_data;
-    let size = tilemap.tile_size;
-    let params = TilemapBuffer {
-        transform: transform.into_row_arrays(),
-        // transform: transform.into_col_arrays(),
-        width: size.x,
-        height: size.y,
-        _noise_data: Default::default(),
-        _pad: Default::default(),
-    };
-    // state.draw_calls.allocate_and_upload(
-    // size,
-    // device,
-    // queue,
-    // |device, size| {
-    // TilemapPipeline::allocate_draw_call(
-    // device,
-    // &state.tilemap_bind_group_layout,
-    // size,
-    // )
-    // },
-    // &params,
-    // |_, call| {
-    let texture_data = &tilemap.data;
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &state.tilemap_sprites_texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        bytemuck::cast_slice::<u16, u8>(texture_data.as_ref()),
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * 64), //(4*tilemap.tile_size.x),//4*128),
-            rows_per_image: Some(64),    //(tilemap.tile_size.y)//128),
-        },
-        wgpu::Extent3d {
-            width: 64,  //size.x,
-            height: 64, //size.y,
-            depth_or_array_layers: 16,
-        },
-    );
-    // state.tilemap_params_buffer = params.;
-    // queue.write_buffer(&state.tilemap_params_buffer, 0,
-    //      &bytemuck::bytes_of(&[params])[..]);
-}*/
 
 /// Set the camera matrix that maps from world coordinates to Normalized Device Coordinates.
 pub fn set_camera(state: &State, queue: &wgpu::Queue, camera: Mat4<f32>) {

@@ -2,7 +2,7 @@ use std::{cell::Cell, collections::VecDeque, ops::{Index, IndexMut, Range}};
 
 use num_enum::FromPrimitive;
 
-use crate::memory_bus::{Addressable, MemoryBus};
+use crate::{cdrom::CDRom, memory_bus::{Addressable, MemoryBus}};
 
 bitfield::bitfield! {
     #[derive(Default)]
@@ -487,12 +487,15 @@ impl Spu {
         spu.last_irq_line = irq_line;
     }
 
-    pub fn mix(&mut self) -> [i16; 2] {
+    pub fn mix(&mut self, cdrom: &mut CDRom) -> [i16; 2] {
         let mut mixed_sample_l: i32 = 0;
         let mut mixed_sample_r: i32 = 0;
         let mut mixed_reverb = [0i32;2];
 
-        let (cd_l, cd_r) = (0_i16, 0_i16);
+        let (cd_l, cd_r) = if self.control.cd_audio_enabled() {
+            (cdrom.get_audio_sample(), cdrom.get_audio_sample())
+        } else 
+        { (0_i16, 0_i16) };
 
         self.write_capture_buffer(cd_l, 0x000);
         self.write_capture_buffer(cd_r, 0x400);

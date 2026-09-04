@@ -3,7 +3,7 @@ use std::thread::JoinHandle;
 
 use crossbeam::channel::{Receiver, Sender};
 
-use crate::{bios::Bios, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, gpu::{self, Gpu, GpuMsg}, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
+use crate::{bios::Bios, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, gpu::{ Gpu }, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
 
 mod map {
     pub struct Range(u32, u32);

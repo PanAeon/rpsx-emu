@@ -567,11 +567,15 @@ impl Renderer {
         let mut min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
         let mut max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
 
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
+            return;
+        };
+
         // clip pixels outside of the drawing area
-        min_x = cmp::max(min_x, ctx.drawing_area_left as i32);
-        max_x = cmp::min(max_x, ctx.drawing_area_right as i32);
-        min_y = cmp::max(min_y, ctx.drawing_area_top as i32);
-        max_y = cmp::min(max_y, ctx.drawing_area_bottom as i32);
+        // min_x = cmp::max(min_x, ctx.drawing_area_left as i32);
+        // max_x = cmp::min(max_x, ctx.drawing_area_right as i32);
+        // min_y = cmp::max(min_y, ctx.drawing_area_top as i32);
+        // max_y = cmp::min(max_y, ctx.drawing_area_bottom as i32);
 
         for y in min_y..max_y {
             for x in min_x..max_x {
@@ -617,11 +621,15 @@ impl Renderer {
         let mut min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
         let mut max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
 
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
+            return;
+        };
+
         // clip pixels outside of the drawing area
-        min_x = cmp::max(min_x, ctx.drawing_area_left as i32);
-        max_x = cmp::min(max_x, ctx.drawing_area_right as i32);
-        min_y = cmp::max(min_y, ctx.drawing_area_top as i32);
-        max_y = cmp::min(max_y, ctx.drawing_area_bottom as i32);
+        // min_x = cmp::max(min_x, ctx.drawing_area_left as i32);
+        // max_x = cmp::min(max_x, ctx.drawing_area_right as i32);
+        // min_y = cmp::max(min_y, ctx.drawing_area_top as i32);
+        // max_y = cmp::min(max_y, ctx.drawing_area_bottom as i32);
 
         for y in min_y..max_y {
             for x in min_x..max_x {
@@ -696,11 +704,15 @@ impl Renderer {
         let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
         let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
+            return;
+        };
+
         // clip pixels outside of the drawing area
-        min_x = cmp::max(min_x, ctx.drawing_area_left as i32);
-        max_x = cmp::min(max_x, ctx.drawing_area_right as i32);
-        min_y = cmp::max(min_y, ctx.drawing_area_top as i32);
-        max_y = cmp::min(max_y, ctx.drawing_area_bottom as i32);
+        // min_x = cmp::max(min_x, ctx.drawing_area_left as i32);
+        // max_x = cmp::min(max_x, ctx.drawing_area_right as i32);
+        // min_y = cmp::max(min_y, ctx.drawing_area_top as i32);
+        // max_y = cmp::min(max_y, ctx.drawing_area_bottom as i32);
 
         let clut = Clut::new(clut);
         let texture = Texture::new(page, clut);
@@ -772,11 +784,15 @@ impl Renderer {
         let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
         let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
+            return;
+        };
+
         // clip pixels outside of the drawing area
-        min_x = cmp::max(min_x, ctx.drawing_area_left as i32);
-        max_x = cmp::min(max_x, ctx.drawing_area_right as i32);
-        min_y = cmp::max(min_y, ctx.drawing_area_top as i32);
-        max_y = cmp::min(max_y, ctx.drawing_area_bottom as i32);
+        // min_x = cmp::max(min_x, ctx.drawing_area_left as i32);
+        // max_x = cmp::min(max_x, ctx.drawing_area_right as i32);
+        // min_y = cmp::max(min_y, ctx.drawing_area_top as i32);
+        // max_y = cmp::min(max_y, ctx.drawing_area_bottom as i32);
 
         let clut = Clut::new(clut);
         let texture = Texture::new(page, clut);

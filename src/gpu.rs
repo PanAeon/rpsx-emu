@@ -7,7 +7,7 @@ use std::{
 use crate::renderer::{RendererMsg, RendererResponse, RenderingContext};
 use crate::{
     Color,
-    memory_bus::{AccessWidth, Addressable},
+    system::{AccessWidth, Addressable},
 };
 
 pub struct Gpu {

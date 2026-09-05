@@ -87,7 +87,7 @@ impl Addressable for u32 {
     }
 }
 
-pub struct MemoryBus {
+pub struct System {
     bios: Bios,
     pub ram: Ram,
     scratchpad: Scratchpad,
@@ -115,11 +115,11 @@ pub fn mask_region(addr: u32) -> u32 {
     addr & REGION_MASK[index]
 }
 
-impl MemoryBus {
+impl System {
     pub fn new(bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, spu: Spu, irqctl: InterruptController,
-        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu) -> MemoryBus {
+        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu) -> System {
     
-        MemoryBus { bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
+        System { bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
         gpu}
     }
     pub fn load<T:Addressable>(&mut self, addr: u32) -> T {

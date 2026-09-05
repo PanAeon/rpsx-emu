@@ -2,7 +2,7 @@ use std::{cell::Cell, collections::VecDeque, ops::{Index, IndexMut, Range}};
 
 use num_enum::FromPrimitive;
 
-use crate::{cdrom::CDRom, memory_bus::{Addressable, MemoryBus}};
+use crate::{cdrom::CDRom, system::{Addressable, System}};
 
 bitfield::bitfield! {
     #[derive(Default)]
@@ -471,8 +471,8 @@ impl Spu {
         }
     }
 
-    pub fn clock(memory_bus: &mut MemoryBus) {
-        let spu = &mut memory_bus.spu;
+    pub fn clock(system: &mut System) {
+        let spu = &mut system.spu;
         let mut prev_output: i16 =  0;
         for voice in &mut spu.voices {
             voice.clock(&spu.memory, prev_output);
@@ -482,7 +482,7 @@ impl Spu {
 
         let irq_line = spu.memory.irq.get();
         if !spu.last_irq_line && irq_line && spu.control.irq9_enabled() && spu.control.enabled() {
-            memory_bus.irqctl.status.set_spu(true);
+            system.irqctl.status.set_spu(true);
         }
         spu.last_irq_line = irq_line;
     }

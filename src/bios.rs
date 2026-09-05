@@ -1,6 +1,6 @@
 use std::{fs::File, io::{Error, Read}, path::Path};
 
-use crate::memory_bus::Addressable;
+use crate::system::Addressable;
 
 
 pub struct Bios {

@@ -1,7 +1,6 @@
 use cgmath::prelude::*;
 
 use cpal::traits::StreamTrait;
-use env_logger::init;
 // use env_logger::fmt::style::Color;
 use std::cmp::min;
 use std::fs::File;
@@ -34,7 +33,7 @@ mod bios;
 mod cpu;
 mod dma;
 mod gpu;
-mod memory_bus;
+mod system;
 mod ram;
 mod spu;
 mod scratchpad;
@@ -55,13 +54,6 @@ fn main() {
     run().unwrap();
 }
 
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_cols(
-    cgmath::Vector4::new(1.0, 0.0, 0.0, 0.0),
-    cgmath::Vector4::new(0.0, 1.0, 0.0, 0.0),
-    cgmath::Vector4::new(0.0, 0.0, 0.5, 0.0),
-    cgmath::Vector4::new(0.0, 0.0, 0.5, 1.0),
-);
 
 const fn mat4_const_from_rows(m: [[f32; 4]; 4]) -> Mat4<f32> {
     Mat4 {
@@ -489,9 +481,9 @@ impl State {
     let timers = timers::Timers::new();
     let (sender, receiver, handle) = renderer::Renderer::create();
     let gpu = gpu::Gpu::new(sender, receiver, handle);
-    let memory_bus = memory_bus::MemoryBus::new(bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
+    let system = system::System::new(bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
         gpu);
-    let cpu = cpu::Cpu::new(memory_bus);
+    let cpu = cpu::Cpu::new(system);
 
 
     let core_ids = core_affinity::get_core_ids().unwrap();
@@ -570,7 +562,7 @@ impl State {
         // for _ in 0..120*735 {
         //     state.audio_sender.send([0i16, 0i16]).expect("can't send audio sample");
         // }
-        State::sideload_exe(&mut state);
+        // State::sideload_exe(&mut state);
         state.audio_stream.play()?;
         //
 
@@ -683,7 +675,7 @@ impl State {
         let exe_size= u32::from_le_bytes(data[0x1C..0x20].try_into().unwrap()) as usize;
         let initial_sp   = u32::from_le_bytes(data[0x30..0x34].try_into().unwrap());
 
-        // exe_ram_addr = crate::memory_bus::mask_region(exe_ram_addr);
+        // exe_ram_addr = crate::system::mask_region(exe_ram_addr);
         println!("exe ram addr: 0x{:X}", exe_ram_addr);
         println!("initial pc: 0x{:X}", initial_pc);
 
@@ -691,10 +683,10 @@ impl State {
         // let exe_size = (exe_size_2kb);
         // let exe_size = 1013760 - 2048;
         println!("exe size: {}", exe_size);
-        self.cpu.memory_bus.ram.data[exe_ram_addr as usize .. (exe_ram_addr  as usize + exe_size)]
+        self.cpu.system.ram.data[exe_ram_addr as usize .. (exe_ram_addr  as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
         //  let dest = self
-        //     .cpu.memory_bus.ram.data
+        //     .cpu.system.ram.data
         //     .bytes()
         //     .get_mut(exe_ram_addr as usize..exe_ram_addr as usize + exe_size)
         //     .context("EXE load address out of RAM bounds")?;
@@ -768,22 +760,22 @@ impl State {
         self.update_gamepad();
         if self.paused {
             println!("current pc: 0x{:X}", self.cpu.pc);
-            // self.cpu.memory_bus.irqctl.status.set_sio(true);
-            // self.cpu.memory_bus.irqctl.status.set_ctl_mem(true);
+            // self.cpu.system.irqctl.status.set_sio(true);
+            // self.cpu.system.irqctl.status.set_ctl_mem(true);
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;
             self.paused = false;
             return;
         }
         loop {
-            if let Some(event) = self.cpu.memory_bus.scheduler.get_next_event() {
+            if let Some(event) = self.cpu.system.scheduler.get_next_event() {
                 match event {
                     scheduler::Event::SpuTick => {
-                        Spu::clock(&mut self.cpu.memory_bus);
-                         // self.cpu.memory_bus.spu.clock();
-                         // let spu = &mut self.cpu.memory_bus.spu;
-                        let cdrom = &mut self.cpu.memory_bus.cdrom;
-                         let sample = self.cpu.memory_bus.spu.mix(cdrom);
+                        Spu::clock(&mut self.cpu.system);
+                         // self.cpu.system.spu.clock();
+                         // let spu = &mut self.cpu.system.spu;
+                        let cdrom = &mut self.cpu.system.cdrom;
+                         let sample = self.cpu.system.spu.mix(cdrom);
                          self.audio_sender.send(sample).expect("can't send audio sample");
 
                         // self.audio_tick += 1;
@@ -799,7 +791,7 @@ impl State {
                         // }
 
                          // self.writer.write_all(&sample[0].to_le_bytes()).expect("foo");
-                        // self.cpu.memory_bus.spu.clock();
+                        // self.cpu.system.spu.clock();
                         // self.audio_buffer.push(sample);
                         // if self.audio_buffer.len() == 735 {
                         //     self.audio_buffer.iter().for_each(|sample| {
@@ -810,47 +802,47 @@ impl State {
                         // }
                     }
                     scheduler::Event::VBlankStart => {
-                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
-                        let (w, h) = self.cpu.memory_bus.gpu.render_fb(self.framebuffer.clone(), self.display_vram);
+                        // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
+                        let (w, h) = self.cpu.system.gpu.render_fb(self.framebuffer.clone(), self.display_vram);
                         self.update_vertex_buffer_if_needed(w, h, false);
-                        // if self.cpu.memory_bus.gpu.interrupt == false {
-                            self.cpu.memory_bus.irqctl.status.set_vblank(true);
+                        // if self.cpu.system.gpu.interrupt == false {
+                            self.cpu.system.irqctl.status.set_vblank(true);
                         // }
-                        timers::Timers::enter_vsync(&mut self.cpu.memory_bus);
-                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
-                        self.cpu.memory_bus.gpu.enter_vsync();
+                        timers::Timers::enter_vsync(&mut self.cpu.system);
+                        // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
+                        self.cpu.system.gpu.enter_vsync();
                     },
                     scheduler::Event::VBlankEnd => {
-                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
-                        self.cpu.memory_bus.gpu.exit_vsync();
-                        timers::Timers::exit_vsync(&mut self.cpu.memory_bus);
-                        // let (w, h) = self.cpu.memory_bus.gpu_ctrl_receiver.recv().expect("ok");
+                        // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
+                        self.cpu.system.gpu.exit_vsync();
+                        timers::Timers::exit_vsync(&mut self.cpu.system);
+                        // let (w, h) = self.cpu.system.gpu_ctrl_receiver.recv().expect("ok");
                         // self.update_vertex_buffer_if_needed(w, h, false);
                         break;
                     },
                     scheduler::Event::HBlankStart => {
-                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
-                        self.cpu.memory_bus.gpu.enter_hsync();
-                        timers::Timers::enter_hsync(&mut self.cpu.memory_bus);
+                        // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
+                        self.cpu.system.gpu.enter_hsync();
+                        timers::Timers::enter_hsync(&mut self.cpu.system);
                     },
                     scheduler::Event::HBlankEnd => {
-                        // self.cpu.memory_bus.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
-                        self.cpu.memory_bus.gpu.exit_hsync();
-                        timers::Timers::exit_hsync(&mut self.cpu.memory_bus);
+                        // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
+                        self.cpu.system.gpu.exit_hsync();
+                        timers::Timers::exit_hsync(&mut self.cpu.system);
                     },
                     scheduler::Event::CDRomResultIrq(resp) => {
-                        cdrom::CDRom::process_response(&mut self.cpu.memory_bus, resp);
+                        cdrom::CDRom::process_response(&mut self.cpu.system, resp);
                     },
-                    scheduler::Event::Timer(i) => timers::Timers::process_interrupt(&mut self.cpu.memory_bus, i),
-                    scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.cpu.memory_bus),
-                    scheduler::Event::DsrOff     => self.cpu.memory_bus.sio.turn_dsr_off(),
+                    scheduler::Event::Timer(i) => timers::Timers::process_interrupt(&mut self.cpu.system, i),
+                    scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.cpu.system),
+                    scheduler::Event::DsrOff     => self.cpu.system.sio.turn_dsr_off(),
                 }
             }
             for _ in 0..20 {
                 self.cpu.run_next_instruction();
                 self.cpu.check_for_tty_output();
             }
-            self.cpu.memory_bus.scheduler.advance(40); // 40???
+            self.cpu.system.scheduler.advance(40); // 40???
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -864,11 +856,11 @@ impl State {
         //         self.cpu.check_for_tty_output();
         //     }
         //     if i == 500 {
-        //                  self.cpu.memory_bus.irqctl.status.set_vblank(true);
+        //                  self.cpu.system.irqctl.status.set_vblank(true);
         //     }
-        //     self.cpu.memory_bus.spu.clock();
-        //     audio_buffer.push(self.cpu.memory_bus.spu.mix());
-        //     // self.audio_sender.send(self.cpu.memory_bus.spu.mix()).expect("can't send audio");
+        //     self.cpu.system.spu.clock();
+        //     audio_buffer.push(self.cpu.system.spu.mix());
+        //     // self.audio_sender.send(self.cpu.system.spu.mix()).expect("can't send audio");
         // }
 
 
@@ -959,12 +951,6 @@ impl State {
             }
             self.queue.submit(vec![encoder.finish()]);
         }
-        // tilemap stuff end
-        // output.present();
-        // TODO: must move up..
-        // self.frame_num += 1;
-
-        // Ok(())
     }
 
     fn handle_mouse_moved(&mut self, x: f64, y: f64) {
@@ -1073,7 +1059,7 @@ impl State {
         }
     }
     pub fn update_gamepad(&mut self) {
-        let mut prev_buttons = self.cpu.memory_bus.sio.gamepad1.digital_switches;
+        let mut prev_buttons = self.cpu.system.sio.gamepad1.digital_switches;
         while let Some(Event { id, event, time, .. }) = self.gilrs.next_event() {
             // println!("{:?} New event from {}: {:?}", time, id, event);
             match event {
@@ -1162,7 +1148,7 @@ impl State {
             }
         }
         // println!("0x{:X}", prev_buttons);
-        self.cpu.memory_bus.sio.gamepad1.set_buttons(prev_buttons);
+        self.cpu.system.sio.gamepad1.set_buttons(prev_buttons);
     }
 }
 
@@ -1304,8 +1290,6 @@ pub fn set_camera(state: &State, queue: &wgpu::Queue, camera: Mat4<f32>) {
         bytemuck::cast_slice(&camera.into_col_arrays()),
     );
 }
-/// Render the tilemaps to the provided renderpass, whose color attachment must match the
-/// texture format provided when this was created.
 pub fn render<'a: 'pass, 'pass>(
     state: &State,
     device: &wgpu::Device,

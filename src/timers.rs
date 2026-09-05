@@ -1,5 +1,5 @@
 use crate::{
-    memory_bus::{Addressable, MemoryBus},
+    system::{Addressable, System},
     scheduler::{LINE_DURATION, TimerInterrupt},
 };
 
@@ -143,69 +143,69 @@ impl Timers {
         CLOCK_SOURCE_MATRIX[which][source_raw as usize]
     }
 
-    pub fn ticks_to_cycles(memory_bus: &MemoryBus, which: usize, ticks: u32) -> u64 {
+    pub fn ticks_to_cycles(system: &System, which: usize, ticks: u32) -> u64 {
         let ticks = ticks as u64;
-        match memory_bus.timers.clock_source(which) {
+        match system.timers.clock_source(which) {
             ClockSource::Cpu => ticks,
             ClockSource::CpuDiv8 => ticks * 8,
-            ClockSource::Dot => ticks * (memory_bus.gpu.get_clock_divider() as u64),
+            ClockSource::Dot => ticks * (system.gpu.get_clock_divider() as u64),
             ClockSource::HBlank => ticks * LINE_DURATION,
         }
     }
 
-    pub fn enter_vsync(memory_bus: &mut MemoryBus) {
-        Self::update_value(memory_bus, 1);
-        memory_bus.timers.in_vsync = true;
-        match memory_bus.timers.sync_mode(1) {
-            SyncMode::ResetOnVSync | SyncMode::VSyncOnly => memory_bus.timers.timers[1].counter = 0,
+    pub fn enter_vsync(system: &mut System) {
+        Self::update_value(system, 1);
+        system.timers.in_vsync = true;
+        match system.timers.sync_mode(1) {
+            SyncMode::ResetOnVSync | SyncMode::VSyncOnly => system.timers.timers[1].counter = 0,
             _ => (),
         }
     }
 
-    pub fn exit_vsync(memory_bus: &mut MemoryBus) {
-        memory_bus.timers.in_vsync = false;
-        if memory_bus.timers.sync_mode(1) == SyncMode::StartOnNextFrame {
-            memory_bus.timers.timers[1].mode.set_sync_enabled(false)
+    pub fn exit_vsync(system: &mut System) {
+        system.timers.in_vsync = false;
+        if system.timers.sync_mode(1) == SyncMode::StartOnNextFrame {
+            system.timers.timers[1].mode.set_sync_enabled(false)
         }
     }
 
-    pub fn enter_hsync(memory_bus: &mut MemoryBus) {
-        Self::update_value(memory_bus, 0);
-        memory_bus.timers.hblanks += 1;
-        memory_bus.timers.in_hsync = true;
-        match memory_bus.timers.sync_mode(0) {
-            SyncMode::ResetOnHSync | SyncMode::HSyncOnly => memory_bus.timers.timers[0].counter = 0,
+    pub fn enter_hsync(system: &mut System) {
+        Self::update_value(system, 0);
+        system.timers.hblanks += 1;
+        system.timers.in_hsync = true;
+        match system.timers.sync_mode(0) {
+            SyncMode::ResetOnHSync | SyncMode::HSyncOnly => system.timers.timers[0].counter = 0,
             _ => (),
         }
     }
 
-    pub fn exit_hsync(memory_bus: &mut MemoryBus) {
-        memory_bus.timers.in_hsync = false;
-        if memory_bus.timers.sync_mode(0) == SyncMode::StartOnNextLine {
-            memory_bus.timers.timers[0].mode.set_sync_enabled(false)
+    pub fn exit_hsync(system: &mut System) {
+        system.timers.in_hsync = false;
+        if system.timers.sync_mode(0) == SyncMode::StartOnNextLine {
+            system.timers.timers[0].mode.set_sync_enabled(false)
         }
-        memory_bus.timers.timers[0].last_read = memory_bus.scheduler.cycle;
-        Self::reschedule_interrupt_if_needed(memory_bus, 0);
+        system.timers.timers[0].last_read = system.scheduler.cycle;
+        Self::reschedule_interrupt_if_needed(system, 0);
     }
 
 
 
-    fn update_value(memory_bus: &mut MemoryBus, which: usize) {
-        let timer =  &mut memory_bus.timers.timers[which];
+    fn update_value(system: &mut System, which: usize) {
+        let timer =  &mut system.timers.timers[which];
 
-        let clock_delta = (memory_bus.scheduler.cycle - timer.last_read) as u32;
-        timer.last_read = memory_bus.scheduler.cycle;
+        let clock_delta = (system.scheduler.cycle - timer.last_read) as u32;
+        timer.last_read = system.scheduler.cycle;
 
-        match memory_bus.timers.sync_mode(which) {
+        match system.timers.sync_mode(which) {
             SyncMode::Paused => return,
-            SyncMode::PauseOnHSync if memory_bus.timers.in_hsync => return,
-            SyncMode::PauseOnVSync if memory_bus.timers.in_vsync => return,
-            SyncMode::HSyncOnly if !memory_bus.timers.in_hsync => return,
-            SyncMode::VSyncOnly if !memory_bus.timers.in_vsync => return,
+            SyncMode::PauseOnHSync if system.timers.in_hsync => return,
+            SyncMode::PauseOnVSync if system.timers.in_vsync => return,
+            SyncMode::HSyncOnly if !system.timers.in_hsync => return,
+            SyncMode::VSyncOnly if !system.timers.in_vsync => return,
             _ => (),
         }
 
-        let timer =  &mut memory_bus.timers.timers[which];
+        let timer =  &mut system.timers.timers[which];
 
         let reset = if timer.mode.reset_to_target() {
             u32::from(timer.target)
@@ -214,18 +214,18 @@ impl Timers {
         };
 
         // Only drain hblanks when this timer actually uses the HBlank clock.
-        let delta = match memory_bus.timers.clock_source(which) {
+        let delta = match system.timers.clock_source(which) {
             ClockSource::Cpu => clock_delta,
             ClockSource::CpuDiv8 => clock_delta / 8,
-            ClockSource::Dot => clock_delta / (memory_bus.gpu.get_clock_divider() as u32),
+            ClockSource::Dot => clock_delta / (system.gpu.get_clock_divider() as u32),
             ClockSource::HBlank => {
-                let h = memory_bus.timers.hblanks;
-                memory_bus.timers.hblanks = 0;
+                let h = system.timers.hblanks;
+                system.timers.hblanks = 0;
                 h
             }
         };
 
-        let timer =  &mut memory_bus.timers.timers[which];
+        let timer =  &mut system.timers.timers[which];
         let old_counter = timer.counter as u64;
         let delta64 = delta as u64;
         let target64 = timer.target as u64;
@@ -244,27 +244,27 @@ impl Timers {
         timer.counter = ((old_counter + delta64) % (reset64 + 1)) as u32;
     }
 
-    fn reschedule_interrupt_if_needed(memory_bus: &mut MemoryBus, which: usize) {
-        match memory_bus.timers.sync_mode(which) {
+    fn reschedule_interrupt_if_needed(system: &mut System, which: usize) {
+        match system.timers.sync_mode(which) {
             SyncMode::Paused => return,
-            SyncMode::PauseOnHSync if memory_bus.timers.in_hsync => return,
-            SyncMode::PauseOnVSync if memory_bus.timers.in_vsync => return,
-            SyncMode::HSyncOnly if !memory_bus.timers.in_hsync => return,
-            SyncMode::VSyncOnly if !memory_bus.timers.in_vsync => return,
+            SyncMode::PauseOnHSync if system.timers.in_hsync => return,
+            SyncMode::PauseOnVSync if system.timers.in_vsync => return,
+            SyncMode::HSyncOnly if !system.timers.in_hsync => return,
+            SyncMode::VSyncOnly if !system.timers.in_vsync => return,
             _ => (),
         }
 
-        let timer = &memory_bus.timers.timers[which];
+        let timer = &system.timers.timers[which];
         let ticks_till_target = timer.get_ticks_to_value(timer.target);
         let ticks_till_ffff = timer.get_ticks_to_value(0xFFFF);
         let target = timer.target as u32;
 
-        let cycles_till_target = Self::ticks_to_cycles(memory_bus, which, ticks_till_target);
-        let cycles_till_target_reset = Self::ticks_to_cycles(memory_bus, which, target);
+        let cycles_till_target = Self::ticks_to_cycles(system, which, ticks_till_target);
+        let cycles_till_target_reset = Self::ticks_to_cycles(system, which, target);
 
 
-        let cycles_till_ffff = Self::ticks_to_cycles(memory_bus, which, ticks_till_ffff);
-        let cycles_till_ffff_reset = Self::ticks_to_cycles(memory_bus, which, 0xFFFF);
+        let cycles_till_ffff = Self::ticks_to_cycles(system, which, ticks_till_ffff);
+        let cycles_till_ffff_reset = Self::ticks_to_cycles(system, which, 0xFFFF);
 
         let (cycles_till_irq, cycles_till_irq_reset) = match timer.mode.irq_target() {
             // no irq
@@ -282,7 +282,7 @@ impl Timers {
             _ => unreachable!()
         };
 
-        memory_bus.scheduler.schedule(
+        system.scheduler.schedule(
             crate::scheduler::Event::Timer(TimerInterrupt {
                 which, toggle: timer.mode.irq_toggle()
             }),
@@ -293,8 +293,8 @@ impl Timers {
 
     }
 
-    pub fn process_interrupt(memory_bus: &mut MemoryBus, irq: TimerInterrupt) {
-        let timer = &mut memory_bus.timers.timers[irq.which];
+    pub fn process_interrupt(system: &mut System, irq: TimerInterrupt) {
+        let timer = &mut system.timers.timers[irq.which];
         let set_irq = if irq.toggle {
             let prev = timer.mode.irq_disabled();
             let next = !prev;
@@ -307,9 +307,9 @@ impl Timers {
 
         if set_irq {
             match irq.which {
-                0 => memory_bus.irqctl.status.set_tmr0(true),
-                1 => memory_bus.irqctl.status.set_tmr1(true),
-                2 => memory_bus.irqctl.status.set_tmr2(true),
+                0 => system.irqctl.status.set_tmr0(true),
+                1 => system.irqctl.status.set_tmr1(true),
+                2 => system.irqctl.status.set_tmr2(true),
                 _ => unreachable!("there're only three timers")
             }
         }
@@ -317,11 +317,11 @@ impl Timers {
     }
 }
 
-pub fn load<T: Addressable>(memory_bus: &mut MemoryBus, offset: u32) -> T {
+pub fn load<T: Addressable>(system: &mut System, offset: u32) -> T {
     let which = (offset >> 4) as usize;
-    Timers::update_value(memory_bus, which);
+    Timers::update_value(system, which);
 
-    let timer = &mut memory_bus.timers.timers[which];
+    let timer = &mut system.timers.timers[which];
     let v = match offset & 0xF {
         0 => timer.counter,
         4 => timer.get_mode(),
@@ -331,17 +331,17 @@ pub fn load<T: Addressable>(memory_bus: &mut MemoryBus, offset: u32) -> T {
     T::from_u32(v)
 }
 
-pub fn store<T: Addressable>(memory_bus: &mut MemoryBus, offset: u32, v: T) {
+pub fn store<T: Addressable>(system: &mut System, offset: u32, v: T) {
     let which = (offset >> 4) as usize;
-    Timers::update_value(memory_bus, which);
-    let timer = &mut memory_bus.timers.timers[which];
+    Timers::update_value(system, which);
+    let timer = &mut system.timers.timers[which];
     match offset & 0xF {
         0 => timer.counter = v.as_u32(),
         4 => timer.set_mode(v.as_u32()),
         8 => timer.target = v.as_u32() as u16,
         _ => panic!("timer store for offset 0x{} unimplemented", offset),
     };
-    Timers::reschedule_interrupt_if_needed(memory_bus, which);
+    Timers::reschedule_interrupt_if_needed(system, which);
 }
 
 const CLOCK_SOURCE_MATRIX: [[ClockSource; 4]; 3] = [

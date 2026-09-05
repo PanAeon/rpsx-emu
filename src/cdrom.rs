@@ -5,7 +5,7 @@ use std::fs::File;
 use arrayvec::ArrayVec;
 
 use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
-use crate::{memory_bus::{Addressable, MemoryBus}, scheduler::Event};
+use crate::{system::{Addressable, System}, scheduler::Event};
 
 const SECTOR_SIZE: usize = 0x930;
 
@@ -36,9 +36,9 @@ pub struct Image {
 impl Image {
     pub fn new() -> Self {
         // let path = "/foo/psx/Spyro the Dragon (USA).bin";
-        // let path = "/foo/psx/Silent Hill (USA).bin";
+        let path = "/foo/psx/Silent Hill (USA).bin";
         // let path = "/foo/psx/celeste-collection.bin";
-        let path = "/foo/psx/Crash Bandicoot (USA).bin";
+        // let path = "/foo/psx/Crash Bandicoot (USA).bin";
         // let path = "/foo/psx/Earthworm Jim 2 (Europe) (Track 01).bin";
         // let path = "/foo/psx/Mortal Kombat Trilogy (USA) (v1.1) (Track 01).bin";
         // let path = "/foo/psx/Final Fantasy VII (USA) (Disc 1).bin";
@@ -208,8 +208,8 @@ impl Default for CDRom {
 }
 
 impl CDRom {
-    pub fn store<T:Addressable>(memory_bus: &mut MemoryBus, offset: u32, value: T) {
-        let cdrom = &mut memory_bus.cdrom;
+    pub fn store<T:Addressable>(system: &mut System, offset: u32, value: T) {
+        let cdrom = &mut system.cdrom;
         let width = T::width() as usize;
         if width != 1 {
             panic!("cdrom store width other than 1 byte not impl, got: {:?}", T::width());
@@ -220,7 +220,7 @@ impl CDRom {
             0 => {
                 match offset {
                   0 => cdrom.hsts.set_current_bank(v),
-                  1 => Self::process_command(memory_bus, v),
+                  1 => Self::process_command(system, v),
                   2 => cdrom.push_parameter(v),
                   3 => cdrom.hcpctl.0 = v,
                   _  => panic!("Unhandled cdrom store {:?}, bank: {}, offset: {:08x}, value: 0x{:x}", T::width(),cdrom.hsts.current_bank(),  offset, v),
@@ -270,10 +270,10 @@ impl CDRom {
 
 
 
-    pub fn process_command(memory_bus: &mut MemoryBus, cmd: u8) {
-        let cdrom = &mut memory_bus.cdrom;
+    pub fn process_command(system: &mut System, cmd: u8) {
+        let cdrom = &mut system.cdrom;
         if let 0x08..=0x09 = cmd {
-            memory_bus.scheduler.unschedule(&Event::CDRomResultIrq(ResponseType::INT1));
+            system.scheduler.unschedule(&Event::CDRomResultIrq(ResponseType::INT1));
         }
         let response = match cmd {
             0x00 => cdrom.cmd_unused(),
@@ -304,7 +304,7 @@ impl CDRom {
                 ResponseType::INT1 => Some(cdrom.mode.speed().transform(AVG_RATE_INT1)),
                 _ => None
             };
-            memory_bus.scheduler.schedule(Event::CDRomResultIrq(res_type), delay, repeat);
+            system.scheduler.schedule(Event::CDRomResultIrq(res_type), delay, repeat);
         });
     }
     pub fn cmd_unused(&mut self) -> CommandResponse {
@@ -751,20 +751,20 @@ impl CDRom {
         false
     }
 
-    // pub fn tick(memory_bus: &mut MemoryBus) {
-    //     if   (memory_bus.cdrom.hintmsk.enint() & memory_bus.cdrom.hinsts.intsts() != 0) 
-    //       || (memory_bus.cdrom.hintmsk.enbfwrdy() & memory_bus.cdrom.hinsts.bfwrdy())
-    //       || (memory_bus.cdrom.hintmsk.enbfempt() & memory_bus.cdrom.hinsts.bfempt()) {
-    //         memory_bus.irqctl.status.set_cdrom(true);
+    // pub fn tick(system: &mut System) {
+    //     if   (system.cdrom.hintmsk.enint() & system.cdrom.hinsts.intsts() != 0) 
+    //       || (system.cdrom.hintmsk.enbfwrdy() & system.cdrom.hinsts.bfwrdy())
+    //       || (system.cdrom.hintmsk.enbfempt() & system.cdrom.hinsts.bfempt()) {
+    //         system.irqctl.status.set_cdrom(true);
     //     }
-    //     if let Some((cycles, irq, data, len)) = memory_bus.cdrom.pending_interrupt {
-    //         memory_bus.scheduler.schedule(crate::scheduler::Event::CDRom(irq, data, len), cycles, None); // TODO: ????
-    //         memory_bus.cdrom.pending_interrupt = None;
+    //     if let Some((cycles, irq, data, len)) = system.cdrom.pending_interrupt {
+    //         system.scheduler.schedule(crate::scheduler::Event::CDRom(irq, data, len), cycles, None); // TODO: ????
+    //         system.cdrom.pending_interrupt = None;
     //     }
     // }
 
-    pub fn process_response(memory_bus: &mut MemoryBus, response: ResponseType) {
-        let cdrom = &mut memory_bus.cdrom;
+    pub fn process_response(system: &mut System, response: ResponseType) {
+        let cdrom = &mut system.cdrom;
 
         let irq = u8::from(&response);
         cdrom.results.clear();
@@ -792,14 +792,14 @@ impl CDRom {
         cdrom.hinsts.set_intsts(irq);
         cdrom.hsts.set_result_read_ready(true);
         if cdrom.hintmsk.enint() & cdrom.hinsts.intsts() != 0 {
-            memory_bus.irqctl.status.set_cdrom(true);
+            system.irqctl.status.set_cdrom(true);
         }
 
-        // memory_bus.cdrom.hinsts.set_intsts(irq);
-        // memory_bus.cdrom.response_idx = n;
-        // memory_bus.cdrom.response_read_idx = 0; // TODO: clear ready bit...
-        // memory_bus.cdrom.response_buffer.copy_from_slice(&response);
-        // memory_bus.cdrom.hsts.set_result_read_ready(true);
+        // system.cdrom.hinsts.set_intsts(irq);
+        // system.cdrom.response_idx = n;
+        // system.cdrom.response_read_idx = 0; // TODO: clear ready bit...
+        // system.cdrom.response_buffer.copy_from_slice(&response);
+        // system.cdrom.hsts.set_result_read_ready(true);
         //
         
     }

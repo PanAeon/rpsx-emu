@@ -1,4 +1,4 @@
-use crate::{gte::Gte, memory_bus::{Addressable, MemoryBus}};
+use crate::{gte::Gte, system::{Addressable, System}};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Instruction(u32);
@@ -89,7 +89,7 @@ pub struct Cpu {
     pub pc: u32, // reset value 0xBFC00000
     pub next_pc: u32,
     pub current_pc: u32,
-    pub memory_bus: MemoryBus,
+    pub system: System,
 
     sr: u32,
     cause: u32,
@@ -103,7 +103,7 @@ pub struct Cpu {
 }
 
 impl Cpu {
-    pub fn new(memory_bus: MemoryBus) -> Cpu {
+    pub fn new(system: System) -> Cpu {
         let mut regs = [0xdeadbeef; 32];
         regs[0] = 0;
         Cpu {
@@ -113,7 +113,7 @@ impl Cpu {
             pc: 0xBFC00000,
             next_pc: 0xBFC00004,
             current_pc: 0xBFC00000,
-            memory_bus,
+            system,
             sr: 0,
             cause: 0,
             epc: 0,
@@ -154,7 +154,7 @@ impl Cpu {
     }
 
     pub fn check_for_pending_interrupts(&mut self) -> bool {
-        if self.memory_bus.irqctl.pending() {
+        if self.system.irqctl.pending() {
             self.cause |= 1 << 10;
         } else {
             self.cause &= !(1 << 10);
@@ -173,7 +173,7 @@ impl Cpu {
     }
 
     pub fn load<T:Addressable>(&mut self, address: u32) -> T {
-        self.memory_bus.load(address)
+        self.system.load(address)
     }
 
     pub fn store<T:Addressable>(&mut self, address: u32, value: T) {
@@ -181,27 +181,27 @@ impl Cpu {
             // println!("Ignoring store while cache is isolated");
             return;
         }
-        self.memory_bus.store(address, value)
+        self.system.store(address, value)
     }
     //
     // pub fn load32(&self, address: u32) -> u32 {
-    //     self.memory_bus.load32(address)
+    //     self.system.load32(address)
     // }
     // pub fn load16(&self, address: u32) -> u16 {
-    //     self.memory_bus.load16(address)
+    //     self.system.load16(address)
     // }
     // pub fn load8(&self, address: u32) -> u8 {
-    //     self.memory_bus.load8(address)
+    //     self.system.load8(address)
     // }
     //
     // pub fn store32(&mut self, address: u32, value: u32) {
-    //     self.memory_bus.store32(address, value);
+    //     self.system.store32(address, value);
     // }
     // pub fn store16(&mut self, address: u32, value: u16) {
-    //     self.memory_bus.store16(address, value);
+    //     self.system.store16(address, value);
     // }
     // pub fn store8(&mut self, address: u32, value: u8) {
-    //     self.memory_bus.store8(address, value);
+    //     self.system.store8(address, value);
     // }
 
     pub fn set_reg(&mut self, index: u32, value: u32) {

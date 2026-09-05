@@ -1,4 +1,4 @@
-use crate::memory_bus::Addressable;
+use crate::system::Addressable;
 
 
 pub struct Ram {

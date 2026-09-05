@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use num_enum::FromPrimitive;
 
-use crate::memory_bus::Addressable;
+use crate::system::Addressable;
 
 
 

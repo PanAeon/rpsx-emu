@@ -1,4 +1,4 @@
-use crate::memory_bus::{AccessWidth, Addressable};
+use crate::system::{AccessWidth, Addressable};
 
 
 bitfield::bitfield! {

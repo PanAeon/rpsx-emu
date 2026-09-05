@@ -3,7 +3,7 @@ use std::thread::current;
 
 use arrayvec::ArrayVec;
 
-use crate::memory_bus::{Addressable, MemoryBus};
+use crate::system::{Addressable, System};
 
 pub struct Sio {
     control: Control,
@@ -52,20 +52,20 @@ impl Sio {
         }
     }
 
-    pub fn store<T: Addressable>(memory_bus: &mut MemoryBus, offset: u32, value: T) {
-        let sio = &mut memory_bus.sio;
+    pub fn store<T: Addressable>(system: &mut System, offset: u32, value: T) {
+        let sio = &mut system.sio;
         // 1F801040h+N*10h - SIO#_TX_DATA (W)
         let val = value.as_u32() as u16;
         match offset {
             0x0 => {
                 sio.transfer = Some(val as u8);
-                Self::try_send_data(memory_bus);
+                Self::try_send_data(system);
                 // try send data
             }
             0x8 => {
                 sio.mode.0 = val &  0x1FF;
             }
-            0xA => Self::write_control(memory_bus, val),
+            0xA => Self::write_control(system, val),
             0xE => {
                 sio.boudrate_reload = val;
             }
@@ -73,8 +73,8 @@ impl Sio {
         };
     }
 
-    pub fn write_control(memory_bus: &mut MemoryBus, val: u16) {
-        let sio = &mut memory_bus.sio;
+    pub fn write_control(system: &mut System, val: u16) {
+        let sio = &mut system.sio;
         sio.control.0 = val & !0xC000;
         // println!("control: {:?}", self.control);
 
@@ -96,7 +96,7 @@ impl Sio {
         }
 
         if sio.control.tx_enable() {
-            Self::try_send_data(memory_bus);
+            Self::try_send_data(system);
             // try send data..
         }
     }
@@ -197,20 +197,20 @@ impl Sio {
         // (0xFF, State::None)
     }
 
-    pub fn try_send_data(memory_bus: &mut MemoryBus) {
-        if !memory_bus.sio.control.tx_enable() {
+    pub fn try_send_data(system: &mut System) {
+        if !system.sio.control.tx_enable() {
             return;
         }
 
-        if let Some(val) = memory_bus.sio.transfer.take() {
+        if let Some(val) = system.sio.transfer.take() {
             // send/receive
-            let (received, ack) = memory_bus.sio.send_and_receive_byte(val);
+            let (received, ack) = system.sio.send_and_receive_byte(val);
 
-            let sio = &mut memory_bus.sio;
+            let sio = &mut system.sio;
             sio.status.set_dsr_input_level(ack);
 
             if sio.control.dsr_interrupt_enable() && sio.status.dsr_input_level() {
-                memory_bus.scheduler.schedule(
+                system.scheduler.schedule(
                     crate::scheduler::Event::SerialSend,
                     u64::from(sio.boudrate_reload) * 8,
                     None,
@@ -218,12 +218,12 @@ impl Sio {
             }
 
             if sio.status.dsr_input_level() {
-                memory_bus
+                system
                     .scheduler
                     .schedule(crate::scheduler::Event::DsrOff, 96, None);
             }
 
-            memory_bus.sio.push_received_data(received);
+            system.sio.push_received_data(received);
         }
     }
 
@@ -231,9 +231,9 @@ impl Sio {
         self.status.set_dsr_input_level(false);
     }
 
-    pub fn process_serial_send(memory_bus: &mut MemoryBus) {
-        memory_bus.irqctl.status.set_ctl_mem(true);
-        memory_bus.sio.status.set_interrupt_request(true);
+    pub fn process_serial_send(system: &mut System) {
+        system.irqctl.status.set_ctl_mem(true);
+        system.sio.status.set_interrupt_request(true);
     }
 
 }

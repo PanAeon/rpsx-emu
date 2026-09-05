@@ -1,4 +1,4 @@
-use crate::{irq::InterruptController, memory_bus::MemoryBus};
+use crate::{irq::InterruptController, system::System};
 
 
 pub struct Dma {
@@ -50,34 +50,34 @@ impl Dma {
         r
     }
 
-    pub fn set_interrupt(memory_bus: &mut MemoryBus, val: u32) {
-        let prev_irq = memory_bus.dma.irq();
-        memory_bus.dma.irq_dummy = (val & 0x3f) as u8;
+    pub fn set_interrupt(system: &mut System, val: u32) {
+        let prev_irq = system.dma.irq();
+        system.dma.irq_dummy = (val & 0x3f) as u8;
 
-        memory_bus.dma.force_irq = (val >> 15) & 1 != 0;
-        memory_bus.dma.channel_irq_enable = ((val >> 16) & 0x7f) as u8;
-        memory_bus.dma.irq_enable = (val >> 23) & 1 != 0;
+        system.dma.force_irq = (val >> 15) & 1 != 0;
+        system.dma.channel_irq_enable = ((val >> 16) & 0x7f) as u8;
+        system.dma.irq_enable = (val >> 23) & 1 != 0;
 
         // writing 1 to a flag resets it
         let ack = ((val >> 24) & 0x3f) as u8;
-        memory_bus.dma.channel_irq_flags &= !ack; // TODO: (and, additionally, IRQ3 (DMA) must be acknowledged via Port 1F801070h).
+        system.dma.channel_irq_flags &= !ack; // TODO: (and, additionally, IRQ3 (DMA) must be acknowledged via Port 1F801070h).
 
-        if !prev_irq && memory_bus.dma.irq() {
-            memory_bus.irqctl.status.set_dma(true);
+        if !prev_irq && system.dma.irq() {
+            system.irqctl.status.set_dma(true);
         }
     }
 
-    pub fn done(memory_bus: &mut MemoryBus, port: Port) {
-        memory_bus.dma.channel_mut(port).done();
+    pub fn done(system: &mut System, port: Port) {
+        system.dma.channel_mut(port).done();
 
-        let prev_irq = memory_bus.dma.irq();
+        let prev_irq = system.dma.irq();
 
-        let it_en = memory_bus.dma.channel_irq_enable & (1 << (port as usize));
+        let it_en = system.dma.channel_irq_enable & (1 << (port as usize));
 
-        memory_bus.dma.channel_irq_flags |= it_en;
+        system.dma.channel_irq_flags |= it_en;
 
-        if !prev_irq && memory_bus.dma.irq() {
-            memory_bus.irqctl.status.set_dma(true);
+        if !prev_irq && system.dma.irq() {
+            system.irqctl.status.set_dma(true);
         }
 
     }

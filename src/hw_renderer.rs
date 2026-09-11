@@ -1,8 +1,7 @@
 use std::{
     borrow::Cow,
-    cmp::{self, min},
-    num::NonZeroU64,
-    sync::{Arc, Mutex},
+    cmp::{self, min, max},
+    sync::{Mutex},
     thread::{self, JoinHandle},
 };
 
@@ -10,10 +9,8 @@ use crossbeam::channel::{Receiver, Sender};
 use wgpu::util::DeviceExt;
 
 use crate::{
-    Color,
     gpu::{
         Colour, DisplayDepth, HorizontalRes, TextureDepth, Vertex, VerticalRes,
-        convert_5bit_to_8bit,
     },
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
@@ -106,42 +103,12 @@ fn create_draw_pipeline(
     wgpu::Texture,
     wgpu::Buffer,
     wgpu::BindGroup,
-    wgpu::Texture,
-    wgpu::Texture,
-    wgpu::Buffer,
 ) {
 
-        let blit_texture = device.create_texture(&wgpu::TextureDescriptor {
-            size: 
-        wgpu::Extent3d {
-            width: 1024,
-            height: 512,
-            depth_or_array_layers: 1,
-        },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R16Uint,
-            // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
-            // COPY_DST means that we want to copy data to this texture
-            usage:
-                 wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
-                // | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            label: Some("blit texture"),
-            // This is the same as with the SurfaceConfig. It
-            // specifies what texture formats can be used to
-            // create TextureViews for this texture. The base
-            // texture format (Rgba8UnormSrgb in this case) is
-            // always supported. Note that using a different
-            // texture format is not supported on the WebGL2
-            // backend.
-            view_formats: &[wgpu::TextureFormat::R16Uint],
-        });
 
     let vram_texture = device.create_texture(&wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
-            width: 512,
+            width: 1024,
             height: 512,
             depth_or_array_layers: 1,
         },
@@ -153,8 +120,9 @@ fn create_draw_pipeline(
         // COPY_DST means that we want to copy data to this texture
         usage: wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::TEXTURE_BINDING,
+            | wgpu::TextureUsages::COPY_SRC,
+            // | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // | wgpu::TextureUsages::TEXTURE_BINDING,
         // | wgpu::TextureUsages::STORAGE_BINDING,
         label: Some("vram texture"),
         view_formats: &[wgpu::TextureFormat::R32Uint],
@@ -162,22 +130,22 @@ fn create_draw_pipeline(
 
     let vram_texture_view= vram_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let vram_blit_texture = device.create_texture(&wgpu::TextureDescriptor {
-        size: wgpu::Extent3d {
-            width: 512,
-            height: 512,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1, // We'll talk about this a little later
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R32Uint,
-        usage:
-                 wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
-        label: Some("vram blit texture"),
-        view_formats: &[wgpu::TextureFormat::R32Uint],
-    });
+    // let vram_blit_texture = device.create_texture(&wgpu::TextureDescriptor {
+    //     size: wgpu::Extent3d {
+    //         width: 512,
+    //         height: 512,
+    //         depth_or_array_layers: 1,
+    //     },
+    //     mip_level_count: 1, // We'll talk about this a little later
+    //     sample_count: 1,
+    //     dimension: wgpu::TextureDimension::D2,
+    //     format: wgpu::TextureFormat::R32Uint,
+    //     usage:
+    //              wgpu::TextureUsages::COPY_DST
+    //             | wgpu::TextureUsages::COPY_SRC,
+    //     label: Some("vram blit texture"),
+    //     view_formats: &[wgpu::TextureFormat::R32Uint],
+    // });
 
     let shader_source = Cow::Borrowed(include_str!("render.wgsl"));
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -247,7 +215,7 @@ fn create_draw_pipeline(
             module: &shader_module,
             entry_point: Some(&"frag_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::R16Uint,
+                format: wgpu::TextureFormat::R32Uint,
                 blend: None,
                 // blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
@@ -292,14 +260,14 @@ fn create_draw_pipeline(
         ],
     });
 
-        let output_buffer = device.create_buffer(&wgpu::wgt::BufferDescriptor {
-            label: Some("output"),
-            size: 2 * 1024 * 512,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        // let output_buffer = device.create_buffer(&wgpu::wgt::BufferDescriptor {
+        //     label: Some("output"),
+        //     size: 4 * 1024 * 512,
+        //     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        //     mapped_at_creation: false,
+        // });
 
-    (pipeline, vram_texture, vertex_buffer, texture_bind_group, blit_texture, vram_blit_texture, output_buffer)
+    (pipeline, vram_texture, vertex_buffer, texture_bind_group)
 }
 
 pub struct HWRenderer {
@@ -314,9 +282,10 @@ pub struct HWRenderer {
     render_view: wgpu::TextureView,
     drawing_area_top_left: (u16, u16),
     drawing_area_bottom_right: (u16, u16),
-    blit_texture: wgpu::Texture,
-    vram_blit_texture: wgpu::Texture,
-    output_buffer: wgpu::Buffer,
+    dirty_region: DirtyRegion,
+    // blit_texture: wgpu::Texture,
+    // vram_blit_texture: wgpu::Texture,
+    // output_buffer: wgpu::Buffer,
 }
 
 impl HWRenderer {
@@ -333,7 +302,7 @@ impl HWRenderer {
         let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(1024);
         let (to_renderer_sender, receiver) = crossbeam::channel::bounded(1024);
 
-        let (draw_pipeline, vram_texture, vertex_buffer, texture_bind_group, blit_texture, vram_blit_texture, output_buffer) =
+        let (draw_pipeline, vram_texture, vertex_buffer, texture_bind_group) =
             create_draw_pipeline(&device, &queue, display_format);
         let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -350,9 +319,7 @@ impl HWRenderer {
                 render_view,
                 drawing_area_top_left: (0, 0),
                 drawing_area_bottom_right: (0, 0),
-                blit_texture,
-                vram_blit_texture,
-                output_buffer
+                dirty_region: DirtyRegion::empty(),
             };
             let core_ids = core_affinity::get_core_ids().unwrap();
             let res = core_affinity::set_for_current(core_ids[1]);
@@ -369,39 +336,14 @@ impl HWRenderer {
                         v0,
                         v1,
                         c0,
-                        semi_transparent,
-                        ctx,
-                    } => {
-                        if *semi_transparent {
-                            renderer.draw_line::<SEMI_TRANS>(*v0, *v1, *c0, ctx)
-                        } else {
-                            renderer.draw_line::<OPAQUE>(*v0, *v1, *c0, ctx)
-                        }
-                    }
-                    RendererMsg::DrawLineShaded {
-                        v0,
-                        v1,
-                        c0,
                         c1,
+                        shaded,
                         semi_transparent,
                         ctx,
                     } => {
-                        if *semi_transparent {
-                            renderer.draw_line_shaded::<SEMI_TRANS>(*v0, *v1, *c0, *c1, ctx)
-                        } else {
-                            renderer.draw_line_shaded::<OPAQUE>(*v0, *v1, *c0, *c1, ctx)
-                        }
+                            renderer.draw_line(*v0, *v1, *c0, *c1, *semi_transparent, *shaded, ctx)
                     }
                     RendererMsg::DrawRectangle {
-                        v,
-                        side,
-                        c,
-                        semi_transparent,
-                        ctx,
-                    } => {
-                        renderer.render_rectangle(*v, *side, *c, 0, [0,0], *semi_transparent, false, false, ctx);
-                    }
-                    RendererMsg::DrawRectangleTextured {
                         v,
                         side,
                         c,
@@ -410,71 +352,12 @@ impl HWRenderer {
                         _v,
                         semi_transparent,
                         blend,
+                        textured,
                         ctx,
-                    } => 
-                        renderer.render_rectangle(*v, *side, *c, *clut, [*_u,*_v], *semi_transparent, *blend, true, ctx),
+                    } =>
+                        renderer.render_rectangle(*v, *side, *c, *clut, [*_u,*_v], *semi_transparent, *blend, *textured, ctx),
 
-                    RendererMsg::DrawTriangleMono {
-                        c,
-                        v0,
-                        v1,
-                        v2,
-                        semi_transparent,
-                        ctx,
-                    } => {
-                        renderer.render_triangle(
-                            [*c, *c, *c],
-                            0,
-                            0,
-                            &mut [*v0, *v1, *v2],
-                            &[[0, 0], [0, 0], [0, 0]],
-                            false,
-                            *semi_transparent,
-                            false,
-                            ctx,
-                        );
-                    }
-                    RendererMsg::DrawTriangleShaded {
-                        vs,
-                        cs,
-                        semi_transparent,
-                        ctx,
-                    } => {
-                        renderer.render_triangle(
-                            *cs,
-                            0,
-                            0,
-                            vs,
-                            &[[0, 0], [0, 0], [0, 0]],
-                            false,
-                            *semi_transparent,
-                            false,
-                            ctx,
-                        );
-                    }
-                    RendererMsg::DrawTriangleTextured {
-                        color,
-                        clut,
-                        page,
-                        vs,
-                        uvs,
-                        semi_transparent,
-                        blend,
-                        ctx,
-                    } => {
-                        renderer.render_triangle(
-                            [*color, *color, *color],
-                            *clut,
-                            *page,
-                            vs,
-                            uvs,
-                            true,
-                            *semi_transparent,
-                            *blend,
-                            ctx,
-                        );
-                    }
-                    RendererMsg::DrawTriangleTexturedShaded {
+                    RendererMsg::DrawPolygon {
                         cs,
                         clut,
                         page,
@@ -482,17 +365,22 @@ impl HWRenderer {
                         uvs,
                         semi_transparent,
                         blend,
+                        is_triangle,
+                        textured, 
+                        shaded,
                         ctx,
                     } => {
-                        renderer.render_triangle(
+                        renderer.render_polygon(
                             *cs,
                             *clut,
                             *page,
                             vs,
                             uvs,
-                            true,
+                            *textured,
+                            *shaded,
                             *semi_transparent,
                             *blend,
+                            *is_triangle,
                             ctx,
                         );
                     }
@@ -635,6 +523,8 @@ impl HWRenderer {
         let max_x = (v.x + width).min(0x400) as usize;
         let max_y = (v.y + height).min(0x200) as usize;
 
+        self.dirty_region.merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
+
         self.ensure_vertex_room(6);
         let flags = Flags(0);
         self.vertices.push(Vert {
@@ -712,11 +602,14 @@ impl HWRenderer {
 
     }
 
-    pub fn draw_line<const SEMI_TRANS: bool>(
+    pub fn draw_line(
         &mut self,
         mut v0: Vertex,
         mut v1: Vertex,
-        mono: Colour,
+        c0: Colour,
+        c1: Colour,
+        semi_trans: bool,
+        shaded: bool,
         ctx: &RenderingContext,
     ) {
         v0.x += ctx.drawing_x_offset as i32;
@@ -728,151 +621,21 @@ impl HWRenderer {
             return;
         };
 
-        // let dx = (x1 - x0).abs();
-        // let dy = -(y1 - y0).abs();
 
-        // let sx = if x0 < x1 { 1 } else { -1 };
-        // let sy = if y0 < y1 { 1 } else { -1 };
-        //
-        // let mut err = dx + dy;
-        // let mut x = x0;
-        // let mut y = y0;
-
-        // loop {
-        //     let mut pixel = mono;
-        //     let vram_addr = 2 * (y * 1024 + x) as usize;
-        //
-        //     if SEMI_TRANS {
-        //         let background_lsb = self.vram[vram_addr];
-        //         let background_msb = self.vram[vram_addr + 1];
-        //
-        //         let background = Colour::from_bytes(background_msb, background_lsb);
-        //
-        //         pixel.blend_with_background(background, ctx.semi_transparency);
-        //     }
-        //     pixel.apply_dithering(x, y);
-        //
-        //     self.vram_write_color(vram_addr, pixel, ctx);
-        //     // let [lsb, msb] = pixel.to_le_bytes();
-        //
-        //     // self.vram[vram_addr] = lsb;
-        //     // self.vram[vram_addr + 1] = msb;
-        //
-        //     let e2 = 2 * err;
-        //     if e2 >= dy {
-        //         if x == x1 {
-        //             break;
-        //         }
-        //         err += dy;
-        //         x += sx;
-        //     }
-        //     if e2 <= dx {
-        //         if y == y1 {
-        //             break;
-        //         }
-        //         err += dx;
-        //         y += sy;
-        //     }
-        // }
     }
 
-    pub fn draw_line_shaded<const SEMI_TRANS: bool>(
+    pub fn render_polygon(
         &mut self,
-        mut v0: Vertex,
-        mut v1: Vertex,
-        color0: Colour,
-        color1: Colour,
-        ctx: &RenderingContext,
-    ) {
-        v0.x += ctx.drawing_x_offset as i32;
-        v0.y += ctx.drawing_y_offset as i32;
-        v1.x += ctx.drawing_x_offset as i32;
-        v1.y += ctx.drawing_y_offset as i32;
-
-        let Some((x0, y0, x1, y1)) = self.clip_rect(v0.x, v0.y, v1.x, v1.y, ctx) else {
-            return;
-        };
-
-        // let dx = (x1 - x0).abs();
-        // let dy = -(y1 - y0).abs();
-        //
-        // let sx = if x0 < x1 { 1 } else { -1 };
-        // let sy = if y0 < y1 { 1 } else { -1 };
-        //
-        // let mut err = dx + dy;
-        // let mut x = x0;
-        // let mut y = y0;
-
-        // loop {
-        //     let mut pixel = {
-        //         let (num, denom) = if dx >= -dy {
-        //             ((x - x0).abs(), dx)
-        //         } else {
-        //             ((y - y0).abs(), dy)
-        //         };
-        //         if denom == 0 {
-        //             color0
-        //         } else {
-        //             let inv = denom - num;
-        //             let red = ((color0.r as i32) * inv + (color1.r as i32) * num) / denom;
-        //             let green = ((color0.g as i32) * inv + (color1.g as i32) * num) / denom;
-        //             let blue = ((color0.b as i32) * inv + (color1.b as i32) * num) / denom;
-        //             Colour {
-        //                 r: red as u8,
-        //                 g: green as u8,
-        //                 b: blue as u8,
-        //                 m: 0,
-        //             }
-        //         }
-        //     };
-        //     let vram_addr = 2 * (y * 1024 + x) as usize;
-        //
-        //     if SEMI_TRANS {
-        //         let background_lsb = self.vram[vram_addr];
-        //         let background_msb = self.vram[vram_addr + 1];
-        //
-        //         let background = Colour::from_bytes(background_msb, background_lsb);
-        //
-        //         pixel.blend_with_background(background, ctx.semi_transparency);
-        //     }
-        //
-        //     pixel.apply_dithering(x, y);
-        //
-        //     self.vram_write_color(vram_addr, pixel, ctx);
-        //
-        //     // let [lsb, msb] = pixel.to_le_bytes();
-        //
-        //     // self.vram[vram_addr] = lsb;
-        //     // self.vram[vram_addr + 1] = msb;
-        //
-        //     let e2 = 2 * err;
-        //     if e2 >= dy {
-        //         if x == x1 {
-        //             break;
-        //         }
-        //         err += dy;
-        //         x += sx;
-        //     }
-        //     if e2 <= dx {
-        //         if y == y1 {
-        //             break;
-        //         }
-        //         err += dx;
-        //         y += sy;
-        //     }
-        // }
-    }
-
-    pub fn render_triangle(
-        &mut self,
-        colors: [Colour; 3],
+        colors: [Colour; 4],
         clut: u16,
         page: u16,
-        vs: &mut [Vertex; 3],
-        uv: &[[u16; 2]; 3],
+        vs: &mut [Vertex; 4],
+        uv: &[[u16; 2]; 4],
         textured: bool,
+        shaded: bool,
         semi_trans: bool,
         blend: bool,
+        is_triangle: bool,
         ctx: &RenderingContext,
     ) {
         vs[0].x += ctx.drawing_x_offset as i32;
@@ -881,19 +644,45 @@ impl HWRenderer {
         vs[1].y += ctx.drawing_y_offset as i32;
         vs[2].x += ctx.drawing_x_offset as i32;
         vs[2].y += ctx.drawing_y_offset as i32;
+        vs[3].x += ctx.drawing_x_offset as i32;
+        vs[3].y += ctx.drawing_y_offset as i32;
 
         // bounding box
-        let min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
-        let max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
-        let min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
-        let max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
+        // FIXME: culling should apply individually to each triangle
+        let min_x = cmp::min(cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x)), vs[3].x);
+        let max_x = cmp::max(cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x)), vs[3].x);
+        let min_y = cmp::min(cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y)), vs[3].y);
+        let max_y = cmp::max(cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y)), vs[3].y);
 
         let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
         else {
             return;
         };
         self.prepare_draw(semi_trans, min_x, min_y, max_x, max_y);
-        self.ensure_vertex_room(3);
+
+        self.dirty_region.merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
+        self.ensure_vertex_room(if is_triangle {3} else {6});
+
+        self.render_triangle(&colors[0..3], clut, page, &vs[0..3], &uv[0..3], textured, semi_trans, blend, ctx);
+
+        if !is_triangle {
+           self.render_triangle(&colors[1..4], clut, page, &vs[1..4], &uv[1..4], textured, semi_trans, blend, ctx);
+        }
+    }
+
+    pub fn render_triangle(
+        &mut self,
+        colors: &[Colour],
+        clut: u16,
+        page: u16,
+        vs: &[Vertex],
+        uv: &[[u16; 2]],
+        textured: bool,
+        semi_trans: bool,
+        blend: bool,
+        ctx: &RenderingContext,
+    ) {
+
 
 
         let clut = Clut::new(clut);
@@ -951,50 +740,6 @@ impl HWRenderer {
         });
     }
 
-
-        // for y in min_y..max_y {
-        //     for x in min_x..max_x {
-        //         let p = Vertex { x, y };
-        //         if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
-        //             let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
-        //             let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
-        //
-        //             let mut pixel = texture.get_texel(self, uv_x, uv_y, ctx);
-        //
-        //             if pixel.is_black() {
-        //                 continue;
-        //             }
-        //
-        //             if BLEND {
-        //                 let color = interpolate_color(lambda, *colors);
-        //                 pixel.blend(color);
-        //             }
-        //
-        //             let vram_addr = 2 * (y * 1024 + x) as usize;
-        //
-        //             if SEMI_TRANS && pixel.m == 1 {
-        //                 let background_lsb = self.vram[vram_addr];
-        //                 let background_msb = self.vram[vram_addr + 1];
-        //
-        //                 let background = Colour::from_bytes(background_msb, background_lsb);
-        //
-        //                 pixel.blend_with_background(background, texture.semi_transparency);
-        //             }
-        //
-        //             if texture.dithering {
-        //                 pixel = apply_dithering(pixel, p);
-        //             }
-        //
-        //             self.vram_write_color(vram_addr, pixel, ctx);
-        //             // let [lsb, msb] = pixel.to_le_bytes();
-        //             //
-        //             // self.vram[vram_addr] = lsb;
-        //             // self.vram[vram_addr + 1] = msb;
-        //         }
-        //     }
-        // }
-
-
     pub fn render_rectangle(
         &mut self,
         mut v: Vertex,
@@ -1020,6 +765,7 @@ impl HWRenderer {
         //
 
         self.prepare_draw(semi_trans, min_x, min_y, max_x, max_y);
+        self.dirty_region.merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
 
         self.ensure_vertex_room(6);
         let mut flags = Flags(0);
@@ -1143,11 +889,11 @@ impl HWRenderer {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyTextureInfo {
-                texture: &self.blit_texture,
+                texture: &self.vram_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
-                    x: 0 as u32,
-                    y: 0 as u32,
+                    x: dst.x as u32,
+                    y: dst.y as u32,
                     z: 0,
                 },
                 aspect: wgpu::TextureAspect::All,
@@ -1161,11 +907,11 @@ impl HWRenderer {
 
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.blit_texture,
+                texture: &self.vram_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
-                    x: 0 as u32,
-                    y: 0 as u32,
+                    x: dst.x as u32,
+                    y: dst.y as u32,
                     z: 0,
                 },
                 aspect: wgpu::TextureAspect::All,
@@ -1187,64 +933,6 @@ impl HWRenderer {
             },
         );
 
-
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.vram_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: (src.x / 2) as u32,
-                    y: src.y as u32,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.vram_blit_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: 0 as u32,
-                    y: 0 as u32,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: (size.x / 2) as u32,
-                height: size.y as u32,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.vram_blit_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: 0 as u32,
-                    y: 0 as u32,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.vram_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: (dst.x / 2) as u32,
-                    y: dst.y as u32,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: (size.x / 2) as u32,
-                height: size.y as u32,
-                depth_or_array_layers: 1,
-            },
-        );
-
-
         let idx = self.queue.submit(vec![encoder.finish()]);
 
 
@@ -1253,127 +941,74 @@ impl HWRenderer {
     // TODO: calculate dirty region and sync only it
     pub fn prepare_draw(&mut self, semi_transparent: bool, sx: i32, sy: i32, end_x: i32, end_y: i32) {
         if semi_transparent {
-            self.flush();
-            self.sync_readback_buffer(sx as u32, sy as u32, end_x as u32, end_y as u32);
+            if self.dirty_region.intersects(sx, sy, end_x, end_y) {
+                self.flush();
+                self.sync_readback_buffer(sx as u32, sy as u32, end_x as u32, end_y as u32);
+                self.dirty_region.clear();
+            }
         }
     }
 
     pub fn sync_readback_buffer(&mut self, sx: u32, sy: u32, end_x: u32, end_y: u32) {
+        // let sx = 0;
+        // let sy = 0;
+        // let end_x = 64;
+        // let end_y = 64;
         let height = end_y - sy;
         let width = end_x - sx; // in half words..
-        let num_extents = (2 * (width) / 256) + 1;
+        //
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("sync_readback_buffer_encoder"),
             });
 
-        encoder.copy_texture_to_buffer(
+
+        encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.render_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
-                    x: sx,
-                    y: sy,
-                    z: 0
+                    x: sx as u32,
+                    y: sy as u32,
+                    z: 0,
                 },
                 aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.output_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(num_extents * 256),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width: width,
-                height: height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        encoder.copy_buffer_to_texture(
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.output_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(num_extents * 256),
-                    rows_per_image: Some(height),
-                }, // layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * 1024), rows_per_image: Some(512) }
             },
             wgpu::TexelCopyTextureInfo {
                 texture: &self.vram_texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d { x: sx/2, y: sy, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: width / 2,
-                height: height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        let idx = self.queue.submit(vec![encoder.finish()]);
-
-    }
-
-    pub fn fully_sync_vram(&mut self) {
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("sync_readback_buffer_encoder"),
-            });
-
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.render_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::default(),
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.output_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(2 * 1024),
-                    rows_per_image: Some(512),
+                origin: wgpu::Origin3d {
+                    x: sx as u32,
+                    y: sy as u32,
+                    z: 0,
                 },
-            },
-            wgpu::Extent3d {
-                width: 1024,
-                height: 512,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        encoder.copy_buffer_to_texture(
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.output_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(2 * 1024),
-                    rows_per_image: Some(512),
-                }, // layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * 1024), rows_per_image: Some(512) }
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.vram_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::Extent3d {
-                width: 512,
-                height: 512,
+                width: width as u32,
+                height: height as u32,
                 depth_or_array_layers: 1,
             },
         );
 
+
+
         let idx = self.queue.submit(vec![encoder.finish()]);
 
+
     }
+
+    // pub fn wait_for_render_to_finish(&mut self) {
+    //     let mut encoder = self
+    //         .device
+    //         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    //             label: Some("sync_readback_buffer_encoder"),
+    //         });
+    //     let idx = self.queue.submit(vec![encoder.finish()]);
+    //     self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
+    // }
+
 
     pub fn render_fb(
         &mut self,
@@ -1384,7 +1019,8 @@ impl HWRenderer {
         // here is a good place to copy our render texture to vram texture...
 
         self.flush();
-        self.fully_sync_vram();
+        // self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).expect("ok");
+        // self.sync_readback_buffer(0, 0, 1024, 512);
 
         if full_ram {
             (1024, 512, 0, 0, ctx.display_depth)
@@ -1479,8 +1115,7 @@ impl HWRenderer {
         size: (u16, u16),
         unaligned_data: &Vec<u32>,
     ) {
-        // size in halfwords.. and rows
-        let cols = size.0 as usize / 2;
+        let cols = size.0 as usize;
         let rows = size.1 as usize;
         self.flush();
         let mut encoder = self
@@ -1492,13 +1127,17 @@ impl HWRenderer {
         let num_extents = (cols / 64) + 1;
         let mut data: Vec<u32> = vec![];
         {
-            let padding_words = 64 - (cols % 64);
+            let padding_words = 64 - (( cols) % 64);
             let zeroes = vec![0; padding_words];
             let mut i: usize = 0;
-            for _ in 0..rows as usize {
-                data.extend_from_slice(&unaligned_data[i..i + cols]);
+            for _ in 0..rows {
+                for j in 0..cols/2 {
+                    let word = unaligned_data[i+j];
+                    data.push(word & 0xFFFF);
+                    data.push((word >> 16) & 0xFFFF);
+                }
                 data.extend_from_slice(&zeroes[0..]);
-                i += cols;
+                i += cols/2;
             }
         }
 
@@ -1550,14 +1189,14 @@ impl HWRenderer {
                 texture: &self.vram_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
-                    x: (top_left.0/2) as u32,
+                    x: (top_left.0) as u32,
                     y: top_left.1 as u32,
                     z: 0,
                 },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::Extent3d {
-                width: (size.0/2) as u32,
+                width: size.0 as u32,
                 height: size.1 as u32,
                 depth_or_array_layers: 1,
             },
@@ -1574,12 +1213,15 @@ impl HWRenderer {
 
     pub fn vram_to_cpu_copy(&mut self, top_left: (u16, u16), size: (u16, u16)) -> Vec<u32> {
         self.flush();
+        if top_left.0 > 1023 || top_left.1 > 511 {
+            return vec![];
+        }
         let imgsize = size.0 as u32 * size.1 as u32; // size in half-words
         // rounding so we have 16 bit of padding in last word
         // let imgsize = (imgsize + 1) & !1;
         
         // align to 256 bytes...
-        let num_extents = (2 * (size.0 as usize) / 256) + 1;
+        let num_extents = (4 * (size.0 as usize) / 256) + 1;
 
         // println!(">> vram-to-cpu copy..");
         // println!("top_left: {:?}, size: {:?}", top_left, size);
@@ -1591,7 +1233,7 @@ impl HWRenderer {
                 label: Some("vram_to_cpu_copy_encoder"),
             });
         let output_buffer = self.device.create_buffer(&wgpu::wgt::BufferDescriptor {
-            label: Some("output"),
+            label: Some("output*"),
             size: num_extents as u64 * 256 * (size.1 as u64),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
@@ -1634,9 +1276,10 @@ impl HWRenderer {
 
         let buffer_view = output_buffer.get_mapped_range(..).expect("success");
         let vram_data: &[u32] = bytemuck::cast_slice(&buffer_view[..]);
-        let mut data = Vec::with_capacity(vram_data.len());
+        let mut data = Vec::with_capacity(vram_data.len() / 2);
 
         let width_in_words = (((size.0 + 1) & !1) / 2) as usize;
+        // FIXME: need to pack two words into one
         for i in 0..size.1 as usize {
             let start = i * num_extents * 256 / 4;
             data.extend_from_slice(&vram_data[start..start + width_in_words]);
@@ -1650,6 +1293,44 @@ impl HWRenderer {
 }
 
 
+pub struct DirtyRegion {
+    ax: i32,
+    ay: i32,
+    bx: i32,
+    by: i32,
+    empty: bool
+}
 
-pub const OPAQUE: bool = false;
-pub const SEMI_TRANS: bool = true;
+impl DirtyRegion {
+    pub fn empty() -> Self {
+        DirtyRegion { ax: 0, ay: 0, bx: 0, by: 0, empty: true }
+    }
+
+    pub fn clear(&mut self) {
+        self.empty = true;
+    }
+    
+    pub fn intersects(&self, ax: i32, ay: i32, bx: i32, by: i32) -> bool {
+        if self.empty {
+            false
+        } else {
+            (ax <= self.bx) && (bx >= self.ax) && (ay <= self.by) && (by >= self.ay)
+        }
+    }
+
+    pub fn merge(&mut self, ax: i32, ay: i32, bx: i32, by: i32) {
+        if self.empty {
+            self.ax = ax;
+            self.ay = ay;
+            self.bx = bx;
+            self.by = by;
+            self.empty = false;
+        } else {
+            self.ax = min(self.ax, ax);
+            self.ay = min(self.ay, ay);
+            self.bx = max(self.bx, bx);
+            self.by = max(self.by, by);
+
+        }
+    }
+}

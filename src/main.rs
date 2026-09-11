@@ -304,7 +304,7 @@ impl State {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             // Most images are stored using sRGB, so we need to reflect that here.
-            format: wgpu::TextureFormat::R16Uint,
+            format: wgpu::TextureFormat::R32Uint,
             // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
             // COPY_DST means that we want to copy data to this texture
             usage: wgpu::TextureUsages::TEXTURE_BINDING
@@ -319,7 +319,7 @@ impl State {
             // always supported. Note that using a different
             // texture format is not supported on the WebGL2
             // backend.
-            view_formats: &[wgpu::TextureFormat::R16Uint],
+            view_formats: &[wgpu::TextureFormat::R32Uint],
         });
 
         let depth_stencil: Option<wgpu::DepthStencilState> = None;

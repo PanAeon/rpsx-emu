@@ -6,7 +6,6 @@ use std::{
 
 use crate::renderer::{RendererMsg, RendererResponse, RenderingContext};
 use crate::{
-    Color,
     system::{AccessWidth, Addressable},
 };
 
@@ -400,6 +399,8 @@ impl Gpu {
                 v0,
                 v1,
                 c0: color,
+                c1: color,
+                shaded: false,
                 semi_transparent: SEMI_TRANS,
                     ctx: self.rendering_ctx()
             })
@@ -413,11 +414,12 @@ impl Gpu {
         let v1 = Self::gp0_vertex(self.gp0_command[3]);
 
         self.renderer_sender
-            .send(RendererMsg::DrawLineShaded {
+            .send(RendererMsg::DrawLine {
                 v0,
                 v1,
                 c0: color0,
                 c1: color1,
+                shaded: true,
                 semi_transparent: SEMI_TRANS,
                     ctx: self.rendering_ctx()
             })
@@ -435,6 +437,11 @@ impl Gpu {
                 side: Vertex { x: SIDE, y: SIDE },
                 c: color,
                 semi_transparent: SEMI_TRANS,
+                clut: 0,
+                blend: false,
+                _u: 0,
+                _v: 0,
+                textured: false,
                     ctx: self.rendering_ctx()
             })
             .expect("ok");
@@ -451,7 +458,12 @@ impl Gpu {
                 v,
                 side,
                 c: color,
+                clut: 0,
+                blend: false,
+                _u: 0,
+                _v: 0,
                 semi_transparent: SEMI_TRANS,
+                textured: false,
                     ctx: self.rendering_ctx()
             })
             .expect("ok");
@@ -465,7 +477,7 @@ impl Gpu {
         let [_u, _v, clut] = Self::gp0_page_clut(self.gp0_command[2]);
 
         self.renderer_sender
-            .send(RendererMsg::DrawRectangleTextured {
+            .send(RendererMsg::DrawRectangle {
                 v,
                 side: Vertex { x: SIDE, y: SIDE },
                 c: color,
@@ -474,6 +486,7 @@ impl Gpu {
                 _v,
                 semi_transparent: SEMI_TRANS,
                 blend: BLEND,
+                textured: true,
                     ctx: self.rendering_ctx()
             })
             .expect("ok");
@@ -493,7 +506,7 @@ impl Gpu {
         let side = Self::gp0_vertex(self.gp0_command[3]);
 
         self.renderer_sender
-            .send(RendererMsg::DrawRectangleTextured {
+            .send(RendererMsg::DrawRectangle {
                 v,
                 side,
                 c: color,
@@ -502,42 +515,54 @@ impl Gpu {
                 _v,
                 semi_transparent: SEMI_TRANS,
                 blend: BLEND,
+                textured: true,
                     ctx: self.rendering_ctx()
             })
             .expect("ok");
         // self.draw_rectangle_textured::<SEMI_TRANS, BLEND>(v, side, color, clut, [_u, _v]);
     }
 
+    // FIXME: merge everything...
     pub fn gp0_poly_mono<const QUAD: bool, const SEMI_TRANS: bool>(&mut self) {
         let color = Colour::from_gp0(self.gp0_command[0]);
         let v0 = Self::gp0_vertex(self.gp0_command[1]);
         let v1 = Self::gp0_vertex(self.gp0_command[2]);
         let v2 = Self::gp0_vertex(self.gp0_command[3]);
 
+        if QUAD {
+            let v3 = Self::gp0_vertex(self.gp0_command[4]);
+            self.renderer_sender
+                .send(RendererMsg::DrawPolygon {
+                    cs: [color;4],
+                    vs: [v0, v1, v2, v3],
+                    semi_transparent: SEMI_TRANS,
+                is_triangle: false,
+                    textured: false,
+                    blend: false,
+                    shaded: false,
+                    clut: 0,
+                    page: 0,
+                    uvs: [[0;2];4],
+                    ctx: self.rendering_ctx()
+                })
+                .expect("ok");
+        } else {
         self.renderer_sender
-            .send(RendererMsg::DrawTriangleMono {
-                c: color,
-                v0,
-                v1,
-                v2,
+            .send(RendererMsg::DrawPolygon {
+                    cs: [color;4],
+                    vs: [v0, v1, v2, v2],
+                    textured: false,
+                    shaded: false,
+                    blend: false,
+                    clut: 0,
+                    page: 0,
+                    uvs: [[0;2];4],
+                is_triangle: true,
                 semi_transparent: SEMI_TRANS,
                     ctx: self.rendering_ctx()
             })
             .expect("ok");
-        // self.render_triangle_mono::<SEMI_TRANS>(color, &mut [v0, v1, v2]);
-        if QUAD {
-            let v3 = Self::gp0_vertex(self.gp0_command[4]);
-            self.renderer_sender
-                .send(RendererMsg::DrawTriangleMono {
-                    c: color,
-                    v0: v1,
-                    v1: v2,
-                    v2: v3,
-                    semi_transparent: SEMI_TRANS,
-                    ctx: self.rendering_ctx()
-                })
-                .expect("ok");
-            // self.render_triangle_mono::<SEMI_TRANS>(color, &mut [v1, v2, v3]);
+
         }
     }
 
@@ -554,46 +579,48 @@ impl Gpu {
         let v2 = Self::gp0_vertex(self.gp0_command[7]);
         let [_u2, _v2, _] = Self::gp0_page_clut(self.gp0_command[8]);
 
-        let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2]];
-        // let mut vs0 = [v0, v1, v2];
-        // let mut cs0 = [c0, c1, c2];
-        self.renderer_sender
-            .send(RendererMsg::DrawTriangleTexturedShaded {
-                vs: [v0, v1, v2],
-                cs: [c0, c1, c2],
-                uvs: uv0,
-                page,
-                clut,
-                semi_transparent: SEMI_TRANS,
-                blend: BLEND,
-                    ctx: self.rendering_ctx()
-            })
-            .expect("ok");
-        // self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
-        //     &mut cs0, clut, page, &mut vs0, &mut uv0,
-        // );
         if QUAD {
             let c3 = Colour::from_gp0(self.gp0_command[9]);
             let v3 = Self::gp0_vertex(self.gp0_command[10]);
             let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[11]);
-            let uv1 = [[_u1, _v1], [_u2, _v2], [_u3, _v3]];
+            let uv1 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u3, _v3]];
             // let mut vs1 = [v1, v2, v3];
             // let mut cs1 = [c1, c2, c3];
             self.renderer_sender
-                .send(RendererMsg::DrawTriangleTexturedShaded {
-                    vs: [v1, v2, v3],
-                    cs: [c1, c2, c3],
+                .send(RendererMsg::DrawPolygon {
+                    vs: [v0, v1, v2, v3],
+                    cs: [c0, c1, c2, c3],
                     uvs: uv1,
                     page,
                     clut,
+                    textured: true,
+                    shaded: true,
                     semi_transparent: SEMI_TRANS,
                     blend: BLEND,
+                is_triangle: false,
                     ctx: self.rendering_ctx()
                 })
                 .expect("ok");
             // self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
             //     &mut cs1, clut, page, &mut vs1, &mut uv1,
             // );
+        } else {
+        let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
+        self.renderer_sender
+            .send(RendererMsg::DrawPolygon {
+                vs: [v0, v1, v2, v2],
+                cs: [c0, c1, c2, c2],
+                uvs: uv0,
+                page,
+                clut,
+                    textured: true,
+                    shaded: true,
+                semi_transparent: SEMI_TRANS,
+                blend: BLEND,
+                is_triangle: true,
+                    ctx: self.rendering_ctx()
+            })
+            .expect("ok");
         }
     }
 
@@ -608,37 +635,44 @@ impl Gpu {
         let v2 = Self::gp0_vertex(self.gp0_command[5]);
         let [_u2, _v2, _] = Self::gp0_page_clut(self.gp0_command[6]);
 
-        let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2]];
         // self.draw_triangle_textured::<SEMI_TRANS, BLEND>(color, clut, page, &mut vs0, &mut uv0);
-        self.renderer_sender
-            .send(RendererMsg::DrawTriangleTextured {
-                color,
-                clut,
-                page,
-                vs: [v0, v1, v2],
-                uvs: uv0,
-                semi_transparent: SEMI_TRANS,
-                blend: BLEND,
-                    ctx: self.rendering_ctx()
-            })
-            .expect("ok");
         if QUAD {
             let v3 = Self::gp0_vertex(self.gp0_command[7]);
             let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[8]);
-            let uv1 = [[_u1, _v1], [_u2, _v2], [_u3, _v3]];
+            let uv1 = [[_u0, _v0],[_u1, _v1], [_u2, _v2], [_u3, _v3]];
             self.renderer_sender
-                .send(RendererMsg::DrawTriangleTextured {
-                    color,
+                .send(RendererMsg::DrawPolygon {
+                    cs: [color;4],
                     clut,
                     page,
-                    vs: [v1, v2, v3],
+                    vs: [v0, v1, v2, v3],
                     uvs: uv1,
+                    textured: true,
+                    shaded: false,
                     semi_transparent: SEMI_TRANS,
                     blend: BLEND,
+                is_triangle: false,
                     ctx: self.rendering_ctx()
                 })
                 .expect("ok");
             // self.draw_triangle_textured::<SEMI_TRANS, BLEND>(color, clut, page, &mut vs1, &mut uv1);
+        } else {
+        let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
+        self.renderer_sender
+            .send(RendererMsg::DrawPolygon {
+                cs: [color;4],
+                clut,
+                page,
+                vs: [v0, v1, v2, v2],
+                uvs: uv0,
+                    textured: true,
+                    shaded: false,
+                semi_transparent: SEMI_TRANS,
+                blend: BLEND,
+                is_triangle: true,
+                    ctx: self.rendering_ctx()
+            })
+            .expect("ok");
         }
     }
     pub fn gp0_poly_shaded<const QUAD: bool, const SEMI_TRANS: bool>(&mut self) {
@@ -649,27 +683,42 @@ impl Gpu {
         let v1 = Self::gp0_vertex(self.gp0_command[3]);
         let c2 = Self::gp0_colour(self.gp0_command[4]);
         let v2 = Self::gp0_vertex(self.gp0_command[5]);
-        self.renderer_sender
-            .send(RendererMsg::DrawTriangleShaded {
-                vs: [v0, v1, v2],
-                cs: [c0, c1, c2],
-                semi_transparent: SEMI_TRANS,
-                    ctx: self.rendering_ctx()
-            })
-            .expect("ok");
         // self.draw_triangle_shaded::<SEMI_TRANS>(&mut [v0, v1, v2], &mut [c0, c1, c2]);
         if QUAD {
             let c3 = Self::gp0_colour(self.gp0_command[6]);
             let v3 = Self::gp0_vertex(self.gp0_command[7]);
             self.renderer_sender
-                .send(RendererMsg::DrawTriangleShaded {
-                    vs: [v1, v2, v3],
-                    cs: [c1, c2, c3],
+                .send(RendererMsg::DrawPolygon {
+                    vs: [v0, v1, v2, v3],
+                    cs: [c0, c1, c2, c3],
+                clut: 0,
+                page: 0,
+                uvs: [[0;2];4],
+                blend: false,
+                shaded: true,
+                textured:false,
                     semi_transparent: SEMI_TRANS,
+                    is_triangle: false,
                     ctx: self.rendering_ctx()
                 })
                 .expect("ok");
             // self.draw_triangle_shaded::<SEMI_TRANS>(&mut [v1, v2, v3], &mut [c1, c2, c3]);
+        } else {
+        self.renderer_sender
+            .send(RendererMsg::DrawPolygon {
+                vs: [v0, v1, v2, v2],
+                cs: [c0, c1, c2, c2],
+                clut: 0,
+                page: 0,
+                semi_transparent: SEMI_TRANS,
+                uvs: [[0;2];4],
+                blend: false,
+                textured:false,
+                shaded: true,
+                is_triangle: true,
+                    ctx: self.rendering_ctx()
+            })
+            .expect("ok");
         }
     }
     pub fn gp0_vram_to_vram_blit(&mut self) {

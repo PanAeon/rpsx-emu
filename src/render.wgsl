@@ -12,7 +12,6 @@ struct VertexInput {
     @location(5) texpage_base: vec2<u32>,
     @location(6) texture_window_mask: vec2<u32>,
     @location(7) texture_window_offset: vec2<u32>,
-
 };
 
 struct VertexOutput {
@@ -42,7 +41,7 @@ fn vert_main(in: VertexInput) -> VertexOutput {
 
     let color = in.color & 0x00FFFFFF;
 
-    out.clip_position = vec4<f32>(f32(in.position.x) / 512.0 - 1.0, 1.0 - f32(in.position.y) / 256.0 , 0.0, 1.0);
+    out.clip_position = vec4<f32>(f32(in.position.x) / 512.0 - 1.0, 1.0 - f32(in.position.y) / 256.0, 0.0, 1.0);
     // out.clip_position = vec4<f32>(f32(in.position.x), f32(in.position.y), 0.0, 1.0);
     out.vram_position = vec2<f32>(in.position);
 
@@ -58,7 +57,6 @@ fn vert_main(in: VertexInput) -> VertexOutput {
     out.texture_window_mask = in.texture_window_mask;
     out.texture_window_offset = in.texture_window_offset;
 
-
     // ret.tex_coords = model.uv;
     // let position = vec4<f32>(model.position, 1.0);
     // ret.clip_position = camera * position;
@@ -69,7 +67,7 @@ fn pack_color(color: vec3<f32>, mask: bool) -> u32 {
     let r = u32(color.r * 31.0);
     let g = u32(color.g * 31.0);
     let b = u32(color.b * 31.0);
-    var c =  r | (g << 5u) | (b << 10u);
+    var c = r | (g << 5u) | (b << 10u);
     if mask {
         c |= (1 << 15u);
     }
@@ -88,7 +86,6 @@ fn unpack_color(v: u32) -> vec4<f32> {
         FIVE_BIT_TO_8Bit[b],
         f32(a)
     );
-
 }
 
 fn pack_h(v: vec2<f32>, f: f32) -> vec2<f32> {
@@ -105,8 +102,7 @@ fn compute_uv_offset(v: VertexOutput) -> vec2<f32> {
 
     return vec2<f32>(
         vec2((uv[0] & (~(x_mask * 8u))) | ((x_offset & x_mask) * 8u),
-        (uv[1] & (~(y_mask * 8u))) | ((y_offset & y_mask) * 8u))
-
+            (uv[1] & (~(y_mask * 8u))) | ((y_offset & y_mask) * 8u))
     );
 }
 
@@ -132,7 +128,7 @@ fn get_color(in: VertexOutput) -> u32 {
                 color = read_16bit(coord);
             }
             default: {
-                color = read_16bit(pack_h(in.texpage_base,1) + uv);
+                color = read_16bit(pack_h(in.texpage_base, 1) + uv);
             }
         }
         if color == 0 {
@@ -142,12 +138,11 @@ fn get_color(in: VertexOutput) -> u32 {
         var c = unpack_color(color);
 
         if needs_blend(in) {
-           let tex_color = vec3<u32>(vec3(c.r * 255, c.g * 255, c.b * 255));
-           let vert_color = vec3<u32>(vec3(in.color.r * 255, in.color.g * 255, in.color.b * 255));
+            let tex_color = vec3<u32>(vec3(c.r * 255, c.g * 255, c.b * 255));
+            let vert_color = vec3<u32>(vec3(in.color.r * 255, in.color.g * 255, in.color.b * 255));
 
-           let color_uint = min((tex_color * vert_color) >> vec3<u32>(7u), vec3<u32>(0xffu));
-           c = vec4<f32>(vec3<f32>(color_uint) / 255.0, c.w);
-           
+            let color_uint = min((tex_color * vert_color) >> vec3<u32>(7u), vec3<u32>(0xffu));
+            c = vec4<f32>(vec3<f32>(color_uint) / 255.0, c.w);
         }
 
         if needs_dither(in) {
@@ -167,7 +162,6 @@ fn get_color(in: VertexOutput) -> u32 {
         }
 
         return pack_color(c.xyz, c.w > 0.5);
-
     } else {
         var c = vec4<f32>(in.color, 0.0);
         if needs_dither(in) {
@@ -192,16 +186,16 @@ fn blend_with_background(color: vec4<f32>, prev: vec4<f32>, transparency: u32) -
     var res: vec4<f32>;
     switch transparency {
         case 0: {
-           res = min((color + prev) / vec4<f32>(2.0), vec4<f32>(1.0));
+            res = min((color + prev) / vec4<f32>(2.0), vec4<f32>(1.0));
         }
         case 1: {
-           res = min((color + prev), vec4<f32>(1.0));
+            res = min((color + prev), vec4<f32>(1.0));
         }
         case 2: {
-           res = max((prev - color), vec4<f32>(0.0));
+            res = max((prev - color), vec4<f32>(0.0));
         }
         default: {
-           res = min(prev + (color / vec4<f32>(4.0)), vec4<f32>(1.0));
+            res = min(prev + (color / vec4<f32>(4.0)), vec4<f32>(1.0));
         }
     }
     res.w = color.w;
@@ -233,14 +227,15 @@ fn get_transparency(v: VertexOutput) -> u32 {
 }
 
 fn vramcoord_to_texcoord(coord: vec2<f32>) -> vec2<u32> {
-    return vec2<u32>(vec2(coord.x / 2, coord.y));
+    return vec2<u32>(vec2(coord.x, coord.y));
 }
 
 fn read_16bit(coord: vec2<f32>) -> u32 {
     let texcoord = vramcoord_to_texcoord(coord);
     // wgpu tex coords are +Y = down
     var packed = textureLoad(vram_t, texcoord).r;
-    return (packed >> ((u32(coord.x) % 2) * 16)) & 0xFFFF;
+    return packed;
+    // return (packed >> ((u32(coord.x) % 2) * 16)) & 0xFFFF;
 }
 
 fn read_4bit(coord: vec2<f32>) -> u32 {
@@ -258,7 +253,6 @@ fn read_8bit(coord: vec2<f32>) -> u32 {
 
     return (packed >> shift_amt) & 0xFFu;
 }
-
 
 @fragment
 fn frag_main(data: VertexOutput) -> @location(0) u32 {
@@ -278,45 +272,45 @@ fn frag_main(data: VertexOutput) -> @location(0) u32 {
 }
 
 const DITHER: array<array<i32, 4>, 4> = array(
-    array(-4,  0, -3,  1),
-    array( 2, -2,  3, -1),
-    array(-3,  1, -4,  0),
-    array( 3, -1,  2, -2),
+    array(-4, 0, -3, 1),
+    array(2, -2, 3, -1),
+    array(-3, 1, -4, 0),
+    array(3, -1, 2, -2),
 );
 
 const FIVE_BIT_TO_8Bit: array<f32, 32> = array(
-0,
-0.03137255,
-0.0627451,
-0.09803922,
-0.12941177,
-0.16078432,
-0.19215687,
-0.22745098,
-0.25882354,
-0.2901961,
-0.32156864,
-0.3529412,
-0.3882353,
-0.41960785,
-0.4509804,
-0.48235294,
-0.5176471,
-0.54901963,
-0.5803922,
-0.6117647,
-0.64705884,
-0.6784314,
-0.70980394,
-0.7411765,
-0.77254903,
-0.80784315,
-0.8392157,
-0.87058824,
-0.9019608,
-0.9372549,
-0.96862745,
-1,
+    0,
+    0.03137255,
+    0.0627451,
+    0.09803922,
+    0.12941177,
+    0.16078432,
+    0.19215687,
+    0.22745098,
+    0.25882354,
+    0.2901961,
+    0.32156864,
+    0.3529412,
+    0.3882353,
+    0.41960785,
+    0.4509804,
+    0.48235294,
+    0.5176471,
+    0.54901963,
+    0.5803922,
+    0.6117647,
+    0.64705884,
+    0.6784314,
+    0.70980394,
+    0.7411765,
+    0.77254903,
+    0.80784315,
+    0.8392157,
+    0.87058824,
+    0.9019608,
+    0.9372549,
+    0.96862745,
+    1,
 );
 // const FIVE_BIT_TO_8Bit: array<u32, 32> = array(
 // 0,

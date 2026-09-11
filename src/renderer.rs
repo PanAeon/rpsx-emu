@@ -19,25 +19,12 @@ pub enum RendererMsg {
         v0: Vertex,
         v1: Vertex,
         c0: Colour,
-        semi_transparent: bool,
-        ctx: RenderingContext,
-    },
-    DrawLineShaded {
-        v0: Vertex,
-        v1: Vertex,
-        c0: Colour,
         c1: Colour,
         semi_transparent: bool,
+        shaded: bool,
         ctx: RenderingContext,
     },
     DrawRectangle {
-        v: Vertex,
-        side: Vertex,
-        c: Colour,
-        semi_transparent: bool,
-        ctx: RenderingContext,
-    },
-    DrawRectangleTextured {
         v: Vertex,
         side: Vertex,
         c: Colour,
@@ -46,40 +33,20 @@ pub enum RendererMsg {
         _v: u16,
         semi_transparent: bool,
         blend: bool,
+        textured: bool,
         ctx: RenderingContext,
     },
-    DrawTriangleMono {
-        c: Colour,
-        v0: Vertex,
-        v1: Vertex,
-        v2: Vertex,
-        semi_transparent: bool,
-        ctx: RenderingContext,
-    },
-    DrawTriangleShaded {
-        vs: [Vertex; 3],
-        cs: [Colour; 3],
-        semi_transparent: bool,
-        ctx: RenderingContext,
-    },
-    DrawTriangleTextured {
-        color: Colour,
+    DrawPolygon {
+        is_triangle: bool,
+        cs: [Colour; 4],
         clut: u16,
         page: u16,
-        vs: [Vertex; 3],
-        uvs: [[u16; 2]; 3],
+        vs: [Vertex; 4],
+        uvs: [[u16; 2]; 4],
         semi_transparent: bool,
         blend: bool,
-        ctx: RenderingContext,
-    },
-    DrawTriangleTexturedShaded {
-        cs: [Colour; 3],
-        clut: u16,
-        page: u16,
-        vs: [Vertex; 3],
-        uvs: [[u16; 2]; 3],
-        semi_transparent: bool,
-        blend: bool,
+        textured: bool,
+        shaded: bool,
         ctx: RenderingContext,
     },
     FillRect {
@@ -191,40 +158,19 @@ impl Renderer {
                         v0,
                         v1,
                         c0,
-                        semi_transparent,
-                        ctx,
-                    } => {
-                        if *semi_transparent {
-                            renderer.draw_line::<SEMI_TRANS>(*v0, *v1, *c0, ctx)
-                        } else {
-                            renderer.draw_line::<OPAQUE>(*v0, *v1, *c0, ctx)
-                        }
-                    }
-                    RendererMsg::DrawLineShaded {
-                        v0,
-                        v1,
-                        c0,
                         c1,
                         semi_transparent,
+                        shaded,
                         ctx,
-                    } => 
-                        if *semi_transparent {
-                            renderer.draw_line_shaded::<SEMI_TRANS>(*v0, *v1, *c0, *c1, ctx)
-                        } else {
-                            renderer.draw_line_shaded::<OPAQUE>(*v0, *v1, *c0, *c1, ctx)
-                        },
+                    } => {
+                        match (*semi_transparent, *shaded) {
+                            (true, true) => renderer.draw_line_shaded::<SEMI_TRANS>(*v0, *v1, *c0, *c1, ctx),
+                            (false, true) => renderer.draw_line_shaded::<OPAQUE>(*v0, *v1, *c0, *c1, ctx),
+                            (false, false) => renderer.draw_line::<OPAQUE>(*v0, *v1, *c0, ctx),
+                            (true, false) => renderer.draw_line::<SEMI_TRANS>(*v0, *v1, *c0, ctx),
+                        }
+                    },
                     RendererMsg::DrawRectangle {
-                        v,
-                        side,
-                        c,
-                        semi_transparent,
-                        ctx,
-                    } => if *semi_transparent {
-                             renderer.draw_rectangle::<SEMI_TRANS>(*v, *side, *c, ctx);
-                         } else {
-                             renderer.draw_rectangle::<OPAQUE>(*v, *side, *c, ctx);
-                         },
-                    RendererMsg::DrawRectangleTextured {
                         v,
                         side,
                         c,
@@ -232,54 +178,20 @@ impl Renderer {
                         _u,
                         _v,
                         semi_transparent,
+                        textured,
                         blend,
                         ctx,
-                    } => 
-                    match (*semi_transparent, *blend) {
-                        (true, true) => renderer.draw_rectangle_textured::<SEMI_TRANS, BLEND>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
-                        (true, false) => renderer.draw_rectangle_textured::<SEMI_TRANS, RAW>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
-                        (false, true) => renderer.draw_rectangle_textured::<OPAQUE, BLEND>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
-                        (false, false) => renderer.draw_rectangle_textured::<OPAQUE, RAW>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
+                    } =>
+                    match (*semi_transparent, *blend, *textured) {
+                        (true, true, true) => renderer.draw_rectangle_textured::<SEMI_TRANS, BLEND>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
+                        (true, false, true) => renderer.draw_rectangle_textured::<SEMI_TRANS, RAW>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
+                        (false, true, true) => renderer.draw_rectangle_textured::<OPAQUE, BLEND>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
+                        (false, false, true) => renderer.draw_rectangle_textured::<OPAQUE, RAW>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
+                        (true, false, false) => renderer.draw_rectangle::<SEMI_TRANS>(*v, *side, *c, ctx),
+                        (false, false, false) => renderer.draw_rectangle::<OPAQUE>(*v, *side, *c, ctx),
+                        _ => unreachable!("wrong combo")
                     },
-                    RendererMsg::DrawTriangleMono {
-                        c,
-                        v0,
-                        v1,
-                        v2,
-                        semi_transparent,
-                        ctx,
-                    } => if *semi_transparent {
-                        renderer.render_triangle_mono::<SEMI_TRANS>(*c, &mut [*v0, *v1, *v2], ctx);
-                    } else {
-                        renderer.render_triangle_mono::<OPAQUE>(*c, &mut [*v0, *v1, *v2], ctx);
-                    },
-                    RendererMsg::DrawTriangleShaded {
-                        vs,
-                        cs,
-                        semi_transparent,
-                        ctx,
-                    } => if *semi_transparent {
-                        renderer.draw_triangle_shaded::<SEMI_TRANS>(vs, cs, ctx);
-                    } else {
-                        renderer.draw_triangle_shaded::<OPAQUE>(vs, cs, ctx);
-                    }, 
-                    RendererMsg::DrawTriangleTextured {
-                        color,
-                        clut,
-                        page,
-                        vs,
-                        uvs,
-                        semi_transparent,
-                        blend,
-                        ctx,
-                    } => 
-                    match (*semi_transparent, *blend) {
-                        (true, true) => renderer.draw_triangle_textured::<SEMI_TRANS, BLEND>( *color, *clut, *page,  vs,  uvs, ctx),
-                        (true, false) => renderer.draw_triangle_textured::<SEMI_TRANS, RAW>( *color, *clut, *page,  vs,  uvs, ctx),
-                        (false, true) => renderer.draw_triangle_textured::<OPAQUE, BLEND>( *color, *clut, *page,  vs,  uvs, ctx),
-                        (false, false) => renderer.draw_triangle_textured::<OPAQUE, RAW>( *color, *clut, *page,  vs,  uvs, ctx),
-                    },
-                    RendererMsg::DrawTriangleTexturedShaded {
+                    RendererMsg::DrawPolygon {
                         cs,
                         clut,
                         page,
@@ -287,13 +199,31 @@ impl Renderer {
                         uvs,
                         semi_transparent,
                         blend,
+                        is_triangle,
+                        shaded,
+                        textured,
                         ctx,
                     } => 
-                    match (*semi_transparent, *blend) {
-                        (true, true) => renderer.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>( cs, *clut, *page,  vs,  uvs, ctx),
-                        (true, false) => renderer.draw_triangle_textured_shaded::<SEMI_TRANS, RAW>( cs, *clut, *page,  vs,  uvs, ctx),
-                        (false, true) => renderer.draw_triangle_textured_shaded::<OPAQUE, BLEND>( cs, *clut, *page,  vs,  uvs, ctx),
-                        (false, false) => renderer.draw_triangle_textured_shaded::<OPAQUE, RAW>( cs, *clut, *page,  vs,  uvs, ctx),
+                    match (*semi_transparent, *blend, *shaded, *textured) {
+                        (true, true, true, true) => renderer.draw_polygon_textured_shaded::<SEMI_TRANS, BLEND>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
+                        (true, false, true, true) => renderer.draw_polygon_textured_shaded::<SEMI_TRANS, RAW>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
+                        (false, true, true, true) => renderer.draw_polygon_textured_shaded::<OPAQUE, BLEND>( cs, *clut, *page,  vs,  uvs,*is_triangle,  ctx),
+                        (false, false, true, true) => renderer.draw_polygon_textured_shaded::<OPAQUE, RAW>( cs, *clut, *page,  vs,  uvs,*is_triangle,  ctx),
+
+
+                        (true, true, false, true) => renderer.draw_polygon_textured::<SEMI_TRANS, BLEND>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
+                        (true, false, false, true) => renderer.draw_polygon_textured::<SEMI_TRANS, RAW>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
+                        (false, true, false, true) => renderer.draw_polygon_textured::<OPAQUE, BLEND>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
+                        (false, false, false, true) => renderer.draw_polygon_textured::<OPAQUE, RAW>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
+
+                        (true, false, true, false) => renderer.draw_polygon_shaded::<SEMI_TRANS>(vs, cs, *is_triangle, ctx),
+                        (false, false, true, false) => renderer.draw_polygon_shaded::<OPAQUE>(vs, cs, *is_triangle,  ctx),
+
+                        (true, false, false, false) =>
+                        renderer.draw_polygon_mono::<SEMI_TRANS>(cs, vs,  *is_triangle, ctx),
+                        (false, false, false, false) =>
+                        renderer.draw_polygon_mono::<OPAQUE>(cs, vs,  *is_triangle, ctx),
+                        _ => unreachable!("wrong combo")
                     },
                     RendererMsg::FillRect { v, side, c, ctx } => renderer.fill_rect(*v, *side, *c),
                     RendererMsg::Vram2VramBlit { src, dst, size } => renderer.vram2vram_blit(*src, *dst, *size),
@@ -558,6 +488,15 @@ impl Renderer {
             }
         }
     }
+    pub fn draw_polygon_mono<const SEMI_TRANS: bool>(
+        &mut self,
+        cs: &mut [Colour; 4],
+        vs: &mut [Vertex; 4],
+        is_triangle: bool,
+        ctx: &RenderingContext,
+    ) {
+        unimplemented!("todo");
+    }
     pub fn render_triangle_mono<const SEMI_TRANS: bool>(
         &mut self,
         mono: Colour,
@@ -606,6 +545,15 @@ impl Renderer {
 
     }
 
+    pub fn draw_polygon_shaded<const SEMI_TRANS: bool>(
+        &mut self,
+        vs: &mut [Vertex; 4],
+        colors: &mut [Colour; 4],
+        is_triangle: bool,
+        ctx: &RenderingContext,
+    ) {
+        unimplemented!("todo!");
+    }
     pub fn draw_triangle_shaded<const SEMI_TRANS: bool>(
         &mut self,
         vs: &mut [Vertex; 3],
@@ -688,6 +636,17 @@ impl Renderer {
         ]
     }
 
+    pub fn draw_polygon_textured<const SEMI_TRANS: bool, const BLEND: bool>(
+        &mut self,
+        cs: &mut [Colour;4],
+        clut: u16,
+        page: u16,
+        vs: &mut [Vertex; 4],
+        uv: &mut [[u16; 2]; 4],
+        is_triangle: bool,
+        ctx: &RenderingContext,) {
+        unimplemented!("todo")
+    }
     pub fn draw_triangle_textured<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         mono: Colour,
@@ -768,6 +727,17 @@ impl Renderer {
         // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
     }
 
+    pub fn draw_polygon_textured_shaded<const SEMI_TRANS: bool, const BLEND: bool>(
+        &mut self,
+        colors: &mut [Colour; 4],
+        clut: u16,
+        page: u16,
+        vs: &mut [Vertex; 4],
+        uv: &mut [[u16; 2]; 4],
+        is_triangle: bool,
+        ctx: &RenderingContext,) {
+        unimplemented!("todo!");
+    }
     pub fn draw_triangle_textured_shaded<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         colors: &mut [Colour; 3],

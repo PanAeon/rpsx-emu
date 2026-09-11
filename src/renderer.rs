@@ -94,7 +94,7 @@ pub enum RendererMsg {
         size: Vertex,
     },
     RenderFB {
-        framebuffer: Arc<Mutex<Vec<Color>>>,
+        framebuffer: Arc<Mutex<Vec<u16>>>,
         full_ram: bool,
         ctx: RenderingContext,
     },
@@ -107,9 +107,13 @@ pub enum RendererMsg {
         top_left: (u16, u16),
         size: (u16, u16),
     },
+    DrawingAreaChange {
+        top_left: (u16, u16),
+        bottom_right: (u16, u16),
+    }
 }
 pub enum RendererResponse {
-    FBUpdated { width: usize, height: usize },
+    FBUpdated { width: usize, height: usize, sx: usize, sy: usize, depth: DisplayDepth },
     VramToCpuData { data: Vec<u32> },
 }
 
@@ -298,8 +302,8 @@ impl Renderer {
                         full_ram,
                         ctx,
                     } => {
-                        let (width,height) = renderer.render_fb(&framebuffer, *full_ram, ctx);
-                        match to_gpu_sender.send(RendererResponse::FBUpdated { width, height }) {
+                        let (width,height, sx, sy, depth) = renderer.render_fb(&framebuffer, *full_ram, ctx);
+                        match to_gpu_sender.send(RendererResponse::FBUpdated { width, height, sx, sy, depth }) {
                             Ok(_) => (),
                             Err(_) => return,
                         }
@@ -315,6 +319,9 @@ impl Renderer {
                             Ok(_) => (),
                             Err(_) => return,
                         }
+                    },
+                    RendererMsg::DrawingAreaChange { top_left, bottom_right } => {
+                        // ignore for now..
                     },
                 }
                 // match msg {
@@ -953,36 +960,38 @@ impl Renderer {
 
     pub fn render_fb(
         &self,
-        framebuffer: &Mutex<Vec<Color>>,
+        framebuffer: &Mutex<Vec<u16>>,
         full_ram: bool,
         ctx: &RenderingContext,
-    ) -> (usize, usize) {
+    ) -> (usize, usize, usize, usize, DisplayDepth) {
         let mut mutex = framebuffer.lock().unwrap();
-        let output_frame_buffer: &mut [Color] = mutex.as_mut();
+        let output_frame_buffer: &mut [u16] = mutex.as_mut();
 
         if ctx.display_disabled {
             for y in 0..16 {
                 for x in 0..16 {
-                    output_frame_buffer[1024 * y + x] = Color { r: 0, g: 0, b: 0, a: 255 };
+                    output_frame_buffer[1024 * y + x] = 0;
                 }
             }
-            return (16, 16);
+            return (16, 16, 0, 0, ctx.display_depth);
         }
         if full_ram {
-            for y in 0..512 {
-                for x in 0..1024 {
-                    let vram_addr = 2 * (1024 * y + x);
-                    let pixel =
-                        u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
 
-                    let r = convert_5bit_to_8bit(pixel & 0x1F);
-                    let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-                    let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
-
-                    output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-                }
-            }
-            (1024, 512)
+            output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
+            // for y in 0..512 {
+            //     for x in 0..1024 {
+            //         let vram_addr = 2 * (1024 * y + x);
+            //         let pixel =
+            //             u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
+            //
+            //         let r = convert_5bit_to_8bit(pixel & 0x1F);
+            //         let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+            //         let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+            //
+            //         output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
+            //     }
+            // }
+            (1024, 512, 0, 0, ctx.display_depth)
         } else {
             let (sx, sy, width, height, interlaced) = (
                 ctx.display_vram_x_start as usize,
@@ -991,44 +1000,45 @@ impl Renderer {
                 ctx.vres.into_pixels(),
                 ctx.interlaced,
             );
-            match ctx.display_depth {
-                DisplayDepth::D15Bits => {
-                    for y in 0..height {
-                        for x in 0..width {
-                            let vram_addr = 2 * (1024 * (sy + y) + (sx + x));
-                            let pixel = u16::from_le_bytes([
-                                self.vram[vram_addr],
-                                self.vram[vram_addr + 1],
-                            ]);
-
-                            let r = convert_5bit_to_8bit(pixel & 0x1F);
-                            let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-                            let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
-
-                            output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-                        }
-                    }
-                }
-                DisplayDepth::D24Bits => {
-                    for y in 0..height {
-                        for x in 0..width {
-                            let vram_addr = 2 * (1024 * (y + sy)) + 3 * sx + 3 * x;
-                            let r = self.vram[vram_addr];
-                            let g = self.vram[vram_addr + 1];
-                            let b = self.vram[vram_addr + 2];
-
-                            output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-                        }
-                    }
-                }
-            };
+            output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
+            // match ctx.display_depth {
+            //     DisplayDepth::D15Bits => {
+            //         for y in 0..height {
+            //             for x in 0..width {
+            //                 let vram_addr = 2 * (1024 * (sy + y) + (sx + x));
+            //                 let pixel = u16::from_le_bytes([
+            //                     self.vram[vram_addr],
+            //                     self.vram[vram_addr + 1],
+            //                 ]);
+            //
+            //                 let r = convert_5bit_to_8bit(pixel & 0x1F);
+            //                 let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+            //                 let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+            //
+            //                 output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
+            //             }
+            //         }
+            //     }
+            //     DisplayDepth::D24Bits => {
+            //         for y in 0..height {
+            //             for x in 0..width {
+            //                 let vram_addr = 2 * (1024 * (y + sy)) + 3 * sx + 3 * x;
+            //                 let r = self.vram[vram_addr];
+            //                 let g = self.vram[vram_addr + 1];
+            //                 let b = self.vram[vram_addr + 2];
+            //
+            //                 output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
+            //             }
+            //         }
+            //     }
+            // };
             // black out lines outside of display field (wrong impl)
-            let vrange = (ctx.display_line_end - ctx.display_line_start) as usize;
-            if height >= vrange {
-                let starting_row = vrange * 1024 * if interlaced { 2 } else { 1 };
-                output_frame_buffer[starting_row..].fill(Color { r: 0, g: 0, b: 0, a: 255});
-            }
-            (width, height)
+            // let vrange = (ctx.display_line_end - ctx.display_line_start) as usize;
+            // if height >= vrange {
+            //     let starting_row = vrange * 1024 * if interlaced { 2 } else { 1 };
+            //     output_frame_buffer[starting_row..].fill(Color { r: 0, g: 0, b: 0, a: 255});
+            // }
+            (width, height, sx, sy, ctx.display_depth)
         }
     }
 
@@ -1212,8 +1222,8 @@ fn compute_normal_coordinates(p: [f64; 3], vs: &[[u16; 2]; 3]) -> [usize; 2] {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Clut {
-    base_x: usize,
-    base_y: usize,
+    pub base_x: usize,
+    pub base_y: usize,
 }
 
 impl Clut {
@@ -1235,10 +1245,10 @@ impl Clut {
 pub struct Texture {
     base_x: usize,
     base_y: usize,
-    semi_transparency: u8,
-    dithering: bool,
+    pub semi_transparency: u8,
+    pub dithering: bool,
     draw_to_display: bool,
-    depth: TextureDepth,
+    pub depth: TextureDepth,
     clut: Clut,
 }
 
@@ -1266,6 +1276,10 @@ impl Texture {
             depth,
             clut,
         }
+    }
+
+    pub fn get_texpage_base(&self) -> [u8;2] {
+        [(self.base_x / 64) as u8, (self.base_y / 256) as u8]
     }
 
     pub fn get_texel(

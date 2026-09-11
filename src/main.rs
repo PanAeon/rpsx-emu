@@ -3,14 +3,15 @@ use cgmath::prelude::*;
 use cpal::traits::StreamTrait;
 // use env_logger::fmt::style::Color;
 use std::cmp::min;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Read, Write};
+use std::path::Path;
 use std::sync::Mutex;
 use std::{iter, sync::Arc};
 use wgpu::util::DeviceExt;
 use winit::dpi::LogicalSize;
 use winit::event_loop::EventLoopProxy;
-use std::path::Path;
 use winit::keyboard::Key;
 use winit::{
     application::ApplicationHandler,
@@ -26,34 +27,48 @@ use std::{borrow::Cow, collections::HashMap, hash::Hash, num::NonZeroU64};
 use vek::{Mat4, Vec2, Vec4};
 
 use crate::cdrom::CDRom;
+use crate::gpu::DisplayDepth;
 use crate::sio::Sio;
 use crate::spu::Spu;
 
+mod audio;
 mod bios;
+mod cdrom;
 mod cpu;
 mod dma;
 mod gpu;
-mod system;
-mod ram;
-mod spu;
-mod scratchpad;
-mod audio;
-mod irq;
-mod timers;
-mod scheduler;
-mod cdrom;
 mod gte;
-mod sio;
+mod hw_renderer;
+mod irq;
 mod mdec;
+mod ram;
 mod renderer;
+mod scheduler;
+mod scratchpad;
+mod sio;
+mod spu;
+mod system;
+mod timers;
 
-mod resources;
 mod cdxa;
+mod resources;
+
+// const FIVE_BIT_TO_8BIT: [u8; 32] = {
+//     let mut table = [0u8; 32];
+//     let mut i = 0;
+//     while i < 32 {
+//         table[i] = (i as f64 * 255.0 / 31.0).round() as u8;
+//         i += 1;
+//     }
+//     table
+// };
 
 fn main() {
+    // for x in FIVE_BIT_TO_8BIT {
+    //     println!("{},", (x as f32) / 255.0 )
+    // }
     run().unwrap();
 }
-
 
 const fn mat4_const_from_rows(m: [[f32; 4]; 4]) -> Mat4<f32> {
     Mat4 {
@@ -96,23 +111,44 @@ impl Vertex {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x2,
-                }
-            ]
+                },
+            ],
         }
     }
 }
 
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [0.0, 0.0, 0.0], uv: [0.0, 0.0] },
-    Vertex { position: [1.0, 0.0, 0.0], uv: [1.0, 0.0] },
-    Vertex { position: [0.0, 1.0, 0.0], uv: [0.0, 1.0] },
-    Vertex { position: [0.0, 1.0, 0.0], uv: [0.0, 1.0] },
-    Vertex { position: [1.0, 0.0, 0.0], uv: [1.0, 0.0] },
-    Vertex { position: [1.0, 1.0, 0.0], uv: [1.0, 1.0] },
+    Vertex {
+        position: [0.0, 0.0, 0.0],
+        uv: [0.0, 0.0],
+    },
+    Vertex {
+        position: [1.0, 0.0, 0.0],
+        uv: [1.0, 0.0],
+    },
+    Vertex {
+        position: [0.0, 1.0, 0.0],
+        uv: [0.0, 1.0],
+    },
+    Vertex {
+        position: [0.0, 1.0, 0.0],
+        uv: [0.0, 1.0],
+    },
+    Vertex {
+        position: [1.0, 0.0, 0.0],
+        uv: [1.0, 0.0],
+    },
+    Vertex {
+        position: [1.0, 1.0, 0.0],
+        uv: [1.0, 1.0],
+    },
 ];
 
-
-
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct DisplayUniforms {
+    is_24bpp: u32,
+}
 
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
@@ -126,7 +162,7 @@ pub struct Color {
     r: u8,
     g: u8,
     b: u8,
-    a: u8
+    a: u8,
 }
 
 // #[derive(Clone)]
@@ -144,6 +180,7 @@ pub struct State {
     render_time_ms: u32,
     // camera: Camera,
     camera_buffer: wgpu::Buffer,
+    uniforms_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     // camera_controller: CameraController,
     // tilemap: TilemapData<'static>,
@@ -152,10 +189,10 @@ pub struct State {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     texture_params_buffer: wgpu::Buffer,
-    texture: wgpu::Texture,
+    render_texture: wgpu::Texture,
     texture_bind_group: wgpu::BindGroup,
     // dimensions: (u32, u32),
-    framebuffer: Arc<Mutex<Vec<Color>>>,
+    framebuffer: Arc<Mutex<Vec<u16>>>,
     // image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
     cpu: cpu::Cpu,
     texture_size: wgpu::Extent3d,
@@ -166,7 +203,11 @@ pub struct State {
     active_gamepad: Option<GamepadId>,
     output_width: usize,
     output_height: usize,
-    display_vram: bool
+    sx: usize,
+    sy: usize,
+    display_depth: DisplayDepth,
+    display_vram: bool,
+    software_render: bool,
 }
 
 impl State {
@@ -186,14 +227,22 @@ impl State {
 
         let surface = instance.create_surface(window.clone()).unwrap();
 
+        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        for a in adapters {
+            println!("available: {}", a.get_info().name);
+        }
+
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
                 apply_limit_buckets: false,
             })
             .await?;
+
+          println!("Selected adapter name: {}", adapter.get_info().name);
+
 
         let limits = wgpu::Limits::default().using_resolution(adapter.limits());
         // limits.max_texture_dimension_2d *= 2;
@@ -202,7 +251,7 @@ impl State {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::empty(),
+                required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
@@ -216,6 +265,7 @@ impl State {
             })
             .await?;
 
+
         let surface_caps = surface.get_capabilities(&adapter);
 
         // Shader code in this tutorial assumes an Srgb surface texture. Using a different
@@ -227,6 +277,7 @@ impl State {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
@@ -238,35 +289,29 @@ impl State {
             view_formats: vec![surface_format],
             color_space: wgpu::wgt::SurfaceColorSpace::Auto,
         };
-        // let img_data = include_bytes!("happy-tree.png");
-        // use image::ImageReader;
-        // let image = ImageReader::new(Cursor::new(img_data))
-        //     .with_guessed_format()
-        //     .unwrap()
-        //     .decode()
-        //     .unwrap();
-        // let image_rgba = image.to_rgba8();
-        // use image::GenericImageView;
-        // let dimensions = image.dimensions();
 
-        let texture_size = wgpu::Extent3d {
+        let texture_size = 
+        wgpu::Extent3d {
             width: 1024,
             height: 512,
             // All textures are stored as 3D, we represent our 2D texture
             // by setting depth to 1.
             depth_or_array_layers: 1,
         };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let render_texture = device.create_texture(&wgpu::TextureDescriptor {
             size: texture_size,
-            mip_level_count: 1, // We'll talk about this a little later
+            mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             // Most images are stored using sRGB, so we need to reflect that here.
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: wgpu::TextureFormat::R16Uint,
             // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
             // COPY_DST means that we want to copy data to this texture
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            label: Some("diffuse_texture"),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            label: Some("render texture"),
             // This is the same as with the SurfaceConfig. It
             // specifies what texture formats can be used to
             // create TextureViews for this texture. The base
@@ -274,7 +319,7 @@ impl State {
             // always supported. Note that using a different
             // texture format is not supported on the WebGL2
             // backend.
-            view_formats: &[],
+            view_formats: &[wgpu::TextureFormat::R16Uint],
         });
 
         let depth_stencil: Option<wgpu::DepthStencilState> = None;
@@ -287,7 +332,8 @@ impl State {
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("camera_bind_group_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
+                entries: &[
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
@@ -298,11 +344,29 @@ impl State {
                         ),
                     },
                     count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::all(),
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(
+                            ::std::mem::size_of::<DisplayUniforms>() as u64
+                        ),
+                    },
+                    count: None,
                 }],
             });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tilemap_camera_buffer"),
+            label: Some("camera_buffer"),
             size: ::std::mem::size_of::<[[f32; 4]; 4]>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let uniforms_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("uniform_buffer"),
+            size: ::std::mem::size_of::<DisplayUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -312,6 +376,9 @@ impl State {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: camera_buffer.as_entire_binding(),
+            }, wgpu::BindGroupEntry {
+                binding: 1,
+                resource: uniforms_buffer.as_entire_binding(),
             }],
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -345,7 +412,7 @@ impl State {
                         binding: 1,
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            sample_type: wgpu::TextureSampleType::Uint,
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -412,7 +479,7 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("texture bind_group"),
             layout: &texture_bind_group_layout,
@@ -432,69 +499,58 @@ impl State {
             ],
         });
 
-        // let sprites_view =
-        //     tilemap_sprites_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // let index_view = tilemap_index_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // let tilemap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //     label: Some("tilemap_bind_group"),
-        //     layout: &tilemap_bind_group_layout,
-        //     entries: &[
-        //         wgpu::BindGroupEntry {
-        //             binding: 0,
-        //             resource: tilemap_params_buffer.as_entire_binding(),
-        //         },
-        //         wgpu::BindGroupEntry {
-        //             binding: 1,
-        //             resource: wgpu::BindingResource::TextureView(&index_view),
-        //         },
-        //         wgpu::BindGroupEntry {
-        //             binding: 2,
-        //             resource: wgpu::BindingResource::TextureView(&sprites_view),
-        //         },
-        //     ],
-        // });
+        let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
+        // let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
+        let ram = ram::Ram::new();
+        let scratchpad = scratchpad::Scratchpad::new();
+        let dma = dma::Dma::new();
+        // let gpu = gpu::Gpu::new();
+        let spu = spu::Spu::new();
+        let cdrom = CDRom::default();
+        // let spu = spu::Spu::default();
+        let irqctl = irq::InterruptController::default();
+        let sio = sio::Sio::new();
+        let mdec = mdec::Mdec::new();
+        //
+        //     // let bytes = fs::read("/foo/SCPH1001.BIN")?;
+        //     for i in (0..40).step_by(4) {
+        //         print!("0x{:02X}", bios.data[i+3]);
+        //         print!("{:02X}", bios.data[i+2]);
+        //         print!("{:02X}", bios.data[i+1]);
+        //         print!("{:02X}", bios.data[i+0]);
+        //         println!();
+        //     }
+        //
+        let mut scheduler = scheduler::Scheduler::default();
+        scheduler.init();
+        let timers = timers::Timers::new();
 
-    let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
-    // let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
-    let ram = ram::Ram::new();
-    let scratchpad = scratchpad::Scratchpad::new();
-    let dma = dma::Dma::new();
-    // let gpu = gpu::Gpu::new();
-    let spu = spu::Spu::new();
-    let cdrom = CDRom::default();
-    // let spu = spu::Spu::default();
-    let irqctl = irq::InterruptController::default();
-    let sio = sio::Sio::new();
-    let mdec = mdec::Mdec::new();
-//
-//     // let bytes = fs::read("/foo/SCPH1001.BIN")?;
-//     for i in (0..40).step_by(4) {
-//         print!("0x{:02X}", bios.data[i+3]);
-//         print!("{:02X}", bios.data[i+2]);
-//         print!("{:02X}", bios.data[i+1]);
-//         print!("{:02X}", bios.data[i+0]);
-//         println!();
-//     }
-//
-    let mut scheduler = scheduler::Scheduler::default();
-    scheduler.init();
-    let timers = timers::Timers::new();
-    let (sender, receiver, handle) = renderer::Renderer::create();
-    let gpu = gpu::Gpu::new(sender, receiver, handle);
-    let system = system::System::new(bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
-        gpu);
-    let cpu = cpu::Cpu::new(system);
+        let software_render = false;
+        let (sender, receiver, handle) = if software_render {
+            renderer::Renderer::create()
+        } else {
+            hw_renderer::HWRenderer::create(
+                device.clone(),
+                queue.clone(),
+                config.format,
+                render_texture.clone(),
+            )
+        };
+        let gpu = gpu::Gpu::new(sender, receiver, handle);
+        let system = system::System::new(
+            bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu,
+        );
+        let cpu = cpu::Cpu::new(system);
 
+        let core_ids = core_affinity::get_core_ids().unwrap();
+        let res = core_affinity::set_for_current(core_ids[0]);
+        if res {
+            println!("main thread pinned to 0");
+        }
 
-    let core_ids = core_affinity::get_core_ids().unwrap();
-    let res = core_affinity::set_for_current(core_ids[0]);
-    if res {
-        println!("main thread pinned to 0"); 
-    }
-
-    let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
-         // let file = File::create("output.pcm")?;
-    // let mut writer = BufWriter::new(file);
+        let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
+        // let file = File::create("output.pcm")?;
+        // let mut writer = BufWriter::new(file);
 
         let mut state = Self {
             instance,
@@ -509,8 +565,8 @@ impl State {
             // render_finished: std::time::Instant::now(),
             // diffuse_bind_group,
             // camera,
-            // camera_uniform,
             camera_buffer,
+            uniforms_buffer,
             camera_bind_group,
             // camera_controller,
             render_finished: web_time::Instant::now(),
@@ -527,17 +583,17 @@ impl State {
             // tilemap_params_buffer,
             // tilemap_index_texture,
             texture_bind_group,
-            texture,
-            framebuffer: Arc::new(Mutex::new(vec![Color {r:0, g:0 ,b:0, a: 255}; 1024 * 512])),
+            render_texture,
+            framebuffer: Arc::new(Mutex::new(vec![0; 1024 * 512])),
             texture_size,
             // image_rgba,
-            // dimensions, 
+            // dimensions,
             // game_state,
-                        // sprites,
-                        // normal_font,
-                        // normal_blue_font,
-                        // small_font,
-                        // sounds
+            // sprites,
+            // normal_font,
+            // normal_blue_font,
+            // small_font,
+            // sounds
             cpu,
             audio_stream,
             audio_sender,
@@ -547,7 +603,10 @@ impl State {
             output_width: 0,
             output_height: 0,
             display_vram: false,
-            // writer,
+            software_render,
+            sx: 0,
+            sy: 0,
+            display_depth: DisplayDepth::D15Bits, // writer,
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -558,6 +617,8 @@ impl State {
         }
 
         set_camera(&state, &state.queue, FULLSCREEN_QUAD_CAMERA);
+        set_uniforms(&state, &state.queue);
+
         State::upload_framebuffer(&state);
         // for _ in 0..120*735 {
         //     state.audio_sender.send([0i16, 0i16]).expect("can't send audio sample");
@@ -607,24 +668,26 @@ impl State {
     }
 
     pub fn upload_framebuffer(&self) {
-        self.queue.write_texture(
-            // Tells wgpu where to copy the pixel data
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            // The actual pixel data
-            bytemuck::cast_slice(&self.framebuffer.lock().expect("ok")),
-            // The layout of the texture
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * 1024),
-                rows_per_image: Some(512),
-            },
-            self.texture_size,
-        );
+        if self.software_render {
+            self.queue.write_texture(
+                // Tells wgpu where to copy the pixel data
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.render_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                // The actual pixel data
+                bytemuck::cast_slice(&self.framebuffer.lock().expect("ok")),
+                // The layout of the texture
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(2 * 1024),
+                    rows_per_image: Some(512),
+                },
+                self.texture_size,
+            );
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -634,14 +697,21 @@ impl State {
             let surface = self.surface.as_ref().unwrap();
             surface.configure(&self.device, &self.config);
             self.is_surface_configured = true;
-            self.update_vertex_buffer_if_needed(self.output_width, self.output_height, true);
+            self.update_vertex_buffer_if_needed(
+                self.output_width,
+                self.output_height,
+                self.sx,
+                self.sy,
+                self.display_depth,
+                true,
+            );
             // self.depth_texture =
             //     texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
     }
 
     fn sideload_exe(&mut self) {
-        let filename = "/foo/psxtest_cpu.exe";
+        // let filename = "/foo/psxtest_cpu.exe";
         // let filename = "/foo/psxtest_gte.exe";
         // let filename = "/foo/psxtest_gpu.exe";
         // let filename = "/foo/psx/PSX/CPUTest/CPU/LOADSTORE/LB/CPULB.exe";
@@ -649,6 +719,7 @@ impl State {
         // let filename = "/foo/psx/PSX/Cube/Cube.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT4BPP/RenderTextureRectangleCLUT4BPP.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT8BPP/RenderTextureRectangleCLUT8BPP.exe";
+        let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/15BPP/RenderTextureRectangle15BPP.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderLine/RenderLine16BPP.exe";
         let mut file = match std::fs::File::open(filename) {
             Ok(file) => file,
@@ -669,11 +740,11 @@ impl State {
         }
 
         // exe header
-        let initial_pc   = u32::from_le_bytes(data[0x10..0x14].try_into().unwrap());
-        let initial_r28  = u32::from_le_bytes(data[0x14..0x18].try_into().unwrap());
+        let initial_pc = u32::from_le_bytes(data[0x10..0x14].try_into().unwrap());
+        let initial_r28 = u32::from_le_bytes(data[0x14..0x18].try_into().unwrap());
         let exe_ram_addr = u32::from_le_bytes(data[0x18..0x1C].try_into().unwrap()) & 0x001F_FFFF;
-        let exe_size= u32::from_le_bytes(data[0x1C..0x20].try_into().unwrap()) as usize;
-        let initial_sp   = u32::from_le_bytes(data[0x30..0x34].try_into().unwrap());
+        let exe_size = u32::from_le_bytes(data[0x1C..0x20].try_into().unwrap()) as usize;
+        let initial_sp = u32::from_le_bytes(data[0x30..0x34].try_into().unwrap());
 
         // exe_ram_addr = crate::system::mask_region(exe_ram_addr);
         println!("exe ram addr: 0x{:X}", exe_ram_addr);
@@ -683,7 +754,7 @@ impl State {
         // let exe_size = (exe_size_2kb);
         // let exe_size = 1013760 - 2048;
         println!("exe size: {}", exe_size);
-        self.cpu.system.ram.data[exe_ram_addr as usize .. (exe_ram_addr  as usize + exe_size)]
+        self.cpu.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
         //  let dest = self
         //     .cpu.system.ram.data
@@ -706,13 +777,27 @@ impl State {
         self.cpu.next_pc = initial_pc + 4;
     }
 
-    fn update_vertex_buffer_if_needed(&mut self, width: usize, height: usize, force: bool) {
+    fn update_vertex_buffer_if_needed(
+        &mut self,
+        width: usize,
+        height: usize,
+        sx: usize,
+        sy: usize,
+        depth: DisplayDepth,
+        force: bool,
+    ) {
         if width == 0 && height == 0 {
             self.output_width = width;
             self.output_height = height;
             return;
         }
-        if !force && width == self.output_width && height == self.output_height {
+        if !force
+            && width == self.output_width
+            && height == self.output_height
+            && sx == self.sx
+            && sy == self.sy
+            && depth == self.display_depth
+        {
             return;
         }
 
@@ -730,20 +815,41 @@ impl State {
             by = (1.0 - h) / 2.0;
         }
 
-        let u = width as f32 / 1024.0;
-        let v = height as f32 / 512.0;
+        // let u = width as f32 / 1024.0;
+        // let v = height as f32 / 512.0;
+        let u = (width + sx) as f32;
+        let v = (height + sy) as f32;
 
+        let sx = sx as f32;
+        let sy = sy as f32;
 
-            // self.config.width = width;
-            // self.config.height = height;
+        // self.config.width = width;
+        // self.config.height = height;
         let vertices: &[Vertex] = &[
-            Vertex { position: [bx, by, 0.0], uv: [0.0, v] },
-            Vertex { position: [bx + w, by, 0.0], uv: [u, v] },
-            Vertex { position: [bx, by + h, 0.0], uv: [0.0, 0.0] },
-
-            Vertex { position: [bx, by + h, 0.0], uv: [0.0, 0.0] },
-            Vertex { position: [bx + w, by, 0.0], uv: [u, v] },
-            Vertex { position: [bx + w, by + h, 0.0], uv: [u, 0.0] },
+            Vertex {
+                position: [bx, by, 0.0],
+                uv: [sx, v],
+            },
+            Vertex {
+                position: [bx + w, by, 0.0],
+                uv: [u, v],
+            },
+            Vertex {
+                position: [bx, by + h, 0.0],
+                uv: [sx, sy],
+            },
+            Vertex {
+                position: [bx, by + h, 0.0],
+                uv: [sx, sy],
+            },
+            Vertex {
+                position: [bx + w, by, 0.0],
+                uv: [u, v],
+            },
+            Vertex {
+                position: [bx + w, by + h, 0.0],
+                uv: [u, sy],
+            },
             // Vertex { position: [0.0, 0.0, 0.0], uv: [0.0, 0.0] },
             // Vertex { position: [w, 0.0, 0.0], uv: [u, 0.0] },
             // Vertex { position: [0.0, 1.0, 0.0], uv: [0.0, v] },
@@ -751,9 +857,12 @@ impl State {
             // Vertex { position: [w, 0.0, 0.0], uv: [u, 0.0] },
             // Vertex { position: [w, 1.0, 0.0], uv: [u, v] },
         ];
-        self.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
+        self.queue
+            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
         self.output_width = width;
         self.output_height = height;
+        set_uniforms(self, &self.queue);
+        self.display_depth = depth;
     }
 
     fn update(&mut self, event_loop: &ActiveEventLoop) {
@@ -772,11 +881,13 @@ impl State {
                 match event {
                     scheduler::Event::SpuTick => {
                         Spu::clock(&mut self.cpu.system);
-                         // self.cpu.system.spu.clock();
-                         // let spu = &mut self.cpu.system.spu;
+                        // self.cpu.system.spu.clock();
+                        // let spu = &mut self.cpu.system.spu;
                         let cdrom = &mut self.cpu.system.cdrom;
-                         let sample = self.cpu.system.spu.mix(cdrom);
-                         self.audio_sender.send(sample).expect("can't send audio sample");
+                        let sample = self.cpu.system.spu.mix(cdrom);
+                        self.audio_sender
+                            .send(sample)
+                            .expect("can't send audio sample");
 
                         // self.audio_tick += 1;
                         // if self.audio_tick == 735 {
@@ -790,7 +901,7 @@ impl State {
                         //     break;
                         // }
 
-                         // self.writer.write_all(&sample[0].to_le_bytes()).expect("foo");
+                        // self.writer.write_all(&sample[0].to_le_bytes()).expect("foo");
                         // self.cpu.system.spu.clock();
                         // self.audio_buffer.push(sample);
                         // if self.audio_buffer.len() == 735 {
@@ -803,15 +914,19 @@ impl State {
                     }
                     scheduler::Event::VBlankStart => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
-                        let (w, h) = self.cpu.system.gpu.render_fb(self.framebuffer.clone(), self.display_vram);
-                        self.update_vertex_buffer_if_needed(w, h, false);
+                        let (w, h, sx, sy, depth) = self
+                            .cpu
+                            .system
+                            .gpu
+                            .render_fb(self.framebuffer.clone(), self.display_vram);
+                        self.update_vertex_buffer_if_needed(w, h, sx, sy, depth, false);
                         // if self.cpu.system.gpu.interrupt == false {
-                            self.cpu.system.irqctl.status.set_vblank(true);
+                        self.cpu.system.irqctl.status.set_vblank(true);
                         // }
                         timers::Timers::enter_vsync(&mut self.cpu.system);
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
                         self.cpu.system.gpu.enter_vsync();
-                    },
+                    }
                     scheduler::Event::VBlankEnd => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
                         self.cpu.system.gpu.exit_vsync();
@@ -819,23 +934,25 @@ impl State {
                         // let (w, h) = self.cpu.system.gpu_ctrl_receiver.recv().expect("ok");
                         // self.update_vertex_buffer_if_needed(w, h, false);
                         break;
-                    },
+                    }
                     scheduler::Event::HBlankStart => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
                         self.cpu.system.gpu.enter_hsync();
                         timers::Timers::enter_hsync(&mut self.cpu.system);
-                    },
+                    }
                     scheduler::Event::HBlankEnd => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
                         self.cpu.system.gpu.exit_hsync();
                         timers::Timers::exit_hsync(&mut self.cpu.system);
-                    },
+                    }
                     scheduler::Event::CDRomResultIrq(resp) => {
                         cdrom::CDRom::process_response(&mut self.cpu.system, resp);
-                    },
-                    scheduler::Event::Timer(i) => timers::Timers::process_interrupt(&mut self.cpu.system, i),
+                    }
+                    scheduler::Event::Timer(i) => {
+                        timers::Timers::process_interrupt(&mut self.cpu.system, i)
+                    }
                     scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.cpu.system),
-                    scheduler::Event::DsrOff     => self.cpu.system.sio.turn_dsr_off(),
+                    scheduler::Event::DsrOff => self.cpu.system.sio.turn_dsr_off(),
                 }
             }
             for _ in 0..20 {
@@ -862,8 +979,6 @@ impl State {
         //     audio_buffer.push(self.cpu.system.spu.mix());
         //     // self.audio_sender.send(self.cpu.system.spu.mix()).expect("can't send audio");
         // }
-
-
     }
 
     fn render(&mut self, view: &wgpu::TextureView) {
@@ -1060,98 +1175,100 @@ impl State {
     }
     pub fn update_gamepad(&mut self) {
         let mut prev_buttons = self.cpu.system.sio.gamepad1.digital_switches;
-        while let Some(Event { id, event, time, .. }) = self.gilrs.next_event() {
+        while let Some(Event {
+            id, event, time, ..
+        }) = self.gilrs.next_event()
+        {
             // println!("{:?} New event from {}: {:?}", time, id, event);
             match event {
                 gilrs::EventType::ButtonPressed(button, _) => match button {
                     gilrs::Button::South => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Cross as usize));
-                    }, // Cross
+                    } // Cross
                     gilrs::Button::East => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Circle as usize));
-                    }, // Circle
+                    } // Circle
                     gilrs::Button::North => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Triangle as usize));
-                    }, // Triangle
+                    } // Triangle
                     gilrs::Button::West => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Square as usize));
-                    }, // Square
+                    } // Square
                     gilrs::Button::Select => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Select as usize));
-                    },
+                    }
                     gilrs::Button::Start => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Start as usize));
-                    },
+                    }
                     gilrs::Button::DPadUp => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Up as usize));
-                    },
+                    }
                     gilrs::Button::DPadDown => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Down as usize));
-                    },
+                    }
                     gilrs::Button::DPadLeft => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Left as usize));
-                    },
+                    }
                     gilrs::Button::DPadRight => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::Right as usize));
-                    },
+                    }
                     gilrs::Button::LeftTrigger => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::L1 as usize));
                     }
                     gilrs::Button::RightTrigger => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::R1 as usize));
                     }
-                    _ => {}, // ignore..
+                    _ => {} // ignore..
                 },
                 gilrs::EventType::ButtonReleased(button, _) => match button {
                     gilrs::Button::South => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Cross as usize));
-                    }, // Cross
+                    } // Cross
                     gilrs::Button::East => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Circle as usize));
-                    }, // Circle
+                    } // Circle
                     gilrs::Button::North => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Triangle as usize));
-                    }, // Triangle
+                    } // Triangle
                     gilrs::Button::West => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Square as usize));
-                    }, // Square
+                    } // Square
                     gilrs::Button::Select => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Select as usize));
-                    },
+                    }
                     gilrs::Button::Start => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Start as usize));
-                    },
+                    }
                     gilrs::Button::DPadUp => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Up as usize));
-                    },
+                    }
                     gilrs::Button::DPadDown => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Down as usize));
-                    },
+                    }
                     gilrs::Button::DPadLeft => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Left as usize));
-                    },
+                    }
                     gilrs::Button::DPadRight => {
                         prev_buttons |= (0x1 << (crate::sio::Button::Right as usize));
-                    },
+                    }
                     gilrs::Button::LeftTrigger => {
                         prev_buttons |= 0x1 << (crate::sio::Button::L1 as usize);
                     }
                     gilrs::Button::RightTrigger => {
                         prev_buttons |= 0x1 << (crate::sio::Button::R1 as usize);
                     }
-                    _ => {}, // ignore..
+                    _ => {} // ignore..
                 },
-                gilrs::EventType::AxisChanged(axis, value, _) => {},
-                gilrs::EventType::Connected => {},
-                gilrs::EventType::Disconnected => {},
-                _ => {}//println!("gamepad evvent ignored {:?} ", event)
+                gilrs::EventType::AxisChanged(axis, value, _) => {}
+                gilrs::EventType::Connected => {}
+                gilrs::EventType::Disconnected => {}
+                _ => {} //println!("gamepad evvent ignored {:?} ", event)
             }
         }
         // println!("0x{:X}", prev_buttons);
         self.cpu.system.sio.gamepad1.set_buttons(prev_buttons);
     }
 }
-
 
 pub struct App {
     state: Option<State>,
@@ -1198,29 +1315,32 @@ impl ApplicationHandler<State> for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                state.audio_stream.pause().expect("audio stream should pause");
+                state
+                    .audio_stream
+                    .pause()
+                    .expect("audio stream should pause");
                 event_loop.exit();
-            },
+            }
             WindowEvent::Resized(size) => state.resize(size.width, size.height),
             WindowEvent::RedrawRequested => {
-        // let before = web_time::Instant::now();
-        // let elapsed = before.duration_since(state.render_finished);
-        // const FRAME_TIME: u128 = 16666;
-        // if elapsed.as_micros() < FRAME_TIME {
-        //     let sl = FRAME_TIME - elapsed.as_micros();
-        //     // std::thread::sleep(std::time::Duration::new(0, 1000 * sl as u32));
-        // }
-        // let after = web_time::Instant::now();
-        // state.render_time_ms = after
-        //     .checked_duration_since(state.render_finished)
-        //     .unwrap()
-        //     .subsec_nanos()
-        //     / 1000;
-        // if state.frame_num % 60 == 1 {
-        //     // println!("ms: {}",  (self.render_time_ms) as f32 / 100_000.0);
-        //     let msg = format!("fps: {}", 1_000_000.0 / (state.render_time_ms) as f32);
-        //     println!("{}", msg);
-        // }
+                // let before = web_time::Instant::now();
+                // let elapsed = before.duration_since(state.render_finished);
+                // const FRAME_TIME: u128 = 16666;
+                // if elapsed.as_micros() < FRAME_TIME {
+                //     let sl = FRAME_TIME - elapsed.as_micros();
+                //     // std::thread::sleep(std::time::Duration::new(0, 1000 * sl as u32));
+                // }
+                // let after = web_time::Instant::now();
+                // state.render_time_ms = after
+                //     .checked_duration_since(state.render_finished)
+                //     .unwrap()
+                //     .subsec_nanos()
+                //     / 1000;
+                // if state.frame_num % 60 == 1 {
+                //     // println!("ms: {}",  (self.render_time_ms) as f32 / 100_000.0);
+                //     let msg = format!("fps: {}", 1_000_000.0 / (state.render_time_ms) as f32);
+                //     println!("{}", msg);
+                // }
 
                 state.update(event_loop);
                 if self.occluded {
@@ -1279,9 +1399,14 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-
-
-
+pub fn set_uniforms(state: &State, queue: &wgpu::Queue) {
+    let is_24bpp = if state.display_depth == DisplayDepth::D24Bits { 1 } else { 0 };
+    queue.write_buffer(
+        &state.uniforms_buffer,
+        0,
+        bytemuck::cast_slice(&[DisplayUniforms { is_24bpp }]),
+    );
+}
 /// Set the camera matrix that maps from world coordinates to Normalized Device Coordinates.
 pub fn set_camera(state: &State, queue: &wgpu::Queue, camera: Mat4<f32>) {
     queue.write_buffer(

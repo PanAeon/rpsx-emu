@@ -774,15 +774,24 @@ impl Gpu {
         self.texture_window_x_offset = ((val >> 10) & 0x1f) as u8;
         self.texture_window_y_offset = ((val >> 15) & 0x1f) as u8;
     }
+    pub fn send_drawing_area_change(&mut self) {
+        self.renderer_sender.send(RendererMsg::DrawingAreaChange {
+            top_left: (self.drawing_area_left, self.drawing_area_top),
+            bottom_right: (self.drawing_area_right, self.drawing_area_bottom)
+        }).expect("ok");
+    }
+
     pub fn gp0_drawing_area_top_left(&mut self) {
         let val: u32 = self.gp0_command[0];
         self.drawing_area_top = ((val >> 10) & 0x3ff) as u16;
         self.drawing_area_left = (val & 0x3ff) as u16;
+        self.send_drawing_area_change();
     }
     pub fn gp0_drawing_area_bottom_right(&mut self) {
         let val: u32 = self.gp0_command[0];
         self.drawing_area_bottom = ((val >> 10) & 0x3ff) as u16;
         self.drawing_area_right = (val & 0x3ff) as u16;
+        self.send_drawing_area_change();
     }
     pub fn gp0_drawing_offset(&mut self) {
         let val: u32 = self.gp0_command[0];
@@ -1069,15 +1078,32 @@ impl Gpu {
 
 
 
-    pub fn render_fb(&self, framebuffer: Arc<Mutex<Vec<Color>>>, display_vram: bool) -> (usize, usize) {
+    pub fn render_fb(&self, framebuffer: Arc<Mutex<Vec<u16>>>, display_vram: bool) -> (usize, usize, usize, usize, DisplayDepth) {
+        // println!("len: {}", self.renderer_sender.len());
+        // if self.renderer_sender.is_full() {
+        //     println!("what is going on?");
+        //     std::thread::sleep_ms(1000);
+        // }
         self.renderer_sender.send(RendererMsg::RenderFB {
             framebuffer: framebuffer,
             full_ram: display_vram,
             ctx: self.rendering_ctx() }).expect("ok");
 
+        // match res {
+        //     Ok(_) => {},
+        //     Err(_) => {
+        //         println!("what is going on?");
+        //         println!("len: {}", self.renderer_sender.len());
+        //         std::thread::sleep_ms(1000);
+        //         // self.renderer_sender.len()
+        //         return (0, 0, 0, 0, DisplayDepth::D15Bits);
+        //
+        //     },
+        // };
+
         let msg = self.renderer_receiver.recv().expect("ok");
         match msg {
-            RendererResponse::FBUpdated { width, height } => (width, height),
+            RendererResponse::FBUpdated { width, height , sx, sy, depth} => (width, height, sx, sy, depth),
             _ => panic!("something went wrong.. sync call returned wrong response")
         }
     }
@@ -1230,7 +1256,7 @@ enum VMode {
     Pal = 1,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum DisplayDepth {
     D15Bits = 0,
     D24Bits = 1,

@@ -1,6 +1,6 @@
 
 
-@group(0) @binding(0) var vram_t: texture_storage_2d<r32uint, read>;
+@group(0) @binding(0) var vram_t: texture_storage_2d<r32uint, read_write>;
 // @group(1) @binding(2) var s_diffuse: sampler;
 
 struct VertexInput {

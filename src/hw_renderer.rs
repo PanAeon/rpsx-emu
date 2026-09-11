@@ -120,8 +120,8 @@ fn create_draw_pipeline(
         // COPY_DST means that we want to copy data to this texture
         usage: wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::COPY_SRC,
-            // | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
             // | wgpu::TextureUsages::TEXTURE_BINDING,
         // | wgpu::TextureUsages::STORAGE_BINDING,
         label: Some("vram texture"),
@@ -945,6 +945,7 @@ impl HWRenderer {
                 self.flush();
                 self.sync_readback_buffer(sx as u32, sy as u32, end_x as u32, end_y as u32);
                 self.dirty_region.clear();
+            } else {
             }
         }
     }

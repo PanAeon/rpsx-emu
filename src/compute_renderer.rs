@@ -63,9 +63,12 @@ fn create_draw_pipeline(
     display_format: wgpu::TextureFormat,
 ) -> (
     wgpu::ComputePipeline,
+    wgpu::ComputePipeline,
+    wgpu::ComputePipeline,
     wgpu::Texture,
     wgpu::Buffer,
     wgpu::Buffer,
+    wgpu::BindGroup,
     wgpu::BindGroup,
 ) {
     let vram_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -90,13 +93,27 @@ fn create_draw_pipeline(
         view_formats: &[wgpu::TextureFormat::R32Uint],
     });
 
+    let compose_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("vertex_buffer"),
+        size: (1024*512*4*64) as u64,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+
     let vram_texture_view = vram_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let shader_source = Cow::Borrowed(include_str!("compute.wgsl"));
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("shaders"),
+        label: Some("render shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source),
     });
+
+    let shader_source = Cow::Borrowed(include_str!("merge_layers.wgsl"));
+    let merge_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("merge shader"),
+        source: wgpu::ShaderSource::Wgsl(shader_source),
+    });
+
 
     let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("vertex_buffer"),
@@ -146,8 +163,19 @@ fn create_draw_pipeline(
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
+
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("compute_pipeline_layout"),
         bind_group_layouts: &[Some(&compute_bind_group_layout)],
@@ -183,15 +211,98 @@ fn create_draw_pipeline(
                     size: None,
                 }),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &compose_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
         ],
     });
 
+
+
+    let merge_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("merge_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadWrite,
+                        format: wgpu::TextureFormat::R32Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+
+    let merge_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("merge_pipeline_layout"),
+        bind_group_layouts: &[Some(&merge_bind_group_layout)],
+        immediate_size: 0,
+        // push_constant_ranges: &[],
+    });
+
+    let merge_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("merge pipeline"),
+        layout: Some(&merge_pipeline_layout),
+        module: &merge_shader_module,
+        entry_point: Some("main"),
+        compilation_options: Default::default(), // constants, which is cool...
+        cache: None,
+    });
+
+    let clear_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("clear pipeline"),
+        layout: Some(&merge_pipeline_layout),
+        module: &merge_shader_module,
+        entry_point: Some("clear_compose_buffer"),
+        compilation_options: Default::default(), // constants, which is cool...
+        cache: None,
+    });
+
+    let merge_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("compute bind_group"),
+        layout: &merge_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&vram_texture_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: compose_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+
+
     (
         pipeline,
+        merge_pipeline,
+        clear_pipeline,
         vram_texture,
         vertex_buffer,
         uniforms_buffer,
         compute_bind_group,
+        merge_bind_group,
     )
 }
 
@@ -199,11 +310,14 @@ pub struct ComputeRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     draw_pipeline: wgpu::ComputePipeline,
+    merge_pipeline: wgpu::ComputePipeline,
+    clear_pipeline: wgpu::ComputePipeline,
     render_texture: wgpu::Texture,
     vram_texture: wgpu::Texture,
     vertex_buffer: wgpu::Buffer,
     uniforms_buffer: wgpu::Buffer,
     compute_bind_group: wgpu::BindGroup,
+    merge_bind_group: wgpu::BindGroup,
     vertices: Vec<Vert>,
     // render_view: wgpu::TextureView,
     drawing_area_top_left: (u16, u16),
@@ -228,7 +342,7 @@ impl ComputeRenderer {
         let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(1024);
         let (to_renderer_sender, receiver) = crossbeam::channel::bounded(1024);
 
-        let (draw_pipeline, vram_texture, vertex_buffer, uniforms_buffer, compute_bind_group) =
+        let (draw_pipeline, merge_pipeline, clear_pipeline, vram_texture, vertex_buffer, uniforms_buffer, compute_bind_group, merge_bind_group) =
             create_draw_pipeline(&device, &queue, display_format);
         // let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -237,11 +351,15 @@ impl ComputeRenderer {
                 device,
                 queue,
                 draw_pipeline,
+                merge_pipeline,
+                clear_pipeline,
                 render_texture,
                 vram_texture,
                 vertex_buffer,
                 uniforms_buffer,
                 compute_bind_group,
+                merge_bind_group,
+                // merge_bind_group,
                 vertices: vec![],
                 // render_view,
                 drawing_area_top_left: (0, 0),
@@ -384,6 +502,23 @@ impl ComputeRenderer {
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
             // TODO: upload uniforms...
 
+            let mut clear_encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("clear_encoder"),
+                });
+            {
+                let mut cpass = clear_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("clear pass"),
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(&self.clear_pipeline);
+
+                cpass.set_bind_group(0, &self.merge_bind_group, &[]);
+                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+                cpass.dispatch_workgroups(64, 64, 1);
+                // rpass.draw(0..self.vertices.len() as u32, 0..1);
+            }
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -396,20 +531,31 @@ impl ComputeRenderer {
                 });
                 cpass.set_pipeline(&self.draw_pipeline);
 
-                // rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                // rpass.set_scissor_rect(
-                //     self.drawing_area_top_left.0 as u32,
-                //     self.drawing_area_top_left.1 as u32,
-                //     min(1024,(1 + self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0) as u32),
-                //     min(512, ( 1 + self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1) as u32),
-                // );
-
                 cpass.set_bind_group(0, &self.compute_bind_group, &[]);
-                let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                cpass.dispatch_workgroups(num_workgroups, 1, 1);
+                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+                cpass.dispatch_workgroups(64, 1, 1);
                 // rpass.draw(0..self.vertices.len() as u32, 0..1);
             }
+            let mut merge_encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("merge_encoder"),
+                });
+            {
+                let mut cpass = merge_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("merge pass"),
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(&self.merge_pipeline);
+
+                cpass.set_bind_group(0, &self.merge_bind_group, &[]);
+                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+                cpass.dispatch_workgroups(64, 64, 1);
+                // rpass.draw(0..self.vertices.len() as u32, 0..1);
+            }
+            let idx = self.queue.submit(vec![clear_encoder.finish()]);
             let idx = self.queue.submit(vec![encoder.finish()]);
+            let idx = self.queue.submit(vec![ merge_encoder.finish()]);
 
             // TODO: do we need sync here?
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");

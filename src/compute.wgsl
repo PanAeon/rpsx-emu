@@ -22,11 +22,11 @@ fn get_pos(v: Vertex) -> vec2<u32> {
 }
 
 @group(0) @binding(0) var vram_t: texture_storage_2d<r32uint, read_write>;
-// @group(0) @binding(0) var<storage, read_write> vram: array<u32>;
 @group(0) @binding(1) var<storage, read> vertex_buffer: array<Vertex>;
 @group(0) @binding(2) var<storage, read> uniforms: Uniforms;
+@group(0) @binding(3) var<storage, read_write> compose_buffer: array<u32>;
 
-fn draw_triangle(v1: Vertex, v2: Vertex, v3: Vertex, id: vec2<u32>) {
+fn draw_triangle(v1: Vertex, v2: Vertex, v3: Vertex, id: vec2<u32>, z: u32) {
     let part = get_partition(id);
     let triangle_bounds = get_bounds(get_pos(v1), get_pos(v2), get_pos(v3));
     let bounds = intersect(part, triangle_bounds);
@@ -41,7 +41,8 @@ fn draw_triangle(v1: Vertex, v2: Vertex, v3: Vertex, id: vec2<u32>) {
             // let c = pack_color(vec3<f32>(1.0, 1.0, 1.0),false);
             let col = interpolate_color(lambda, v1, v2, v3);
             let c = pack_color(col,false);
-            textureStore(vram_t, vec2<u32>(u32(x), u32(y)),  vec4(c, 0, 0, 0));
+            compose_buffer[1024*y+x + (1024*512*z)] = c | (1 << 16);
+            // textureStore(vram_t, vec2<u32>(u32(x), u32(y)),  vec4(c, 0, 0, 0));
             // vram[1024*y + x] = v1.color;
 
         }
@@ -159,7 +160,7 @@ fn main(
     // v1.pos = ((150 +  (86 << 16)));
     // v3.pos = (72 + (136 << 16));
 
-    draw_triangle(v1, v2, v3, local_invocation_id.xy);
+    draw_triangle(v1, v2, v3, local_invocation_id.xy, workgroup_id.x);
     // draw_anything(local_invocation_id.xy);
 
     // workgroupBarrier();

@@ -16,7 +16,7 @@ use crate::{
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
 
-const VERT_BUFFER_SIZE: usize = 3*64*64;
+const VERT_BUFFER_SIZE: usize = 3*64;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
@@ -67,12 +67,10 @@ fn create_draw_pipeline(
     display_format: wgpu::TextureFormat,
 ) -> (
     wgpu::ComputePipeline,
-    wgpu::ComputePipeline,
-    wgpu::ComputePipeline,
     wgpu::Texture,
     wgpu::Buffer,
     wgpu::Buffer,
-    wgpu::BindGroup,
+    wgpu::Buffer,
     wgpu::BindGroup,
 ) {
     let vram_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -97,10 +95,10 @@ fn create_draw_pipeline(
         view_formats: &[wgpu::TextureFormat::R32Uint],
     });
 
-    let compose_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("vertex_buffer"),
-        size: (1024*512*4*64) as u64,
-        usage: wgpu::BufferUsages::STORAGE,
+    let bins_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("bins_buffer"),
+        size: (64 * 64 * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
@@ -112,11 +110,6 @@ fn create_draw_pipeline(
         source: wgpu::ShaderSource::Wgsl(shader_source),
     });
 
-    let shader_source = Cow::Borrowed(include_str!("merge_layers.wgsl"));
-    let merge_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("merge shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source),
-    });
 
 
     let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -209,104 +202,50 @@ fn create_draw_pipeline(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniforms_buffer,
-                    offset: 0,
-                    size: None,
-                }),
+                resource: uniforms_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &compose_buffer,
-                    offset: 0,
-                    size: None,
-                }),
+                resource: bins_buffer.as_entire_binding()
             },
         ],
     });
 
 
 
-    let merge_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("merge_bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadWrite,
-                        format: wgpu::TextureFormat::R32Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
 
 
-    let merge_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("merge_pipeline_layout"),
-        bind_group_layouts: &[Some(&merge_bind_group_layout)],
-        immediate_size: 0,
-        // push_constant_ranges: &[],
-    });
 
-    let merge_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("merge pipeline"),
-        layout: Some(&merge_pipeline_layout),
-        module: &merge_shader_module,
-        entry_point: Some("main"),
-        compilation_options: Default::default(), // constants, which is cool...
-        cache: None,
-    });
+    // let bins_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    //     label: Some("merge pipeline"),
+    //     layout: Some(&pipeline_layout),
+    //     module: &shader_module,
+    //     entry_point: Some("bin"),
+    //     compilation_options: Default::default(), // constants, which is cool...
+    //     cache: None,
+    // });
 
-    let clear_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("clear pipeline"),
-        layout: Some(&merge_pipeline_layout),
-        module: &merge_shader_module,
-        entry_point: Some("clear_compose_buffer"),
-        compilation_options: Default::default(), // constants, which is cool...
-        cache: None,
-    });
+    // let clear_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    //     label: Some("clear pipeline"),
+    //     layout: Some(&pipeline_layout),
+    //     module: &shader_module,
+    //     entry_point: Some("clear_bins"),
+    //     compilation_options: Default::default(), // constants, which is cool...
+    //     cache: None,
+    // });
 
-    let merge_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("compute bind_group"),
-        layout: &merge_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&vram_texture_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: compose_buffer.as_entire_binding(),
-            },
-        ],
-    });
 
 
 
     (
         pipeline,
-        merge_pipeline,
-        clear_pipeline,
+        // bins_pipeline,
+        // clear_pipeline,
         vram_texture,
         vertex_buffer,
         uniforms_buffer,
+        bins_buffer,
         compute_bind_group,
-        merge_bind_group,
     )
 }
 
@@ -314,15 +253,15 @@ pub struct ComputeRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     draw_pipeline: wgpu::ComputePipeline,
-    merge_pipeline: wgpu::ComputePipeline,
-    clear_pipeline: wgpu::ComputePipeline,
+    // bins_pipeline: wgpu::ComputePipeline,
+    // clear_pipeline: wgpu::ComputePipeline,
     render_texture: wgpu::Texture,
     vram_texture: wgpu::Texture,
     vertex_buffer: wgpu::Buffer,
     uniforms_buffer: wgpu::Buffer,
     compute_bind_group: wgpu::BindGroup,
-    merge_bind_group: wgpu::BindGroup,
     vertices: Vec<Vert>,
+    bins_buffer: wgpu::Buffer,
     // render_view: wgpu::TextureView,
     drawing_area_top_left: (u16, u16),
     drawing_area_bottom_right: (u16, u16),
@@ -346,7 +285,7 @@ impl ComputeRenderer {
         let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(1024);
         let (to_renderer_sender, receiver) = crossbeam::channel::bounded(1024);
 
-        let (draw_pipeline, merge_pipeline, clear_pipeline, vram_texture, vertex_buffer, uniforms_buffer, compute_bind_group, merge_bind_group) =
+        let (draw_pipeline,  vram_texture, vertex_buffer, uniforms_buffer, bins_buffer, compute_bind_group) =
             create_draw_pipeline(&device, &queue, display_format);
         // let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -355,14 +294,12 @@ impl ComputeRenderer {
                 device,
                 queue,
                 draw_pipeline,
-                merge_pipeline,
-                clear_pipeline,
                 render_texture,
                 vram_texture,
                 vertex_buffer,
                 uniforms_buffer,
+                bins_buffer,
                 compute_bind_group,
-                merge_bind_group,
                 // merge_bind_group,
                 vertices: vec![],
                 // render_view,
@@ -449,7 +386,6 @@ impl ComputeRenderer {
                         full_ram,
                         ctx,
                     } => {
-                        // renderer.flush();
                         let (width, height, sx, sy, depth) =
                             renderer.render_fb(&framebuffer, *full_ram, ctx);
                         match to_gpu_sender.send(RendererResponse::FBUpdated {
@@ -499,12 +435,13 @@ impl ComputeRenderer {
         // }
         if !self.vertices.is_empty() {
             // now we need to partition vertices into bins;
-            let mut vertices = [Vert::zeroed();VERT_BUFFER_SIZE]; // TODO: move to shader?
+            let mut bins = [0xFFFFu32;64*64];
+            let mut bin_indices = [0;64];
             for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
-                let min_x = (cmp::min(vs[0].position[0], cmp::min(vs[1].position[0], vs[2].position[0])));
-                let max_x = (cmp::max(vs[0].position[0], cmp::max(vs[1].position[0], vs[2].position[0])));
-                let min_y = (cmp::min(vs[0].position[1], cmp::min(vs[1].position[1], vs[2].position[1])));
-                let max_y = (cmp::max(vs[0].position[1], cmp::max(vs[1].position[1], vs[2].position[1])));
+                let min_x = cmp::min(vs[0].position[0], cmp::min(vs[1].position[0], vs[2].position[0]));
+                let max_x = cmp::min(1023,cmp::max(vs[0].position[0], cmp::max(vs[1].position[0], vs[2].position[0])));
+                let min_y =  cmp::min(vs[0].position[1], cmp::min(vs[1].position[1], vs[2].position[1]));
+                let max_y = cmp::min( 511, (cmp::max(vs[0].position[1], cmp::max(vs[1].position[1], vs[2].position[1]))));
 
                 
                 
@@ -515,19 +452,17 @@ impl ComputeRenderer {
 
                 for y in start_bin_y..=end_bin_y {
                     for x in start_bin_x..=end_bin_x {
-                        vertices[3*64*(y*8 + x) + 3*i] = vs[0];
-                        vertices[3*64*(y*8 + x) + 3*i + 1] = vs[1];
-                        vertices[3*64*(y*8 + x) + 3*i + 2] = vs[2];
-                        vertices[3*64*(y*8 + x) + 3*i].flags = 1;
-                        vertices[3*64*(y*8 + x) + 3*i + 1].flags = 1;
-                        vertices[3*64*(y*8 + x) + 3*i + 2].flags = 1;
+                        let bin_idx = bin_indices[y*8+x];
+                        bins[64*(y*8 + x) + bin_idx] = 3 * i as u32;
+                        bin_indices[y*8+x] += 1;
                     }
                 }
             }
+            
             self.queue
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
-            // self.queue
-            //     .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+                .write_buffer(&self.bins_buffer, 0, bytemuck::cast_slice(&bins));
+            self.queue
+                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
             // let idx = self.queue.submit([]);
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
             // TODO: upload uniforms...
@@ -562,7 +497,7 @@ impl ComputeRenderer {
     }
 
     pub fn ensure_vertex_room(&mut self, n: usize) {
-        if self.vertices.len() + n >= 3 * 64 {
+        if self.vertices.len() + n >= VERT_BUFFER_SIZE {
             self.flush();
         }
     }

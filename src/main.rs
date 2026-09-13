@@ -39,6 +39,7 @@ mod dma;
 mod gpu;
 mod gte;
 mod hw_renderer;
+mod compute_renderer;
 mod irq;
 mod mdec;
 mod ram;
@@ -192,7 +193,7 @@ pub struct State {
     render_texture: wgpu::Texture,
     texture_bind_group: wgpu::BindGroup,
     // dimensions: (u32, u32),
-    framebuffer: Arc<Mutex<Vec<u16>>>,
+    framebuffer: Arc<Mutex<Vec<u32>>>,
     // image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
     cpu: cpu::Cpu,
     texture_size: wgpu::Extent3d,
@@ -234,7 +235,8 @@ impl State {
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference: wgpu::PowerPreference::LowPower,
+                // power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
                 apply_limit_buckets: false,
@@ -251,7 +253,7 @@ impl State {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
+                required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | wgpu::Features::VERTEX_WRITABLE_STORAGE,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
@@ -529,7 +531,7 @@ impl State {
         let (sender, receiver, handle) = if software_render {
             renderer::Renderer::create()
         } else {
-            hw_renderer::HWRenderer::create(
+            compute_renderer::ComputeRenderer::create(
                 device.clone(),
                 queue.clone(),
                 config.format,
@@ -682,7 +684,7 @@ impl State {
                 // The layout of the texture
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(2 * 1024),
+                    bytes_per_row: Some(4 * 1024),
                     rows_per_image: Some(512),
                 },
                 self.texture_size,
@@ -716,10 +718,10 @@ impl State {
         // let filename = "/foo/psxtest_gpu.exe";
         // let filename = "/foo/psx/PSX/CPUTest/CPU/LOADSTORE/LB/CPULB.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/MemoryTransfer/MemoryTransfer16BPP.exe";
-        // let filename = "/foo/psx/PSX/Cube/Cube.exe";
+        let filename = "/foo/psx/PSX/Cube/Cube.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT4BPP/RenderTextureRectangleCLUT4BPP.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT8BPP/RenderTextureRectangleCLUT8BPP.exe";
-        let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/15BPP/RenderTextureRectangle15BPP.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/15BPP/RenderTextureRectangle15BPP.exe";
         // let filename = "/foo/psx/PSX/GPU/16BPP/RenderLine/RenderLine16BPP.exe";
         let mut file = match std::fs::File::open(filename) {
             Ok(file) => file,

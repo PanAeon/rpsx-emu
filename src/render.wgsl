@@ -43,7 +43,7 @@ fn vert_main(in: VertexInput) -> VertexOutput {
 
     out.clip_position = vec4<f32>(f32(in.position.x) / 512.0 - 1.0, 1.0 - f32(in.position.y) / 256.0, 0.0, 1.0);
     // out.clip_position = vec4<f32>(f32(in.position.x), f32(in.position.y), 0.0, 1.0);
-    out.vram_position = vec2<f32>(in.position);
+    out.vram_position = vec2<f32>(in.position); // + vec2<f32>(0.5);
 
     out.color = rgb8_split_color(color);
     out.texture_depth = (in.color >> 24u) & 0xFFu;
@@ -227,7 +227,7 @@ fn get_transparency(v: VertexOutput) -> u32 {
 }
 
 fn vramcoord_to_texcoord(coord: vec2<f32>) -> vec2<u32> {
-    return vec2<u32>(vec2(coord.x, coord.y));
+    return vec2<u32>(vec2(floor(coord.x), floor(coord.y)));
 }
 
 fn read_16bit(coord: vec2<f32>) -> u32 {
@@ -265,9 +265,10 @@ fn frag_main(data: VertexOutput) -> @location(0) u32 {
     //    return res;
     // }
     var color = get_color(data);
-    if color == 0 {
-        discard;
-    }
+    // if color == 0 {
+    //     discard;
+    // }
+    textureStore(vram_t, vramcoord_to_texcoord(data.vram_position),  vec4(color, 0, 0, 0));
     return color;
 }
 

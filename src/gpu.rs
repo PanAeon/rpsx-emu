@@ -5,9 +5,7 @@ use std::{
 };
 
 use crate::renderer::{RendererMsg, RendererResponse, RenderingContext};
-use crate::{
-    system::{AccessWidth, Addressable},
-};
+use crate::system::{AccessWidth, Addressable};
 
 pub struct Gpu {
     // Texture page base X coordinate (4 bits, 64 byte increment)
@@ -303,18 +301,24 @@ impl Gpu {
             Gp0Mode::ImageLoad {
                 top_left,
                 resolution,
-                data
+                data,
             } => {
                 data.push(val);
                 // self.process_cpu_to_vram_copy(val, top_left, resolution, current_row, current_col);
                 if self.gp0_words_remaining == 0 {
-                    self.renderer_sender.send(RendererMsg::CpuToVramCopy { top_left: *top_left, size: *resolution, data: data.clone() }).expect("ok");
+                    self.renderer_sender
+                        .send(RendererMsg::CpuToVramCopy {
+                            top_left: *top_left,
+                            size: *resolution,
+                            data: data.clone(),
+                        })
+                        .expect("ok");
                     self.gp0_mode = Gp0Mode::Command;
                 }
             }
             Gp0Mode::ImageStore {
                 current_word: _,
-                data: _
+                data: _,
             } => {
                 // self.gp0_command.clear();
                 // self.gp0_words_remaining = 0;
@@ -346,7 +350,6 @@ impl Gpu {
             }
         }
     }
-
 
     pub fn gp0_colour(color: u32) -> Colour {
         let r = (color & 0xFF) as u8;
@@ -386,7 +389,12 @@ impl Gpu {
         let side = Self::gp0_vertex(self.gp0_command[2]);
 
         self.renderer_sender
-            .send(RendererMsg::FillRect { v, side, c: color, ctx: self.rendering_ctx() })
+            .send(RendererMsg::FillRect {
+                v,
+                side,
+                c: color,
+                ctx: self.rendering_ctx(),
+            })
             .expect("ok");
     }
     pub fn gp0_line_mono<const SEMI_TRANS: bool>(&mut self) {
@@ -402,7 +410,7 @@ impl Gpu {
                 c1: color,
                 shaded: false,
                 semi_transparent: SEMI_TRANS,
-                    ctx: self.rendering_ctx()
+                ctx: self.rendering_ctx(),
             })
             .expect("ok");
         // self.draw_line::<SEMI_TRANS>(v0, v1, color);
@@ -421,7 +429,7 @@ impl Gpu {
                 c1: color1,
                 shaded: true,
                 semi_transparent: SEMI_TRANS,
-                    ctx: self.rendering_ctx()
+                ctx: self.rendering_ctx(),
             })
             .expect("ok");
         // self.draw_line_shaded::<SEMI_TRANS>(v0, v1, color0, color1);
@@ -442,7 +450,7 @@ impl Gpu {
                 _u: 0,
                 _v: 0,
                 textured: false,
-                    ctx: self.rendering_ctx()
+                ctx: self.rendering_ctx(),
             })
             .expect("ok");
 
@@ -464,7 +472,7 @@ impl Gpu {
                 _v: 0,
                 semi_transparent: SEMI_TRANS,
                 textured: false,
-                    ctx: self.rendering_ctx()
+                ctx: self.rendering_ctx(),
             })
             .expect("ok");
         // self.draw_rectangle::<SEMI_TRANS>(v, side, color);
@@ -487,7 +495,7 @@ impl Gpu {
                 semi_transparent: SEMI_TRANS,
                 blend: BLEND,
                 textured: true,
-                    ctx: self.rendering_ctx()
+                ctx: self.rendering_ctx(),
             })
             .expect("ok");
         // self.draw_rectangle_textured::<SEMI_TRANS, BLEND>(
@@ -516,7 +524,7 @@ impl Gpu {
                 semi_transparent: SEMI_TRANS,
                 blend: BLEND,
                 textured: true,
-                    ctx: self.rendering_ctx()
+                ctx: self.rendering_ctx(),
             })
             .expect("ok");
         // self.draw_rectangle_textured::<SEMI_TRANS, BLEND>(v, side, color, clut, [_u, _v]);
@@ -533,36 +541,35 @@ impl Gpu {
             let v3 = Self::gp0_vertex(self.gp0_command[4]);
             self.renderer_sender
                 .send(RendererMsg::DrawPolygon {
-                    cs: [color;4],
+                    cs: [color; 4],
                     vs: [v0, v1, v2, v3],
                     semi_transparent: SEMI_TRANS,
-                is_triangle: false,
+                    is_triangle: false,
                     textured: false,
                     blend: false,
                     shaded: false,
                     clut: 0,
                     page: 0,
-                    uvs: [[0;2];4],
-                    ctx: self.rendering_ctx()
+                    uvs: [[0; 2]; 4],
+                    ctx: self.rendering_ctx(),
                 })
                 .expect("ok");
         } else {
-        self.renderer_sender
-            .send(RendererMsg::DrawPolygon {
-                    cs: [color;4],
+            self.renderer_sender
+                .send(RendererMsg::DrawPolygon {
+                    cs: [color; 4],
                     vs: [v0, v1, v2, v2],
                     textured: false,
                     shaded: false,
                     blend: false,
                     clut: 0,
                     page: 0,
-                    uvs: [[0;2];4],
-                is_triangle: true,
-                semi_transparent: SEMI_TRANS,
-                    ctx: self.rendering_ctx()
-            })
-            .expect("ok");
-
+                    uvs: [[0; 2]; 4],
+                    is_triangle: true,
+                    semi_transparent: SEMI_TRANS,
+                    ctx: self.rendering_ctx(),
+                })
+                .expect("ok");
         }
     }
 
@@ -597,30 +604,30 @@ impl Gpu {
                     shaded: true,
                     semi_transparent: SEMI_TRANS,
                     blend: BLEND,
-                is_triangle: false,
-                    ctx: self.rendering_ctx()
+                    is_triangle: false,
+                    ctx: self.rendering_ctx(),
                 })
                 .expect("ok");
             // self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
             //     &mut cs1, clut, page, &mut vs1, &mut uv1,
             // );
         } else {
-        let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
-        self.renderer_sender
-            .send(RendererMsg::DrawPolygon {
-                vs: [v0, v1, v2, v2],
-                cs: [c0, c1, c2, c2],
-                uvs: uv0,
-                page,
-                clut,
+            let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
+            self.renderer_sender
+                .send(RendererMsg::DrawPolygon {
+                    vs: [v0, v1, v2, v2],
+                    cs: [c0, c1, c2, c2],
+                    uvs: uv0,
+                    page,
+                    clut,
                     textured: true,
                     shaded: true,
-                semi_transparent: SEMI_TRANS,
-                blend: BLEND,
-                is_triangle: true,
-                    ctx: self.rendering_ctx()
-            })
-            .expect("ok");
+                    semi_transparent: SEMI_TRANS,
+                    blend: BLEND,
+                    is_triangle: true,
+                    ctx: self.rendering_ctx(),
+                })
+                .expect("ok");
         }
     }
 
@@ -639,10 +646,10 @@ impl Gpu {
         if QUAD {
             let v3 = Self::gp0_vertex(self.gp0_command[7]);
             let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[8]);
-            let uv1 = [[_u0, _v0],[_u1, _v1], [_u2, _v2], [_u3, _v3]];
+            let uv1 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u3, _v3]];
             self.renderer_sender
                 .send(RendererMsg::DrawPolygon {
-                    cs: [color;4],
+                    cs: [color; 4],
                     clut,
                     page,
                     vs: [v0, v1, v2, v3],
@@ -651,28 +658,28 @@ impl Gpu {
                     shaded: false,
                     semi_transparent: SEMI_TRANS,
                     blend: BLEND,
-                is_triangle: false,
-                    ctx: self.rendering_ctx()
+                    is_triangle: false,
+                    ctx: self.rendering_ctx(),
                 })
                 .expect("ok");
             // self.draw_triangle_textured::<SEMI_TRANS, BLEND>(color, clut, page, &mut vs1, &mut uv1);
         } else {
-        let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
-        self.renderer_sender
-            .send(RendererMsg::DrawPolygon {
-                cs: [color;4],
-                clut,
-                page,
-                vs: [v0, v1, v2, v2],
-                uvs: uv0,
+            let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
+            self.renderer_sender
+                .send(RendererMsg::DrawPolygon {
+                    cs: [color; 4],
+                    clut,
+                    page,
+                    vs: [v0, v1, v2, v2],
+                    uvs: uv0,
                     textured: true,
                     shaded: false,
-                semi_transparent: SEMI_TRANS,
-                blend: BLEND,
-                is_triangle: true,
-                    ctx: self.rendering_ctx()
-            })
-            .expect("ok");
+                    semi_transparent: SEMI_TRANS,
+                    blend: BLEND,
+                    is_triangle: true,
+                    ctx: self.rendering_ctx(),
+                })
+                .expect("ok");
         }
     }
     pub fn gp0_poly_shaded<const QUAD: bool, const SEMI_TRANS: bool>(&mut self) {
@@ -691,34 +698,34 @@ impl Gpu {
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v3],
                     cs: [c0, c1, c2, c3],
-                clut: 0,
-                page: 0,
-                uvs: [[0;2];4],
-                blend: false,
-                shaded: true,
-                textured:false,
+                    clut: 0,
+                    page: 0,
+                    uvs: [[0; 2]; 4],
+                    blend: false,
+                    shaded: true,
+                    textured: false,
                     semi_transparent: SEMI_TRANS,
                     is_triangle: false,
-                    ctx: self.rendering_ctx()
+                    ctx: self.rendering_ctx(),
                 })
                 .expect("ok");
             // self.draw_triangle_shaded::<SEMI_TRANS>(&mut [v1, v2, v3], &mut [c1, c2, c3]);
         } else {
-        self.renderer_sender
-            .send(RendererMsg::DrawPolygon {
-                vs: [v0, v1, v2, v2],
-                cs: [c0, c1, c2, c2],
-                clut: 0,
-                page: 0,
-                semi_transparent: SEMI_TRANS,
-                uvs: [[0;2];4],
-                blend: false,
-                textured:false,
-                shaded: true,
-                is_triangle: true,
-                    ctx: self.rendering_ctx()
-            })
-            .expect("ok");
+            self.renderer_sender
+                .send(RendererMsg::DrawPolygon {
+                    vs: [v0, v1, v2, v2],
+                    cs: [c0, c1, c2, c2],
+                    clut: 0,
+                    page: 0,
+                    semi_transparent: SEMI_TRANS,
+                    uvs: [[0; 2]; 4],
+                    blend: false,
+                    textured: false,
+                    shaded: true,
+                    is_triangle: true,
+                    ctx: self.rendering_ctx(),
+                })
+                .expect("ok");
         }
     }
     pub fn gp0_vram_to_vram_blit(&mut self) {
@@ -726,8 +733,9 @@ impl Gpu {
         let dst = Self::gp0_vertex(self.gp0_command[2]);
         let size = Self::gp0_vertex(self.gp0_command[3]);
 
-        self.renderer_sender.send(
-            RendererMsg::Vram2VramBlit { src, dst, size }).expect("ok");
+        self.renderer_sender
+            .send(RendererMsg::Vram2VramBlit { src, dst, size })
+            .expect("ok");
     }
 
     pub fn gp0_image_load(&mut self) {
@@ -754,7 +762,7 @@ impl Gpu {
         self.gp0_mode = Gp0Mode::ImageLoad {
             top_left: (x, y),
             resolution: (width as u16, height as u16),
-            data: vec![]
+            data: vec![],
         };
     }
 
@@ -781,18 +789,21 @@ impl Gpu {
         let imgsize = (imgsize + 1) & !1;
         self.gp0_words_remaining = imgsize / 2;
 
-        self.renderer_sender.send(RendererMsg::VramToCpuCopy { top_left: (x, y), size: (width as u16, height as u16) }).expect("ok");
+        self.renderer_sender
+            .send(RendererMsg::VramToCpuCopy {
+                top_left: (x, y),
+                size: (width as u16, height as u16),
+            })
+            .expect("ok");
 
         let msg = self.renderer_receiver.recv().expect("ok");
         let RendererResponse::VramToCpuData { data } = msg else {
             panic!("wrong response in sync code...");
         };
 
-
-
         self.gp0_mode = Gp0Mode::ImageStore {
             current_word: 0,
-            data
+            data,
         };
         // println!("Unhandled image store: {}x{}", width, height);
     }
@@ -824,10 +835,12 @@ impl Gpu {
         self.texture_window_y_offset = ((val >> 15) & 0x1f) as u8;
     }
     pub fn send_drawing_area_change(&mut self) {
-        self.renderer_sender.send(RendererMsg::DrawingAreaChange {
-            top_left: (self.drawing_area_left, self.drawing_area_top),
-            bottom_right: (self.drawing_area_right, self.drawing_area_bottom)
-        }).expect("ok");
+        self.renderer_sender
+            .send(RendererMsg::DrawingAreaChange {
+                top_left: (self.drawing_area_left, self.drawing_area_top),
+                bottom_right: (self.drawing_area_right, self.drawing_area_bottom),
+            })
+            .expect("ok");
     }
 
     pub fn gp0_drawing_area_top_left(&mut self) {
@@ -1023,11 +1036,7 @@ impl Gpu {
     }
 
     pub fn read(&mut self) -> u32 {
-        if let Gp0Mode::ImageStore {
-            current_word,
-            data,
-        } = &mut self.gp0_mode
-        {
+        if let Gp0Mode::ImageStore { current_word, data } = &mut self.gp0_mode {
             let word = data[*current_word];
             *current_word = *current_word + 1;
             self.gp0_words_remaining -= 1;
@@ -1125,18 +1134,23 @@ impl Gpu {
         };
     }
 
-
-
-    pub fn render_fb(&self, framebuffer: Arc<Mutex<Vec<u16>>>, display_vram: bool) -> (usize, usize, usize, usize, DisplayDepth) {
+    pub fn render_fb(
+        &self,
+        framebuffer: Arc<Mutex<Vec<u32>>>,
+        display_vram: bool,
+    ) -> (usize, usize, usize, usize, DisplayDepth) {
         // println!("len: {}", self.renderer_sender.len());
         // if self.renderer_sender.is_full() {
         //     println!("what is going on?");
         //     std::thread::sleep_ms(1000);
         // }
-        self.renderer_sender.send(RendererMsg::RenderFB {
-            framebuffer: framebuffer,
-            full_ram: display_vram,
-            ctx: self.rendering_ctx() }).expect("ok");
+        self.renderer_sender
+            .send(RendererMsg::RenderFB {
+                framebuffer: framebuffer,
+                full_ram: display_vram,
+                ctx: self.rendering_ctx(),
+            })
+            .expect("ok");
 
         // match res {
         //     Ok(_) => {},
@@ -1152,8 +1166,14 @@ impl Gpu {
 
         let msg = self.renderer_receiver.recv().expect("ok");
         match msg {
-            RendererResponse::FBUpdated { width, height , sx, sy, depth} => (width, height, sx, sy, depth),
-            _ => panic!("something went wrong.. sync call returned wrong response")
+            RendererResponse::FBUpdated {
+                width,
+                height,
+                sx,
+                sy,
+                depth,
+            } => (width, height, sx, sy, depth),
+            _ => panic!("something went wrong.. sync call returned wrong response"),
         }
     }
 
@@ -1261,7 +1281,7 @@ impl HorizontalRes {
     pub fn from_fields(hr1: u8, hr2: u8) -> HorizontalRes {
         let st = (hr2 & 1) | ((hr1 & 3) << 1);
         let hr = (hr2 & 1 << 4) | (hr1 & 3);
-        HorizontalRes(hr,st)
+        HorizontalRes(hr, st)
     }
     fn into_status(self) -> u32 {
         let HorizontalRes(_, st) = self;
@@ -1361,7 +1381,7 @@ enum Gp0Mode {
     ImageLoad {
         top_left: (u16, u16),
         resolution: (u16, u16),
-        data: Vec<u32>
+        data: Vec<u32>,
     },
     ImageStore {
         current_word: usize,
@@ -1393,7 +1413,7 @@ impl Colour {
     pub fn blend_with_background(&mut self, bg: Self, semi_transparency: u8) {
         match semi_transparency {
             0 => {
-                self.r = (self.r as i32 / 2 + bg.r as i32 / 2).clamp(0,255) as u8;
+                self.r = (self.r as i32 / 2 + bg.r as i32 / 2).clamp(0, 255) as u8;
                 self.g = (self.g as i32 / 2 + bg.g as i32 / 2).min(255) as u8;
                 self.b = (self.b as i32 / 2 + bg.b as i32 / 2).min(255) as u8;
             }
@@ -1475,8 +1495,8 @@ const DITHER_TABLE: &[[i8; 4]; 4] = &[
     [3, -1, 2, -2],
 ];
 
-    pub fn convert_5bit_to_8bit(color: u16) -> u8 {
-        // Note it is probably a lot faster to use a 32-entry lookup table than doing this calculation live
-        // (f64::from(color) * 255.0 / 31.0).round() as u8
-        FIVE_BIT_TO_8BIT[color as usize]
-    }
+pub fn convert_5bit_to_8bit(color: u16) -> u8 {
+    // Note it is probably a lot faster to use a 32-entry lookup table than doing this calculation live
+    // (f64::from(color) * 255.0 / 31.0).round() as u8
+    FIVE_BIT_TO_8BIT[color as usize]
+}

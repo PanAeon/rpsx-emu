@@ -61,7 +61,7 @@ pub enum RendererMsg {
         size: Vertex,
     },
     RenderFB {
-        framebuffer: Arc<Mutex<Vec<u16>>>,
+        framebuffer: Arc<Mutex<Vec<u32>>>,
         full_ram: bool,
         ctx: RenderingContext,
     },
@@ -77,11 +77,19 @@ pub enum RendererMsg {
     DrawingAreaChange {
         top_left: (u16, u16),
         bottom_right: (u16, u16),
-    }
+    },
 }
 pub enum RendererResponse {
-    FBUpdated { width: usize, height: usize, sx: usize, sy: usize, depth: DisplayDepth },
-    VramToCpuData { data: Vec<u32> },
+    FBUpdated {
+        width: usize,
+        height: usize,
+        sx: usize,
+        sy: usize,
+        depth: DisplayDepth,
+    },
+    VramToCpuData {
+        data: Vec<u32>,
+    },
 }
 
 pub struct RenderingContext {
@@ -162,13 +170,15 @@ impl Renderer {
                         semi_transparent,
                         shaded,
                         ctx,
-                    } => {
-                        match (*semi_transparent, *shaded) {
-                            (true, true) => renderer.draw_line_shaded::<SEMI_TRANS>(*v0, *v1, *c0, *c1, ctx),
-                            (false, true) => renderer.draw_line_shaded::<OPAQUE>(*v0, *v1, *c0, *c1, ctx),
-                            (false, false) => renderer.draw_line::<OPAQUE>(*v0, *v1, *c0, ctx),
-                            (true, false) => renderer.draw_line::<SEMI_TRANS>(*v0, *v1, *c0, ctx),
+                    } => match (*semi_transparent, *shaded) {
+                        (true, true) => {
+                            renderer.draw_line_shaded::<SEMI_TRANS>(*v0, *v1, *c0, *c1, ctx)
                         }
+                        (false, true) => {
+                            renderer.draw_line_shaded::<OPAQUE>(*v0, *v1, *c0, *c1, ctx)
+                        }
+                        (false, false) => renderer.draw_line::<OPAQUE>(*v0, *v1, *c0, ctx),
+                        (true, false) => renderer.draw_line::<SEMI_TRANS>(*v0, *v1, *c0, ctx),
                     },
                     RendererMsg::DrawRectangle {
                         v,
@@ -181,15 +191,47 @@ impl Renderer {
                         textured,
                         blend,
                         ctx,
-                    } =>
-                    match (*semi_transparent, *blend, *textured) {
-                        (true, true, true) => renderer.draw_rectangle_textured::<SEMI_TRANS, BLEND>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
-                        (true, false, true) => renderer.draw_rectangle_textured::<SEMI_TRANS, RAW>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
-                        (false, true, true) => renderer.draw_rectangle_textured::<OPAQUE, BLEND>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
-                        (false, false, true) => renderer.draw_rectangle_textured::<OPAQUE, RAW>( *v, *side, *c, *clut,  [*_u, *_v],   ctx),
-                        (true, false, false) => renderer.draw_rectangle::<SEMI_TRANS>(*v, *side, *c, ctx),
-                        (false, false, false) => renderer.draw_rectangle::<OPAQUE>(*v, *side, *c, ctx),
-                        _ => unreachable!("wrong combo")
+                    } => match (*semi_transparent, *blend, *textured) {
+                        (true, true, true) => renderer
+                            .draw_rectangle_textured::<SEMI_TRANS, BLEND>(
+                                *v,
+                                *side,
+                                *c,
+                                *clut,
+                                [*_u, *_v],
+                                ctx,
+                            ),
+                        (true, false, true) => renderer.draw_rectangle_textured::<SEMI_TRANS, RAW>(
+                            *v,
+                            *side,
+                            *c,
+                            *clut,
+                            [*_u, *_v],
+                            ctx,
+                        ),
+                        (false, true, true) => renderer.draw_rectangle_textured::<OPAQUE, BLEND>(
+                            *v,
+                            *side,
+                            *c,
+                            *clut,
+                            [*_u, *_v],
+                            ctx,
+                        ),
+                        (false, false, true) => renderer.draw_rectangle_textured::<OPAQUE, RAW>(
+                            *v,
+                            *side,
+                            *c,
+                            *clut,
+                            [*_u, *_v],
+                            ctx,
+                        ),
+                        (true, false, false) => {
+                            renderer.draw_rectangle::<SEMI_TRANS>(*v, *side, *c, ctx)
+                        }
+                        (false, false, false) => {
+                            renderer.draw_rectangle::<OPAQUE>(*v, *side, *c, ctx)
+                        }
+                        _ => unreachable!("wrong combo"),
                     },
                     RendererMsg::DrawPolygon {
                         cs,
@@ -203,41 +245,126 @@ impl Renderer {
                         shaded,
                         textured,
                         ctx,
-                    } => 
-                    match (*semi_transparent, *blend, *shaded, *textured) {
-                        (true, true, true, true) => renderer.draw_polygon_textured_shaded::<SEMI_TRANS, BLEND>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
-                        (true, false, true, true) => renderer.draw_polygon_textured_shaded::<SEMI_TRANS, RAW>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
-                        (false, true, true, true) => renderer.draw_polygon_textured_shaded::<OPAQUE, BLEND>( cs, *clut, *page,  vs,  uvs,*is_triangle,  ctx),
-                        (false, false, true, true) => renderer.draw_polygon_textured_shaded::<OPAQUE, RAW>( cs, *clut, *page,  vs,  uvs,*is_triangle,  ctx),
+                    } => match (*semi_transparent, *blend, *shaded, *textured) {
+                        (true, true, true, true) => renderer
+                            .draw_polygon_textured_shaded::<SEMI_TRANS, BLEND>(
+                                cs,
+                                *clut,
+                                *page,
+                                vs,
+                                uvs,
+                                *is_triangle,
+                                ctx,
+                            ),
+                        (true, false, true, true) => renderer
+                            .draw_polygon_textured_shaded::<SEMI_TRANS, RAW>(
+                                cs,
+                                *clut,
+                                *page,
+                                vs,
+                                uvs,
+                                *is_triangle,
+                                ctx,
+                            ),
+                        (false, true, true, true) => renderer
+                            .draw_polygon_textured_shaded::<OPAQUE, BLEND>(
+                                cs,
+                                *clut,
+                                *page,
+                                vs,
+                                uvs,
+                                *is_triangle,
+                                ctx,
+                            ),
+                        (false, false, true, true) => renderer
+                            .draw_polygon_textured_shaded::<OPAQUE, RAW>(
+                                cs,
+                                *clut,
+                                *page,
+                                vs,
+                                uvs,
+                                *is_triangle,
+                                ctx,
+                            ),
 
+                        (true, true, false, true) => renderer
+                            .draw_polygon_textured::<SEMI_TRANS, BLEND>(
+                                cs,
+                                *clut,
+                                *page,
+                                vs,
+                                uvs,
+                                *is_triangle,
+                                ctx,
+                            ),
+                        (true, false, false, true) => renderer
+                            .draw_polygon_textured::<SEMI_TRANS, RAW>(
+                                cs,
+                                *clut,
+                                *page,
+                                vs,
+                                uvs,
+                                *is_triangle,
+                                ctx,
+                            ),
+                        (false, true, false, true) => renderer
+                            .draw_polygon_textured::<OPAQUE, BLEND>(
+                                cs,
+                                *clut,
+                                *page,
+                                vs,
+                                uvs,
+                                *is_triangle,
+                                ctx,
+                            ),
+                        (false, false, false, true) => renderer
+                            .draw_polygon_textured::<OPAQUE, RAW>(
+                                cs,
+                                *clut,
+                                *page,
+                                vs,
+                                uvs,
+                                *is_triangle,
+                                ctx,
+                            ),
 
-                        (true, true, false, true) => renderer.draw_polygon_textured::<SEMI_TRANS, BLEND>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
-                        (true, false, false, true) => renderer.draw_polygon_textured::<SEMI_TRANS, RAW>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
-                        (false, true, false, true) => renderer.draw_polygon_textured::<OPAQUE, BLEND>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
-                        (false, false, false, true) => renderer.draw_polygon_textured::<OPAQUE, RAW>( cs, *clut, *page,  vs,  uvs, *is_triangle, ctx),
+                        (true, false, true, false) => {
+                            renderer.draw_polygon_shaded::<SEMI_TRANS>(vs, cs, *is_triangle, ctx)
+                        }
+                        (false, false, true, false) => {
+                            renderer.draw_polygon_shaded::<OPAQUE>(vs, cs, *is_triangle, ctx)
+                        }
 
-                        (true, false, true, false) => renderer.draw_polygon_shaded::<SEMI_TRANS>(vs, cs, *is_triangle, ctx),
-                        (false, false, true, false) => renderer.draw_polygon_shaded::<OPAQUE>(vs, cs, *is_triangle,  ctx),
-
-                        (true, false, false, false) =>
-                        renderer.draw_polygon_mono::<SEMI_TRANS>(cs, vs,  *is_triangle, ctx),
-                        (false, false, false, false) =>
-                        renderer.draw_polygon_mono::<OPAQUE>(cs, vs,  *is_triangle, ctx),
-                        _ => unreachable!("wrong combo")
+                        (true, false, false, false) => {
+                            renderer.draw_polygon_mono::<SEMI_TRANS>(cs, vs, *is_triangle, ctx)
+                        }
+                        (false, false, false, false) => {
+                            renderer.draw_polygon_mono::<OPAQUE>(cs, vs, *is_triangle, ctx)
+                        }
+                        _ => unreachable!("wrong combo"),
                     },
                     RendererMsg::FillRect { v, side, c, ctx } => renderer.fill_rect(*v, *side, *c),
-                    RendererMsg::Vram2VramBlit { src, dst, size } => renderer.vram2vram_blit(*src, *dst, *size),
+                    RendererMsg::Vram2VramBlit { src, dst, size } => {
+                        renderer.vram2vram_blit(*src, *dst, *size)
+                    }
                     RendererMsg::RenderFB {
                         framebuffer,
                         full_ram,
                         ctx,
                     } => {
-                        let (width,height, sx, sy, depth) = renderer.render_fb(&framebuffer, *full_ram, ctx);
-                        match to_gpu_sender.send(RendererResponse::FBUpdated { width, height, sx, sy, depth }) {
+                        let (width, height, sx, sy, depth) =
+                            renderer.render_fb(&framebuffer, *full_ram, ctx);
+                        match to_gpu_sender.send(RendererResponse::FBUpdated {
+                            width,
+                            height,
+                            sx,
+                            sy,
+                            depth,
+                        }) {
                             Ok(_) => (),
                             Err(_) => return,
                         }
-                    },
+                    }
                     RendererMsg::CpuToVramCopy {
                         top_left,
                         size,
@@ -249,10 +376,13 @@ impl Renderer {
                             Ok(_) => (),
                             Err(_) => return,
                         }
-                    },
-                    RendererMsg::DrawingAreaChange { top_left, bottom_right } => {
+                    }
+                    RendererMsg::DrawingAreaChange {
+                        top_left,
+                        bottom_right,
+                    } => {
                         // ignore for now..
-                    },
+                    }
                 }
                 // match msg {
                 //     GpuMsg::DataGP0(data) => gpu.gp0(data),
@@ -333,7 +463,7 @@ impl Renderer {
 
                 let [pixel_lsb, pixel_msb] = color.to_le_bytes();
                 self.vram[vram_addr] = pixel_lsb;
-                self.vram[vram_addr + 1] = pixel_msb&0xEF;
+                self.vram[vram_addr + 1] = pixel_msb & 0xEF;
             }
         }
     }
@@ -495,17 +625,23 @@ impl Renderer {
         is_triangle: bool,
         ctx: &RenderingContext,
     ) {
-        unimplemented!("todo");
+        let mut vss = vs.clone();
+        self.render_triangle_mono::<SEMI_TRANS>(cs[0], &mut vss[0..3], ctx);
+        if !is_triangle {
+            self.render_triangle_mono::<SEMI_TRANS>(cs[0], &mut vs[1..4], ctx);
+        }
     }
     pub fn render_triangle_mono<const SEMI_TRANS: bool>(
         &mut self,
         mono: Colour,
-        vs: &mut [Vertex; 3],
+        vs: &mut [Vertex],
         ctx: &RenderingContext,
     ) {
         ensure_vertex_order(vs);
         // let [pixel_lsb, pixel_msb] = color;
-        let [v0, v1, v2] = vs;
+        let [v0, v1, v2] = vs else {
+            unreachable!("");
+        };
 
         // bounding box
         let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
@@ -513,7 +649,8 @@ impl Renderer {
         let mut min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
         let mut max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
 
-        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
+        else {
             return;
         };
 
@@ -542,7 +679,6 @@ impl Renderer {
                 }
             }
         }
-
     }
 
     pub fn draw_polygon_shaded<const SEMI_TRANS: bool>(
@@ -552,12 +688,17 @@ impl Renderer {
         is_triangle: bool,
         ctx: &RenderingContext,
     ) {
-        unimplemented!("todo!");
+        let mut vss = vs.clone();
+        let mut css = colors.clone();
+        self.draw_triangle_shaded::<SEMI_TRANS>(&mut vss[0..3], &mut css[0..3], ctx);
+        if !is_triangle {
+            self.draw_triangle_shaded::<SEMI_TRANS>(&mut vs[1..4], &mut colors[1..4], ctx);
+        }
     }
     pub fn draw_triangle_shaded<const SEMI_TRANS: bool>(
         &mut self,
-        vs: &mut [Vertex; 3],
-        colors: &mut [Colour; 3],
+        vs: &mut [Vertex],
+        colors: &mut [Colour],
         ctx: &RenderingContext,
     ) {
         ensure_vertex_order2(vs, colors);
@@ -567,8 +708,12 @@ impl Renderer {
         vs[1].y += ctx.drawing_y_offset as i32;
         vs[2].x += ctx.drawing_x_offset as i32;
         vs[2].y += ctx.drawing_y_offset as i32;
-        let [v0, v1, v2] = vs;
-        let [c0, c1, c2] = colors;
+        let [v0, v1, v2] = vs else {
+            panic!("wrong data")
+        };
+        let [c0, c1, c2] = colors else {
+            panic!("boo");
+        };
 
         // bounding box
         let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
@@ -576,7 +721,8 @@ impl Renderer {
         let mut min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
         let mut max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
 
-        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
+        else {
             return;
         };
 
@@ -591,7 +737,7 @@ impl Renderer {
                 let p = Vertex { x, y };
                 if is_inside_triangle(p, *v0, *v1, *v2) {
                     let lambda = compute_barycentric_coordinates(p, *v0, *v1, *v2);
-                    let color = interpolate_color(lambda, [*c0, *c1, *c2]);
+                    let color = interpolate_color(&lambda, &[*c0, *c1, *c2]);
                     let mut color = apply_dithering(color, p);
                     let vram_addr = 2 * (y * 1024 + x) as usize;
 
@@ -608,7 +754,6 @@ impl Renderer {
                 }
             }
         }
-
     }
 
     /* GP0(E1h)
@@ -638,22 +783,42 @@ impl Renderer {
 
     pub fn draw_polygon_textured<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
-        cs: &mut [Colour;4],
+        cs: &mut [Colour; 4],
         clut: u16,
         page: u16,
         vs: &mut [Vertex; 4],
         uv: &mut [[u16; 2]; 4],
         is_triangle: bool,
-        ctx: &RenderingContext,) {
-        unimplemented!("todo")
+        ctx: &RenderingContext,
+    ) {
+        let mut vss = vs.clone();
+        let mut uvs = uv.clone();
+        self.draw_triangle_textured::<SEMI_TRANS, BLEND>(
+            cs[0],
+            clut,
+            page,
+            &mut vss[0..3],
+            &mut uvs[0..3],
+            ctx,
+        );
+        if !is_triangle {
+            self.draw_triangle_textured::<SEMI_TRANS, BLEND>(
+                cs[0],
+                clut,
+                page,
+                &mut vs[1..4],
+                &mut uv[1..4],
+                ctx,
+            );
+        }
     }
     pub fn draw_triangle_textured<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         mono: Colour,
         clut: u16,
         page: u16,
-        vs: &mut [Vertex; 3],
-        uv: &mut [[u16; 2]; 3],
+        vs: &mut [Vertex],
+        uv: &mut [[u16; 2]],
         ctx: &RenderingContext,
     ) {
         ensure_vertex_order2(vs, uv);
@@ -670,7 +835,8 @@ impl Renderer {
         let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
         let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
-        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
+        else {
             return;
         };
 
@@ -735,16 +901,37 @@ impl Renderer {
         vs: &mut [Vertex; 4],
         uv: &mut [[u16; 2]; 4],
         is_triangle: bool,
-        ctx: &RenderingContext,) {
-        unimplemented!("todo!");
+        ctx: &RenderingContext,
+    ) {
+        let mut vss = vs.clone();
+        let mut uvs = uv.clone();
+        let mut css = colors.clone();
+        self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
+            &mut css[0..3],
+            clut,
+            page,
+            &mut vss[0..3],
+            &mut uvs[0..3],
+            ctx,
+        );
+        if !is_triangle {
+        self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
+            &mut colors[1..4],
+            clut,
+            page,
+            &mut vs[1..4],
+            &mut uv[1..4],
+            ctx,
+        );
+        }
     }
     pub fn draw_triangle_textured_shaded<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
-        colors: &mut [Colour; 3],
+        colors: &mut [Colour],
         clut: u16,
         page: u16,
-        vs: &mut [Vertex; 3],
-        uv: &mut [[u16; 2]; 3],
+        vs: &mut [Vertex],
+        uv: &mut [[u16; 2]],
         ctx: &RenderingContext,
     ) {
         ensure_vertex_order3(vs, uv, colors);
@@ -761,7 +948,8 @@ impl Renderer {
         let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
         let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
-        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
+        else {
             return;
         };
 
@@ -788,7 +976,7 @@ impl Renderer {
                     }
 
                     if BLEND {
-                        let color = interpolate_color(lambda, *colors);
+                        let color = interpolate_color(&lambda, colors);
                         pixel.blend(color);
                     }
 
@@ -930,12 +1118,12 @@ impl Renderer {
 
     pub fn render_fb(
         &self,
-        framebuffer: &Mutex<Vec<u16>>,
+        framebuffer: &Mutex<Vec<u32>>,
         full_ram: bool,
         ctx: &RenderingContext,
     ) -> (usize, usize, usize, usize, DisplayDepth) {
         let mut mutex = framebuffer.lock().unwrap();
-        let output_frame_buffer: &mut [u16] = mutex.as_mut();
+        let output_frame_buffer: &mut [u32] = mutex.as_mut();
 
         if ctx.display_disabled {
             for y in 0..16 {
@@ -946,8 +1134,11 @@ impl Renderer {
             return (16, 16, 0, 0, ctx.display_depth);
         }
         if full_ram {
-
-            output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
+            for i in 0..1024*512 {
+                output_frame_buffer[i] = self.vram[2*i] as u32;
+                output_frame_buffer[i] |= (self.vram[2*i+1] as u32) << 8;
+            }
+            // output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
             // for y in 0..512 {
             //     for x in 0..1024 {
             //         let vram_addr = 2 * (1024 * y + x);
@@ -970,7 +1161,11 @@ impl Renderer {
                 ctx.vres.into_pixels(),
                 ctx.interlaced,
             );
-            output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
+            for i in 0..1024*512 {
+                output_frame_buffer[i] = (self.vram[2*i] as u32);
+                output_frame_buffer[i] |= (self.vram[2*i+1] as u32) << 8;
+            }
+            // output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
             // match ctx.display_depth {
             //     DisplayDepth::D15Bits => {
             //         for y in 0..height {
@@ -1079,7 +1274,7 @@ impl Renderer {
 }
 
 // clockwise order (psx has inverted y coord)
-fn ensure_vertex_order(vs: &mut [Vertex; 3]) {
+fn ensure_vertex_order(vs: &mut [Vertex]) {
     let cross_product_z =
         (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
     if cross_product_z < 0 {
@@ -1088,7 +1283,7 @@ fn ensure_vertex_order(vs: &mut [Vertex; 3]) {
     }
 }
 
-fn ensure_vertex_order2<T: Clone>(vs: &mut [Vertex; 3], attrs: &mut [T; 3]) {
+fn ensure_vertex_order2<T: Clone>(vs: &mut [Vertex], attrs: &mut [T]) {
     let cross_product_z =
         (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
     if cross_product_z < 0 {
@@ -1102,9 +1297,9 @@ fn ensure_vertex_order2<T: Clone>(vs: &mut [Vertex; 3], attrs: &mut [T; 3]) {
     }
 }
 fn ensure_vertex_order3<T: Clone, E: Clone>(
-    vs: &mut [Vertex; 3],
-    attrs: &mut [T; 3],
-    attrs1: &mut [E; 3],
+    vs: &mut [Vertex],
+    attrs: &mut [T],
+    attrs1: &mut [E],
 ) {
     let cross_product_z =
         (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
@@ -1184,7 +1379,7 @@ fn compute_barycentric_coordinates(p: Vertex, v0: Vertex, v1: Vertex, v2: Vertex
     let lambda2 = 1.0 - lambda0 - lambda1;
     [lambda0, lambda1, lambda2]
 }
-fn compute_normal_coordinates(p: [f64; 3], vs: &[[u16; 2]; 3]) -> [usize; 2] {
+fn compute_normal_coordinates(p: [f64; 3], vs: &[[u16; 2]]) -> [usize; 2] {
     let x = p[0] * (vs[0][0] as f64) + p[1] * (vs[1][0] as f64) + p[2] * (vs[2][0] as f64);
     let y = p[0] * (vs[0][1] as f64) + p[1] * (vs[1][1] as f64) + p[2] * (vs[2][1] as f64);
     [x.round() as usize, y.round() as usize]
@@ -1248,7 +1443,7 @@ impl Texture {
         }
     }
 
-    pub fn get_texpage_base(&self) -> [u8;2] {
+    pub fn get_texpage_base(&self) -> [u8; 2] {
         [(self.base_x / 64) as u8, (self.base_y / 256) as u8]
     }
 
@@ -1293,10 +1488,10 @@ impl Texture {
     }
 }
 
-fn interpolate_color(lambda: [f64; 3], colors: [Colour; 3]) -> Colour {
-    let colors_r: [f64; 3] = colors.map(|c| f64::from(c.r));
-    let colors_g = colors.map(|c| f64::from(c.g));
-    let colors_b = colors.map(|c| f64::from(c.b));
+fn interpolate_color(lambda: &[f64], colors: &[Colour]) -> Colour {
+    let colors_r: Vec<f64>  = colors.iter().map(|c| f64::from(c.r)).collect();
+    let colors_g: Vec<f64> = colors.iter().map(|c| f64::from(c.g)).collect();
+    let colors_b: Vec<f64> = colors.iter().map(|c| f64::from(c.b)).collect();
 
     let r =
         (lambda[0] * colors_r[0] + lambda[1] * colors_r[1] + lambda[2] * colors_r[2]).round() as u8;

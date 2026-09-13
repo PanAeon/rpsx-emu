@@ -1,4 +1,5 @@
 use std::{
+
     borrow::Cow,
     cmp::{self, max, min},
     num::{NonZeroU32, NonZeroU64},
@@ -6,15 +7,16 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use bytemuck::Zeroable;
 use crossbeam::channel::{Receiver, Sender};
-use wgpu::util::DeviceExt;
+use wgpu::{VERTEX_ALIGNMENT, util::DeviceExt};
 
 use crate::{
     gpu::{Colour, DisplayDepth, HorizontalRes, TextureDepth, Vertex, VerticalRes},
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
 
-const VERT_BUFFER_SIZE: usize = 3*64;
+const VERT_BUFFER_SIZE: usize = 3*64*64;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
@@ -45,6 +47,8 @@ struct Vert {
     // draw_area_bottom_right: [u16;2],
 }
 impl Vert {
+    // pub fn empty() -> Self {
+    // }
 }
 
 bitfield::bitfield! {
@@ -494,31 +498,40 @@ impl ComputeRenderer {
         // self.render_triangle(&[c1;4], 0, 0, vs, uv, false, false, false, ctx);
         // }
         if !self.vertices.is_empty() {
-            // println!(">>> {}", self.vertices.len());
-            // first upload vertex buffer
+            // now we need to partition vertices into bins;
+            let mut vertices = [Vert::zeroed();VERT_BUFFER_SIZE]; // TODO: move to shader?
+            for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
+                let min_x = (cmp::min(vs[0].position[0], cmp::min(vs[1].position[0], vs[2].position[0])));
+                let max_x = (cmp::max(vs[0].position[0], cmp::max(vs[1].position[0], vs[2].position[0])));
+                let min_y = (cmp::min(vs[0].position[1], cmp::min(vs[1].position[1], vs[2].position[1])));
+                let max_y = (cmp::max(vs[0].position[1], cmp::max(vs[1].position[1], vs[2].position[1])));
+
+                
+                
+                let start_bin_x = min_x as usize / 128;
+                let end_bin_x = max_x as usize / 128;
+                let start_bin_y = min_y as usize / 64;
+                let end_bin_y = max_y as usize / 64;
+
+                for y in start_bin_y..=end_bin_y {
+                    for x in start_bin_x..=end_bin_x {
+                        vertices[3*64*(y*8 + x) + 3*i] = vs[0];
+                        vertices[3*64*(y*8 + x) + 3*i + 1] = vs[1];
+                        vertices[3*64*(y*8 + x) + 3*i + 2] = vs[2];
+                        vertices[3*64*(y*8 + x) + 3*i].flags = 1;
+                        vertices[3*64*(y*8 + x) + 3*i + 1].flags = 1;
+                        vertices[3*64*(y*8 + x) + 3*i + 2].flags = 1;
+                    }
+                }
+            }
             self.queue
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+            // self.queue
+            //     .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
             // let idx = self.queue.submit([]);
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
             // TODO: upload uniforms...
 
-            let mut clear_encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("clear_encoder"),
-                });
-            {
-                let mut cpass = clear_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("clear pass"),
-                    timestamp_writes: None,
-                });
-                cpass.set_pipeline(&self.clear_pipeline);
-
-                cpass.set_bind_group(0, &self.merge_bind_group, &[]);
-                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                cpass.dispatch_workgroups(64, 64, 1);
-                // rpass.draw(0..self.vertices.len() as u32, 0..1);
-            }
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -533,29 +546,10 @@ impl ComputeRenderer {
 
                 cpass.set_bind_group(0, &self.compute_bind_group, &[]);
                 // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                cpass.dispatch_workgroups(64, 1, 1);
+                cpass.dispatch_workgroups(1, 1, 1);
                 // rpass.draw(0..self.vertices.len() as u32, 0..1);
             }
-            let mut merge_encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("merge_encoder"),
-                });
-            {
-                let mut cpass = merge_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("merge pass"),
-                    timestamp_writes: None,
-                });
-                cpass.set_pipeline(&self.merge_pipeline);
-
-                cpass.set_bind_group(0, &self.merge_bind_group, &[]);
-                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                cpass.dispatch_workgroups(64, 64, 1);
-                // rpass.draw(0..self.vertices.len() as u32, 0..1);
-            }
-            let idx = self.queue.submit(vec![clear_encoder.finish()]);
             let idx = self.queue.submit(vec![encoder.finish()]);
-            let idx = self.queue.submit(vec![ merge_encoder.finish()]);
 
             // TODO: do we need sync here?
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
@@ -568,7 +562,7 @@ impl ComputeRenderer {
     }
 
     pub fn ensure_vertex_room(&mut self, n: usize) {
-        if self.vertices.len() + n >= VERT_BUFFER_SIZE {
+        if self.vertices.len() + n >= 3 * 64 {
             self.flush();
         }
     }
@@ -610,8 +604,7 @@ impl ComputeRenderer {
         // self.dirty_region
         //     .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
 
-        self.ensure_vertex_room(6);
-        let flags = Flags(0);
+        let flags = Flags(1);
         let v0 =(Vert {
             position: [min_x as u16, min_y as u16],
             color: [color.r, color.g, color.b],
@@ -686,7 +679,11 @@ impl ComputeRenderer {
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
-        self.vertices.extend_from_slice(&[v0, v1, v2, v3, v4, v5]);
+
+        self.ensure_vertex_room(3);
+        self.vertices.extend_from_slice(&[v0, v1, v2]);
+        self.ensure_vertex_room(3);
+        self.vertices.extend_from_slice(&[v0, v1, v2]);
     }
 
     pub fn draw_line(
@@ -796,10 +793,11 @@ impl ComputeRenderer {
         //     blend,
         //     ctx,
         // );
-        self.ensure_vertex_room(if is_triangle {3} else {6});
+        self.ensure_vertex_room(3);
         self.render_triangle(&colors[0..3], clut, page, &vs[0..3], &uv[0..3], textured, semi_trans, blend, ctx);
 
         if !is_triangle {
+           self.ensure_vertex_room(3);
            self.render_triangle(&colors[1..4], clut, page, &vs[1..4], &uv[1..4], textured, semi_trans, blend, ctx);
         }
     }
@@ -902,7 +900,6 @@ impl ComputeRenderer {
         self.dirty_region
             .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
 
-        self.ensure_vertex_room(6);
         let mut flags = Flags(0);
         flags.set_textured(textured);
         flags.set_semitrans(semi_trans);
@@ -1002,7 +999,10 @@ impl ComputeRenderer {
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
-        self.vertices.extend_from_slice(&[v0, v1, v2, v3, v4, v5]);
+        self.ensure_vertex_room(3);
+        self.vertices.extend_from_slice(&[v0, v1, v2]);
+        self.ensure_vertex_room(3);
+        self.vertices.extend_from_slice(&[v3, v4, v5]);
     }
 
     // TODO: The transfer is affected by Mask setting.

@@ -94,9 +94,9 @@ fn get_partition(id: vec2<u32>) -> vec4<u32> {
     // let width_x = 1024u / 8;
     // let width_y = 512u / 8;
     return vec4<u32>(
-        (id.x) * 16,
+        (id.x) * 8,
         (id.y) * 8,
-        ((id.x) + 1) * 16 - 1,
+        ((id.x) + 1) * 8 - 1,
         ((id.y) + 1) * 8 - 1,
     );
 }
@@ -143,10 +143,10 @@ fn main(
     // if idx >= arrayLength(&vertex_buffer) {
     //     return;
     // }
-    let bin = (workgroup_id.xy * 8) + local_invocation_id.xy;
+    let bin = vec2(workgroup_id.x * 8, workgroup_id.y * 8) + local_invocation_id.xy;
     let bounds = get_partition(bin);
     for (var i: u32 = 0; i < 64; i++) {
-        let idx = (64 * (bin.y * 64 + bin.x)) + i;
+        let idx = (64 * (bin.y * 128 + bin.x)) + i;
         let vert_idx = bins_buffer[idx];
         if vert_idx == 0xFFFF {
             return;

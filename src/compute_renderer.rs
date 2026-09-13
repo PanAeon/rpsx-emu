@@ -97,7 +97,7 @@ fn create_draw_pipeline(
 
     let bins_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("bins_buffer"),
-        size: (64 * 64 * 4) as u64,
+        size: (64 * 64 * 64 * 4) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -435,8 +435,8 @@ impl ComputeRenderer {
         // }
         if !self.vertices.is_empty() {
             // now we need to partition vertices into bins;
-            let mut bins = [0xFFFFu32;64*64];
-            let mut bin_indices = [0;64];
+            let mut bins = [0xFFFFu32;64*64*64];
+            let mut bin_indices = [0;64*64];
             for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
                 let min_x = cmp::min(vs[0].position[0], cmp::min(vs[1].position[0], vs[2].position[0]));
                 let max_x = cmp::min(1023,cmp::max(vs[0].position[0], cmp::max(vs[1].position[0], vs[2].position[0])));
@@ -445,16 +445,16 @@ impl ComputeRenderer {
 
                 
                 
-                let start_bin_x = min_x as usize / 128;
-                let end_bin_x = max_x as usize / 128;
-                let start_bin_y = min_y as usize / 64;
-                let end_bin_y = max_y as usize / 64;
+                let start_bin_x = min_x as usize / 16;
+                let end_bin_x = max_x as usize / 16;
+                let start_bin_y = min_y as usize / 8;
+                let end_bin_y = max_y as usize / 8;
 
                 for y in start_bin_y..=end_bin_y {
                     for x in start_bin_x..=end_bin_x {
-                        let bin_idx = bin_indices[y*8+x];
-                        bins[64*(y*8 + x) + bin_idx] = 3 * i as u32;
-                        bin_indices[y*8+x] += 1;
+                        let bin_idx = bin_indices[y*64+x];
+                        bins[64*(y*64 + x) + bin_idx] = 3 * i as u32;
+                        bin_indices[y*64+x] += 1;
                     }
                 }
             }
@@ -481,7 +481,7 @@ impl ComputeRenderer {
 
                 cpass.set_bind_group(0, &self.compute_bind_group, &[]);
                 // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                cpass.dispatch_workgroups(1, 1, 1);
+                cpass.dispatch_workgroups(8, 8, 1);
                 // rpass.draw(0..self.vertices.len() as u32, 0..1);
             }
             let idx = self.queue.submit(vec![encoder.finish()]);

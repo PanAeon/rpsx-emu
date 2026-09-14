@@ -1,6 +1,7 @@
 use cgmath::prelude::*;
 
 use cpal::traits::StreamTrait;
+use wgpu_profiler::GpuProfiler;
 // use env_logger::fmt::style::Color;
 use std::cmp::min;
 use std::fmt::Display;
@@ -235,8 +236,8 @@ impl State {
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                // power_preference: wgpu::PowerPreference::HighPerformance,
+                // power_preference: wgpu::PowerPreference::LowPower,
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
                 apply_limit_buckets: false,
@@ -253,7 +254,7 @@ impl State {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | wgpu::Features::VERTEX_WRITABLE_STORAGE,
+                required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | wgpu::Features::VERTEX_WRITABLE_STORAGE | GpuProfiler::ALL_WGPU_TIMER_FEATURES,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.

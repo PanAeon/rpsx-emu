@@ -1,11 +1,11 @@
 use std::{
-
     borrow::Cow,
     cmp::{self, max, min},
     num::{NonZeroU32, NonZeroU64},
     sync::Mutex,
     thread::{self, JoinHandle},
 };
+use wgpu_profiler::*;
 
 use bytemuck::Zeroable;
 use crossbeam::channel::{Receiver, Sender};
@@ -16,20 +16,21 @@ use crate::{
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
 
-const VERT_BUFFER_SIZE: usize = 3*64;
+const VERT_BUFFER_SIZE: usize = 3 * 64;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    drawing_area_offset_x: u32,
-    drawing_area_offset_y: u32,
-    drawing_area_width: u32,
-    drawing_area_height: u32,
+    drawing_area_left: u32,
+    drawing_area_top: u32,
+    drawing_area_bottom: u32,
+    drawing_area_right: u32,
+    num_vertices: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vert {
-    position: [u16; 2],
+    position: [i16; 2],
 
     color: [u8; 3],
     texture_depth: u8,
@@ -66,6 +67,8 @@ fn create_draw_pipeline(
     queue: &wgpu::Queue,
     display_format: wgpu::TextureFormat,
 ) -> (
+    wgpu::ComputePipeline,
+    wgpu::ComputePipeline,
     wgpu::ComputePipeline,
     wgpu::Texture,
     wgpu::Buffer,
@@ -109,8 +112,6 @@ fn create_draw_pipeline(
         label: Some("render shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source),
     });
-
-
 
     let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("vertex_buffer"),
@@ -206,41 +207,33 @@ fn create_draw_pipeline(
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: bins_buffer.as_entire_binding()
+                resource: bins_buffer.as_entire_binding(),
             },
         ],
     });
 
+    let bins_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("merge pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader_module,
+        entry_point: Some("bin"),
+        compilation_options: Default::default(), // constants, which is cool...
+        cache: None,
+    });
 
-
-
-
-
-    // let bins_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-    //     label: Some("merge pipeline"),
-    //     layout: Some(&pipeline_layout),
-    //     module: &shader_module,
-    //     entry_point: Some("bin"),
-    //     compilation_options: Default::default(), // constants, which is cool...
-    //     cache: None,
-    // });
-
-    // let clear_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-    //     label: Some("clear pipeline"),
-    //     layout: Some(&pipeline_layout),
-    //     module: &shader_module,
-    //     entry_point: Some("clear_bins"),
-    //     compilation_options: Default::default(), // constants, which is cool...
-    //     cache: None,
-    // });
-
-
-
+    let clear_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("clear pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader_module,
+        entry_point: Some("clear_bins"),
+        compilation_options: Default::default(), // constants, which is cool...
+        cache: None,
+    });
 
     (
         pipeline,
-        // bins_pipeline,
-        // clear_pipeline,
+        bins_pipeline,
+        clear_pipeline,
         vram_texture,
         vertex_buffer,
         uniforms_buffer,
@@ -253,8 +246,8 @@ pub struct ComputeRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     draw_pipeline: wgpu::ComputePipeline,
-    // bins_pipeline: wgpu::ComputePipeline,
-    // clear_pipeline: wgpu::ComputePipeline,
+    bins_pipeline: wgpu::ComputePipeline,
+    clear_pipeline: wgpu::ComputePipeline,
     render_texture: wgpu::Texture,
     vram_texture: wgpu::Texture,
     vertex_buffer: wgpu::Buffer,
@@ -266,6 +259,8 @@ pub struct ComputeRenderer {
     drawing_area_top_left: (u16, u16),
     drawing_area_bottom_right: (u16, u16),
     dirty_region: DirtyRegion,
+    profiler: GpuProfiler,
+    frame_num: usize,
     // blit_texture: wgpu::Texture,
     // vram_blit_texture: wgpu::Texture,
     // output_buffer: wgpu::Buffer,
@@ -285,15 +280,27 @@ impl ComputeRenderer {
         let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(1024);
         let (to_renderer_sender, receiver) = crossbeam::channel::bounded(1024);
 
-        let (draw_pipeline,  vram_texture, vertex_buffer, uniforms_buffer, bins_buffer, compute_bind_group) =
-            create_draw_pipeline(&device, &queue, display_format);
+        let (
+            draw_pipeline,
+            bins_pipeline,
+            clear_pipeline,
+            vram_texture,
+            vertex_buffer,
+            uniforms_buffer,
+            bins_buffer,
+            compute_bind_group,
+        ) = create_draw_pipeline(&device, &queue, display_format);
         // let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default()).unwrap();
 
         let handle = thread::spawn(move || {
             let mut renderer = ComputeRenderer {
                 device,
                 queue,
                 draw_pipeline,
+                bins_pipeline,
+                clear_pipeline,
                 render_texture,
                 vram_texture,
                 vertex_buffer,
@@ -306,6 +313,8 @@ impl ComputeRenderer {
                 drawing_area_top_left: (0, 0),
                 drawing_area_bottom_right: (0, 0),
                 dirty_region: DirtyRegion::empty(),
+                profiler,
+                frame_num: 0,
             };
             let core_ids = core_affinity::get_core_ids().unwrap();
             let res = core_affinity::set_for_current(core_ids[1]);
@@ -435,56 +444,120 @@ impl ComputeRenderer {
         // }
         if !self.vertices.is_empty() {
             // now we need to partition vertices into bins;
-            let mut bins = vec![0xFFFFu32;64*64*128].into_boxed_slice();//Box::new([0xFFFFu32;64*64*128]);
-            let mut bin_indices = [0;64*128];
-            for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
-                let min_x = cmp::min(vs[0].position[0], cmp::min(vs[1].position[0], vs[2].position[0]));
-                let max_x = cmp::min(1023,cmp::max(vs[0].position[0], cmp::max(vs[1].position[0], vs[2].position[0])));
-                let min_y =  cmp::min(vs[0].position[1], cmp::min(vs[1].position[1], vs[2].position[1]));
-                let max_y = cmp::min( 511, (cmp::max(vs[0].position[1], cmp::max(vs[1].position[1], vs[2].position[1]))));
-
-                
-                
-                let start_bin_x = min_x as usize / 8;
-                let end_bin_x = max_x as usize / 8;
-                let start_bin_y = min_y as usize / 8;
-                let end_bin_y = max_y as usize / 8;
-
-                for y in start_bin_y..=end_bin_y {
-                    for x in start_bin_x..=end_bin_x {
-                        let bin_idx = bin_indices[y*128+x];
-                        bins[64*(y*128 + x) + bin_idx] = 3 * i as u32;
-                        bin_indices[y*128+x] += 1;
-                    }
-                }
-            }
-            
-            self.queue
-                .write_buffer(&self.bins_buffer, 0, bytemuck::cast_slice(&bins[..]));
+            // let mut bins = vec![0xFFFFu32;64*64*128].into_boxed_slice();//Box::new([0xFFFFu32;64*64*128]);
+            // let mut bin_indices = [0;64*128];
+            // for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
+            //     let min_x = cmp::min(vs[0].position[0], cmp::min(vs[1].position[0], vs[2].position[0]));
+            //     let max_x = cmp::min(1023,cmp::max(vs[0].position[0], cmp::max(vs[1].position[0], vs[2].position[0])));
+            //     let min_y =  cmp::min(vs[0].position[1], cmp::min(vs[1].position[1], vs[2].position[1]));
+            //     let max_y = cmp::min( 511, (cmp::max(vs[0].position[1], cmp::max(vs[1].position[1], vs[2].position[1]))));
+            //
+            //
+            //
+            //     let start_bin_x = min_x as usize / 8;
+            //     let end_bin_x = max_x as usize / 8;
+            //     let start_bin_y = min_y as usize / 8;
+            //     let end_bin_y = max_y as usize / 8;
+            //
+            //     for y in start_bin_y..=end_bin_y {
+            //         for x in start_bin_x..=end_bin_x {
+            //             let bin_idx = bin_indices[y*128+x];
+            //             bins[64*(y*128 + x) + bin_idx] = 3 * i as u32;
+            //             bin_indices[y*128+x] += 1;
+            //         }
+            //     }
+            // }
+            //
+            // self.queue
+            //     .write_buffer(&self.bins_buffer, 0, bytemuck::cast_slice(&bins[..]));
+            self.queue.write_buffer(
+                &self.uniforms_buffer,
+                0,
+                bytemuck::cast_slice(&[Uniforms {
+                    drawing_area_top: self.drawing_area_top_left.1 as u32,
+                    drawing_area_left: self.drawing_area_top_left.0 as u32,
+                    drawing_area_bottom: self.drawing_area_bottom_right.1 as u32,
+                    drawing_area_right: self.drawing_area_bottom_right.0 as u32,
+                    num_vertices: self.vertices.len() as u32,
+                }]),
+            );
             self.queue
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
             // let idx = self.queue.submit([]);
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
             // TODO: upload uniforms...
 
-            let mut encoder = self
+            let mut render_encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("render_encoder"),
                 });
             {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            let mut render_scope  = self.profiler.scope("render", &mut render_encoder);
+            
+                let mut render_pass = render_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("compute pass"),
                     timestamp_writes: None,
                 });
-                cpass.set_pipeline(&self.draw_pipeline);
+                render_pass.set_pipeline(&self.draw_pipeline);
 
-                cpass.set_bind_group(0, &self.compute_bind_group, &[]);
+                render_pass.set_bind_group(0, &self.compute_bind_group, &[]);
                 // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                cpass.dispatch_workgroups(16, 8, 1);
+                render_pass.dispatch_workgroups(16, 8, 1);
                 // rpass.draw(0..self.vertices.len() as u32, 0..1);
             }
-            let idx = self.queue.submit(vec![encoder.finish()]);
+            
+            let mut bin_encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("bin_encoder"),
+                });
+
+            {
+            let mut bin_scope = self.profiler.scope("bin", &mut bin_encoder);
+            
+                let mut bin_pass = bin_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("bins pass"),
+                    timestamp_writes: None,
+                });
+                bin_pass.set_pipeline(&self.bins_pipeline);
+
+                bin_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+                bin_pass.dispatch_workgroups(4, 4, 1);
+                // rpass.draw(0..self.vertices.len() as u32, 0..1);
+            }
+            
+            let mut clear_encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("clear_encoder"),
+                });
+            {
+                let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
+
+                clear_scope.clear_buffer(&self.bins_buffer, 0, None);
+            
+                // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                //     label: Some("clear"),
+                //     timestamp_writes: None,
+                // });
+                // clear_pass.set_pipeline(&self.clear_pipeline);
+                //
+                // clear_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+                // // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+                // clear_pass.dispatch_workgroups(16, 8, 1);
+                // rpass.draw(0..self.vertices.len() as u32, 0..1);
+            }
+            
+            self.profiler.resolve_queries(&mut render_encoder);
+            self.profiler.resolve_queries(&mut bin_encoder);
+            self.profiler.resolve_queries(&mut clear_encoder);
+            let idx = self.queue.submit(vec![
+                clear_encoder.finish(),
+                bin_encoder.finish(),
+                render_encoder.finish(),
+            ]);
 
             // TODO: do we need sync here?
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
@@ -535,13 +608,12 @@ impl ComputeRenderer {
         let max_x = (v.x + width).min(0x400) as usize;
         let max_y = (v.y + height).min(0x200) as usize;
 
-
         // self.dirty_region
         //     .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
 
-        let flags = Flags(1);
-        let v0 =(Vert {
-            position: [min_x as u16, min_y as u16],
+        let flags = Flags(0);
+        let v0 = (Vert {
+            position: [min_x as i16, min_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
             uv: [0, 0],
@@ -553,7 +625,7 @@ impl ComputeRenderer {
             texture_window_offset: [0, 0],
         });
         let v1 = (Vert {
-            position: [min_x as u16, max_y as u16],
+            position: [min_x as i16, max_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
             uv: [0, 0],
@@ -565,7 +637,7 @@ impl ComputeRenderer {
             // _pad: 0,
         });
         let v2 = (Vert {
-            position: [max_x as u16, min_y as u16],
+            position: [max_x as i16, min_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
             uv: [0, 0],
@@ -577,7 +649,7 @@ impl ComputeRenderer {
             // _pad: 0,
         });
         let v3 = (Vert {
-            position: [min_x as u16, max_y as u16],
+            position: [min_x as i16, max_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
             uv: [0, 0],
@@ -589,7 +661,7 @@ impl ComputeRenderer {
             // _pad: 0,
         });
         let v4 = (Vert {
-            position: [max_x as u16, max_y as u16],
+            position: [max_x as i16, max_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
             uv: [0, 0],
@@ -601,7 +673,7 @@ impl ComputeRenderer {
             // _pad: 0,
         });
         let v5 = (Vert {
-            position: [max_x as u16, min_y as u16],
+            position: [max_x as i16, min_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
             uv: [0, 0],
@@ -618,7 +690,7 @@ impl ComputeRenderer {
         self.ensure_vertex_room(3);
         self.vertices.extend_from_slice(&[v0, v1, v2]);
         self.ensure_vertex_room(3);
-        self.vertices.extend_from_slice(&[v0, v1, v2]);
+        self.vertices.extend_from_slice(&[v3, v4, v5]);
     }
 
     pub fn draw_line(
@@ -665,76 +737,34 @@ impl ComputeRenderer {
         vs[3].y += ctx.drawing_y_offset as i32;
 
         // bounding box
-        // FIXME: culling should apply individually to each triangle
-        let min_x = cmp::min(cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x)), vs[3].x);
-        let max_x = cmp::max(cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x)), vs[3].x);
-        let min_y = cmp::min(cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y)), vs[3].y);
-        let max_y = cmp::max(cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y)), vs[3].y);
-
-        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
-        else {
-            return;
-        };
-        self.prepare_draw(semi_trans, min_x, min_y, max_x, max_y);
-
-        // self.dirty_region
-        //     .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
-
-        // self.ensure_vertex_room(6);
-        // let c1 = Colour {
-        //     r: 255,
-        //     b: 255,
-        //     g: 255,
-        //     m: 0,
-        // };
-        // // cw
-        // let vs = [
-        //     Vertex { x: 36, y: 36 },
-        //     Vertex { x: 150, y: 86 },
-        //     Vertex { x: 72, y: 136 },
-        // ];
-        // self.render_triangle(
-        //     &[c1; 3],
-        //     clut,
-        //     page,
-        //     &vs,
-        //     &uv[0..3],
-        //     textured,
-        //     semi_trans,
-        //     blend,
-        //     ctx,
-        // );
-        //
-        // // ccw
-        // let c1 = Colour {
-        //     r: 0,
-        //     b: 0,
-        //     g: 255,
-        //     m: 0,
-        // };
-        // let vs = [
-        //     Vertex { x: 250, y: 180 },
-        //     Vertex { x: 190, y: 120 },
-        //     Vertex { x: 225, y: 236 },
-        // ];
-        // self.render_triangle(
-        //     &[c1; 3],
-        //     clut,
-        //     page,
-        //     &vs,
-        //     &uv[0..3],
-        //     textured,
-        //     semi_trans,
-        //     blend,
-        //     ctx,
-        // );
-        self.ensure_vertex_room(3);
-        self.render_triangle(&colors[0..3], clut, page, &vs[0..3], &uv[0..3], textured, semi_trans, blend, ctx);
+        // self.prepare_draw(semi_trans, min_x, min_y, max_x, max_y);
 
         if !is_triangle {
-           self.ensure_vertex_room(3);
-           self.render_triangle(&colors[1..4], clut, page, &vs[1..4], &uv[1..4], textured, semi_trans, blend, ctx);
+            self.ensure_vertex_room(3);
+            self.render_triangle(
+                &colors[1..4],
+                clut,
+                page,
+                &vs[1..4],
+                &uv[1..4],
+                textured,
+                semi_trans,
+                blend,
+                ctx,
+            );
         }
+        self.ensure_vertex_room(3);
+        self.render_triangle(
+            &colors[0..3],
+            clut,
+            page,
+            &vs[0..3],
+            &uv[0..3],
+            textured,
+            semi_trans,
+            blend,
+            ctx,
+        );
     }
 
     pub fn render_triangle(
@@ -749,6 +779,15 @@ impl ComputeRenderer {
         blend: bool,
         ctx: &RenderingContext,
     ) {
+        let min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
+        let max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
+        let min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
+        let max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
+
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
+        else {
+            return;
+        };
         let clut = Clut::new(clut);
         let texture = Texture::new(page, clut);
         let texture_depth = match texture.depth {
@@ -767,7 +806,7 @@ impl ComputeRenderer {
         flags.set_transparency(texture.semi_transparency);
 
         let v0 = (Vert {
-            position: [vs[0].x as u16, vs[0].y as u16],
+            position: [vs[0].x as i16, vs[0].y as i16],
             color: [colors[0].r, colors[0].g, colors[0].b],
             texture_depth,
             uv: uv[0],
@@ -779,7 +818,7 @@ impl ComputeRenderer {
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
         });
         let v1 = (Vert {
-            position: [vs[1].x as u16, vs[1].y as u16],
+            position: [vs[1].x as i16, vs[1].y as i16],
             color: [colors[1].r, colors[1].g, colors[1].b],
             texture_depth,
             uv: uv[1],
@@ -791,7 +830,7 @@ impl ComputeRenderer {
             // _pad: 0,
         });
         let v2 = (Vert {
-            position: [vs[2].x as u16, vs[2].y as u16],
+            position: [vs[2].x as i16, vs[2].y as i16],
             color: [colors[2].r, colors[2].g, colors[2].b],
             texture_depth,
             uv: uv[2],
@@ -861,7 +900,7 @@ impl ComputeRenderer {
         // }
 
         let v0 = (Vert {
-            position: [v.x as u16, v.y as u16],
+            position: [v.x as i16, v.y as i16],
             uv,
             color: [color.r, color.g, color.b],
             texture_depth,
@@ -873,7 +912,7 @@ impl ComputeRenderer {
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
         });
         let v1 = (Vert {
-            position: [v.x as u16, v.y as u16 + side.y as u16],
+            position: [v.x as i16, v.y as i16 + side.y as i16],
             uv: [uv[0], (uv[1] + tex_size_y)],
             color: [color.r, color.g, color.b],
             texture_depth,
@@ -884,7 +923,7 @@ impl ComputeRenderer {
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
         });
         let v2 = (Vert {
-            position: [v.x as u16 + side.x as u16, v.y as u16 + side.y as u16],
+            position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
             uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
             color: [color.r, color.g, color.b],
             texture_depth,
@@ -897,7 +936,7 @@ impl ComputeRenderer {
         });
 
         let v3 = (Vert {
-            position: [v.x as u16 + side.x as u16, v.y as u16 + side.y as u16],
+            position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
             uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
             color: [color.r, color.g, color.b],
             texture_depth,
@@ -909,7 +948,7 @@ impl ComputeRenderer {
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
         });
         let v4 = (Vert {
-            position: [v.x as u16 + side.x as u16, v.y as u16],
+            position: [v.x as i16 + side.x as i16, v.y as i16],
             uv: [(uv[0] + tex_size_x), uv[1]],
             color: [color.r, color.g, color.b],
             texture_depth,
@@ -921,7 +960,7 @@ impl ComputeRenderer {
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
         });
         let v5 = (Vert {
-            position: [v.x as u16, v.y as u16],
+            position: [v.x as i16, v.y as i16],
             uv: [uv[0], uv[1]],
             color: [color.r, color.g, color.b],
             texture_depth,
@@ -1076,6 +1115,45 @@ impl ComputeRenderer {
     //     self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
     // }
 
+    pub fn print_profiling_results(&self, res: Option<Vec<GpuTimerQueryResult>>) {
+        print!("\x1B[2J\x1B[1;1H"); // Clear terminal and put cursor to first row first column
+        println!("Welcome to wgpu_profiler demo!");
+        println!();
+        // println!("Enabled device features: {enabled_features:?}");
+        // println!();
+        match res {
+            Some( results) => {
+                let mut results: Vec<_> = results.iter().filter(|x| x.time.is_some()).collect();
+                results.sort_by(|x, y| x.label.cmp(&y.label));
+                let iter = results.chunk_by(|x, y| x.label.eq(&y.label));
+                for xs in iter {
+
+                    let label = xs[0].label.clone();
+                    let ys: Vec<f64> = xs.iter().map(|x| ((x.time.clone().unwrap().end - x.time.clone().unwrap().start) * 1000.0 * 1000.0)).collect(); // TODO: think smth better
+                    let min = ys.iter().min_by(|a, b| a.total_cmp(b)).unwrap();
+                    let max = ys.iter().max_by(|a, b| a.total_cmp(b)).unwrap();
+                    let avg = ys.iter().sum::<f64>() / ys.len() as f64;
+                    let total = ys.iter().sum::<f64>();
+
+                    println!("min: {:.3}μs, max: {:.3}μs, avg: {:.3}μs, total: {:.3}μs  - {} ",
+                        min, max, avg, total, label);
+
+                    // if let Some(time) = &scope.time {
+                    //     println!(
+                    //         "{:.3}μs - {}",
+                    //         (time.end - time.start) * 1000.0 * 1000.0,
+                    //         scope.label
+                    //     );
+                    // } else {
+                    //     println!("n/a - {}", scope.label);
+                    // }
+                }
+                println!("invocations: {}", results.len() / 3);
+            }
+            None => println!("No profiling results available yet!"),
+        }
+    }
+
     pub fn render_fb(
         &mut self,
         _framebuffer: &Mutex<Vec<u32>>,
@@ -1085,9 +1163,24 @@ impl ComputeRenderer {
         // here is a good place to copy our render texture to vram texture...
 
         self.flush();
-        // self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).expect("ok");
         self.sync_vram();
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("ok");
+
+        self.profiler.end_frame().unwrap();
+        let results = self
+            .profiler
+            .process_finished_frame(self.queue.get_timestamp_period());
+        if self.frame_num == 60 {
+           self.print_profiling_results(results);
+           self.frame_num = 0;
+        }
         // self.sync_readback_buffer(0, 0, 1024, 512);
+        self.frame_num += 1;
 
         if full_ram {
             (1024, 512, 0, 0, ctx.display_depth)
@@ -1382,13 +1475,13 @@ impl DirtyRegion {
     }
 }
 fn ensure_vertex_order(v0: Vert, v1: Vert, v2: Vert) -> (Vert, Vert, Vert) {
+    let cross_product_z = ((v2.position[0] - v0.position[0]) * (v1.position[1] - v0.position[1])
+        - (v1.position[0] - v0.position[0]) * (v2.position[1] - v0.position[1]));
+
     // let cross_product_z =
-    //     (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
-    // (v1, v0, v2)
-    let cross_product_z =
-        (v1.position[0] as i32 - v0.position[0] as i32) * (v2.position[1] as i32 - v0.position[1] as i32) - (v1.position[1] as i32 - v0.position[1] as i32) * (v2.position[0] as i32 - v0.position[0] as i32);
+    //     (v1.position[0] as i32 - v0.position[0] as i32) * (v2.position[1] as i32 - v0.position[1] as i32) - (v1.position[1] as i32 - v0.position[1] as i32) * (v2.position[0] as i32 - v0.position[0] as i32);
     if cross_product_z < 0 {
-       (v0, v1, v2)
+        (v0, v1, v2)
     } else {
         (v1, v0, v2)
     }

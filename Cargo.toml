@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 winit = { version = "*" }
 wgpu = "*"
+wgpu-profiler = "*"
 anyhow = "*"
 vek = "*"
 bytemuck = {version = "*", features = [ "derive" ] }

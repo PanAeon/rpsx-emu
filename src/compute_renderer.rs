@@ -120,6 +120,14 @@ fn create_draw_pipeline(
         mapped_at_creation: false,
     });
 
+    let derivatives_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("derivatives_buffer"),
+        size: (3 * 64 * 6 * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+
     let uniforms_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniforms_buffer"),
         size: (size_of::<Uniforms>()) as u64,
@@ -171,6 +179,16 @@ fn create_draw_pipeline(
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -208,6 +226,10 @@ fn create_draw_pipeline(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: bins_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: derivatives_buffer.as_entire_binding(),
             },
         ],
     });
@@ -528,33 +550,33 @@ impl ComputeRenderer {
                 // rpass.draw(0..self.vertices.len() as u32, 0..1);
             }
             
-            let mut clear_encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("clear_encoder"),
-                });
-            {
-                let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
-
-                clear_scope.clear_buffer(&self.bins_buffer, 0, None);
-            
-                // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                //     label: Some("clear"),
-                //     timestamp_writes: None,
-                // });
-                // clear_pass.set_pipeline(&self.clear_pipeline);
-                //
-                // clear_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-                // // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                // clear_pass.dispatch_workgroups(16, 8, 1);
-                // rpass.draw(0..self.vertices.len() as u32, 0..1);
-            }
+            // let mut clear_encoder = self
+            //     .device
+            //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            //         label: Some("clear_encoder"),
+            //     });
+            // {
+            //     let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
+            //
+            //     clear_scope.clear_buffer(&self.bins_buffer, 0, None);
+            // 
+            //     // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     //     label: Some("clear"),
+            //     //     timestamp_writes: None,
+            //     // });
+            //     // clear_pass.set_pipeline(&self.clear_pipeline);
+            //     //
+            //     // clear_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+            //     // // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+            //     // clear_pass.dispatch_workgroups(16, 8, 1);
+            //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
+            // }
             
             self.profiler.resolve_queries(&mut render_encoder);
             self.profiler.resolve_queries(&mut bin_encoder);
-            self.profiler.resolve_queries(&mut clear_encoder);
+            // self.profiler.resolve_queries(&mut clear_encoder);
             let idx = self.queue.submit(vec![
-                clear_encoder.finish(),
+                // clear_encoder.finish(),
                 bin_encoder.finish(),
                 render_encoder.finish(),
             ]);
@@ -597,7 +619,7 @@ impl ComputeRenderer {
         Some((x0.max(l), y0.max(t), x1.min(r), y1.min(b)))
     }
 
-    //  need to use texture copy for this.. ??
+    //  TODO: need to use texture copy for this...
     pub fn fill_rect(&mut self, v: Vertex, side: Vertex, color: Colour) {
         let Vertex {
             x: width,
@@ -1148,7 +1170,7 @@ impl ComputeRenderer {
                     //     println!("n/a - {}", scope.label);
                     // }
                 }
-                println!("invocations: {}", results.len() / 3);
+                println!("invocations: {}", results.len() / 2);
             }
             None => println!("No profiling results available yet!"),
         }

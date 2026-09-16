@@ -1395,7 +1395,7 @@ pub struct Vertex {
     pub x: i32,
     pub y: i32,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Colour {
     pub r: u8,
     pub g: u8,

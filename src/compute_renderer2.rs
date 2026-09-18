@@ -65,193 +65,23 @@ bitfield::bitfield! {
     _, set_preserve_masked_pixels: 7;
 }
 
-fn create_draw_pipeline(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    display_format: wgpu::TextureFormat,
-) -> (
-    wgpu::ComputePipeline,
-    wgpu::ComputePipeline,
-    wgpu::ComputePipeline,
-    wgpu::Texture,
-    wgpu::Buffer,
-    wgpu::Buffer,
-    wgpu::Buffer,
-    wgpu::BindGroup,
-) {
-    let vram_texture = device.create_texture(&wgpu::TextureDescriptor {
-        size: wgpu::Extent3d {
-            width: 1024,
-            height: 512,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1, // We'll talk about this a little later
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R32Uint,
-        // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
-        // COPY_DST means that we want to copy data to this texture
-        usage: wgpu::TextureUsages::STORAGE_BINDING
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::COPY_SRC,
-        // | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        // | wgpu::TextureUsages::TEXTURE_BINDING,
-        // | wgpu::TextureUsages::STORAGE_BINDING,
-        label: Some("vram texture"),
-        view_formats: &[wgpu::TextureFormat::R32Uint],
-    });
-
-    let bins_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("bins_buffer"),
-        size: (3*128 * 64 * 128 * 4) as u64, // 12Mb
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let vram_texture_view = vram_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-    let shader_source = Cow::Borrowed(include_str!("compute.wgsl"));
-    let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("render shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source),
-    });
-
-    let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("vertex_buffer"),
-        size: (VERT_BUFFER_SIZE * size_of::<Vert>()) as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    // let derivatives_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-    //     label: Some("derivatives_buffer"),
-    //     size: (3 * 64 * 10 * 4) as u64,
-    //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    //     mapped_at_creation: false,
-    // });
-
-
-    let uniforms_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("uniforms_buffer"),
-        size: (size_of::<Uniforms>()) as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let compute_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("compute_bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadWrite,
-                        format: wgpu::TextureFormat::R32Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("compute_pipeline_layout"),
-        bind_group_layouts: &[Some(&compute_bind_group_layout)],
-        immediate_size: 0,
-        // push_constant_ranges: &[],
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("compute pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader_module,
-        entry_point: Some("main"),
-        compilation_options: Default::default(), // constants, which is cool...
-        cache: None,
-    });
-
-    let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("compute bind_group"),
-        layout: &compute_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&vram_texture_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: vertex_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: uniforms_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: bins_buffer.as_entire_binding(),
-            },
-        ],
-    });
-
-    let bins_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("merge pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader_module,
-        entry_point: Some("bin"),
-        compilation_options: Default::default(), // constants, which is cool...
-        cache: None,
-    });
-
-    let fill_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("clear pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader_module,
-        entry_point: Some("quick_fill"),
-        compilation_options: Default::default(), // constants, which is cool...
-        cache: None,
-    });
-
-    (
-        pipeline,
-        bins_pipeline,
-        fill_pipeline,
-        vram_texture,
-        vertex_buffer,
-        uniforms_buffer,
-        bins_buffer,
-        compute_bind_group,
-    )
-}
+// fn create_draw_pipeline(
+//     device: &wgpu::Device,
+//     queue: &wgpu::Queue,
+//     display_format: wgpu::TextureFormat,
+// ) -> (
+//     wgpu::ComputePipeline,
+//     wgpu::ComputePipeline,
+//     wgpu::ComputePipeline,
+//     wgpu::ComputePipeline,
+//     wgpu::Texture,
+//     wgpu::Buffer,
+//     wgpu::Buffer,
+//     wgpu::Buffer,
+//     wgpu::BindGroup,
+//     wgpu::BindGroup,
+// ) {
+// }
 
 pub struct ComputeRenderer {
     device: wgpu::Device,
@@ -259,6 +89,8 @@ pub struct ComputeRenderer {
     draw_pipeline: wgpu::ComputePipeline,
     bins_pipeline: wgpu::ComputePipeline,
     fill_pipeline: wgpu::ComputePipeline,
+    pixels_pipeline: wgpu::ComputePipeline,
+    consolidate_pipeline: wgpu::ComputePipeline,
     render_texture: wgpu::Texture,
     vram_texture: wgpu::Texture,
     vertex_buffer: wgpu::Buffer,
@@ -269,8 +101,10 @@ pub struct ComputeRenderer {
     // render_view: wgpu::TextureView,
     drawing_area_top_left: (u16, u16),
     drawing_area_bottom_right: (u16, u16),
+    dirty_region: DirtyRegion,
     profiler: GpuProfiler,
     frame_num: usize,
+    bin_bind_group: wgpu::BindGroup,
     results: Option<Vec<GpuTimerQueryResult>>,
     // blit_texture: wgpu::Texture,
     // vram_blit_texture: wgpu::Texture,
@@ -291,17 +125,287 @@ impl ComputeRenderer {
         let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(1024);
         let (to_renderer_sender, receiver) = crossbeam::channel::bounded(1024);
 
-        let (
-            draw_pipeline,
-            bins_pipeline,
-            fill_pipeline,
-            vram_texture,
-            vertex_buffer,
-            uniforms_buffer,
-            bins_buffer,
-            compute_bind_group,
-        ) = create_draw_pipeline(&device, &queue, display_format);
         // let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let vram_texture = device.create_texture(&wgpu::TextureDescriptor {
+            size: wgpu::Extent3d {
+                width: 1024,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1, // We'll talk about this a little later
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
+            // COPY_DST means that we want to copy data to this texture
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            // | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // | wgpu::TextureUsages::TEXTURE_BINDING,
+            // | wgpu::TextureUsages::STORAGE_BINDING,
+            label: Some("vram texture"),
+            view_formats: &[wgpu::TextureFormat::R32Uint],
+        });
+
+        let bins_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bins_buffer"),
+            size: (64 * 32 * 64 * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let vram_texture_view = vram_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let shader_source = Cow::Borrowed(include_str!("compute.wgsl"));
+        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("render shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source),
+        });
+        let shader_source = Cow::Borrowed(include_str!("bin.wgsl"));
+        let bin_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("bin shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source),
+        });
+
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vertex_buffer"),
+            size: (VERT_BUFFER_SIZE * size_of::<Vert>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let derivatives_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("derivatives_buffer"),
+            size: (32 * 64 * ( 2*128) * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bin_indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bin_indices_buffer"),
+            size: (4 * 64 * 128) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let uniforms_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("uniforms_buffer"),
+            size: (size_of::<Uniforms>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("compute_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadWrite,
+                            format: wgpu::TextureFormat::R32Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let bin_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("bin_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // wgpu::BindGroupLayoutEntry {
+                    //     binding: 2,
+                    //     visibility: wgpu::ShaderStages::COMPUTE,
+                    //     ty: wgpu::BindingType::Buffer {
+                    //         ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    //         has_dynamic_offset: false,
+                    //         min_binding_size: None,
+                    //     },
+                    //     count: None,
+                    // },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("compute_pipeline_layout"),
+            bind_group_layouts: &[Some(&compute_bind_group_layout)],
+            immediate_size: 0,
+            // push_constant_ranges: &[],
+        });
+        let bin_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("bin_pipeline_layout"),
+            bind_group_layouts: &[Some(&bin_bind_group_layout)],
+            immediate_size: 0,
+            // push_constant_ranges: &[],
+        });
+        let draw_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("compute pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(), // constants, which is cool...
+            cache: None,
+        });
+
+        let pixels_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("pixels pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("draw_pixels"),
+            compilation_options: Default::default(), // constants, which is cool...
+            cache: None,
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compute bind_group"),
+            layout: &compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&vram_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniforms_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: bins_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: derivatives_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let bin_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bin_bind_group"),
+            layout: &bin_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: uniforms_buffer.as_entire_binding(),
+                },
+                // wgpu::BindGroupEntry {
+                //     binding: 2,
+                //     resource: bin_indices_buffer.as_entire_binding(),
+                // },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: bins_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let bins_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("bins pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("bin"),
+            compilation_options: Default::default(), // constants, which is cool...
+            cache: None,
+        });
+
+        let consolidate_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("consolidate pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader_module,
+                entry_point: Some("consolidate"),
+                compilation_options: Default::default(), // constants, which is cool...
+                cache: None,
+            });
+
+        let fill_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("clear pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("quick_fill"),
+            compilation_options: Default::default(), // constants, which is cool...
+            cache: None,
+        });
 
         let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default()).unwrap();
 
@@ -312,20 +416,24 @@ impl ComputeRenderer {
                 draw_pipeline,
                 bins_pipeline,
                 fill_pipeline,
+                consolidate_pipeline,
+                pixels_pipeline,
                 render_texture,
                 vram_texture,
                 vertex_buffer,
                 uniforms_buffer,
                 bins_buffer,
                 compute_bind_group,
+                bin_bind_group,
                 // merge_bind_group,
                 vertices: vec![],
                 // render_view,
                 drawing_area_top_left: (0, 0),
                 drawing_area_bottom_right: (0, 0),
+                dirty_region: DirtyRegion::empty(),
                 profiler,
                 frame_num: 0,
-                results: None,
+                results: None
             };
             let core_ids = core_affinity::get_core_ids().unwrap();
             let res = core_affinity::set_for_current(core_ids[1]);
@@ -397,8 +505,7 @@ impl ComputeRenderer {
                             ctx,
                         );
                     }
-                    RendererMsg::FillRect { v, side, c, ctx } => 
-                       renderer.fill_rect(*v, *side, *c),
+                    RendererMsg::FillRect { v, side, c, ctx } => renderer.fill_rect(*v, *side, *c),
                     RendererMsg::Vram2VramBlit { src, dst, size } => {
                         renderer.vram2vram_blit(*src, *dst, *size)
                     }
@@ -455,21 +562,23 @@ impl ComputeRenderer {
         // self.render_triangle(&[c1;4], 0, 0, vs, uv, false, false, false, ctx);
         // }
         if !self.vertices.is_empty() {
+            // now we need to partition vertices into bins;
+            // ok, now, static, 8x8px 64*32 bins...
             {
-                 let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
-                let mut width_bin_x = width / 128;
-                if width_bin_x * 128 < width {
-                    width_bin_x += 1;
-                }
+                // let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0;
+                let width_bin_x = 8;
+                // if width_bin_x * 64 < width {
+                //     width_bin_x += 1;
+                // }
 
-                 let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1 + 1;
-                let mut width_bin_y = height / 64;
-                if  width_bin_y * 64 < (height) {
-                    width_bin_y += 1;
-                }
+                // let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1;
+                let  width_bin_y = 8;
+                // if width_bin_y * 32 < (height) {
+                //     width_bin_y += 1;
+                // }
 
-                let mut bin_sizes = [0u32; 128 * 64];
-                let mut indices = [0u32; 128 * 64];
+                let mut bin_sizes = [0u32; 32 * 64];
+                let mut indices = [0u32; 32 * 64];
                 for (_, vs) in self.vertices.chunks_exact(3).enumerate() {
                     let min_x = cmp::max(0,cmp::min(
                         vs[0].position[0],
@@ -494,14 +603,14 @@ impl ComputeRenderer {
                         )),
                     );
 
-                    let start_bin_x = min(127, (min_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
-                    let end_bin_x = min(127,(max_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
-                    let start_bin_y = min(63, (min_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
-                    let end_bin_y =min(63, (max_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
+                    let start_bin_x = min(63, (min_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
+                    let end_bin_x = min(63,(max_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
+                    let start_bin_y = min(31, (min_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
+                    let end_bin_y =min(31, (max_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
 
                     for y in start_bin_y..=end_bin_y {
                         for x in start_bin_x..=end_bin_x {
-                            bin_sizes[(y*128 + x) as usize] += 1;
+                            bin_sizes[(y*64 + x) as usize] += 1;
                             // let bin_idx = bin_indices[y * 128 + x];
                             // bins[64 * (y * 128 + x) + bin_idx] = 3 * i as u32;
                             // bin_indices[y * 128 + x] += 1;
@@ -542,17 +651,18 @@ impl ComputeRenderer {
                         )),
                     );
 
-                    let start_bin_x = min(127, (min_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
-                    let end_bin_x = min(127,(max_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
-                    let start_bin_y = min(63, (min_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
-                    let end_bin_y =min(63,(max_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
+                    let start_bin_x = min(63, (min_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
+                    let end_bin_x = min(63,(max_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
+                    let start_bin_y = min(31, (min_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
+                    let end_bin_y =min(31,(max_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
 
                     for y in start_bin_y..=end_bin_y {
                         for x in start_bin_x..=end_bin_x {
-                            let bin_idx = indices[(y * 128 + x) as usize];
-                            let start = offsets[(y*128 + x) as usize];
+                            bin_sizes[(y*64 + x) as usize] += 1;
+                            let bin_idx = indices[(y * 64 + x) as usize];
+                            let start = offsets[(y*64 + x) as usize];
                             bins[(start + bin_idx) as usize] = 3 * i as u32;
-                            indices[(y * 128 + x) as usize] += 1;
+                            indices[(y * 64 + x) as usize] += 1;
                         }
                     }
                 }
@@ -566,33 +676,6 @@ impl ComputeRenderer {
                 self.queue
                     .write_buffer(&self.bins_buffer, 0, bytemuck::cast_slice(&result[..]));
             }
-            // now we need to partition vertices into bins;
-            // let mut bins = vec![0xFFFFu32;64*64*128].into_boxed_slice();//Box::new([0xFFFFu32;64*64*128]);
-            // let mut bin_indices = [0;64*128];
-            // for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
-            //     let min_x = cmp::min(vs[0].position[0], cmp::min(vs[1].position[0], vs[2].position[0]));
-            //     let max_x = cmp::min(1023,cmp::max(vs[0].position[0], cmp::max(vs[1].position[0], vs[2].position[0])));
-            //     let min_y =  cmp::min(vs[0].position[1], cmp::min(vs[1].position[1], vs[2].position[1]));
-            //     let max_y = cmp::min( 511, (cmp::max(vs[0].position[1], cmp::max(vs[1].position[1], vs[2].position[1]))));
-            //
-            //
-            //
-            //     let start_bin_x = min_x as usize / 8;
-            //     let end_bin_x = max_x as usize / 8;
-            //     let start_bin_y = min_y as usize / 8;
-            //     let end_bin_y = max_y as usize / 8;
-            //
-            //     for y in start_bin_y..=end_bin_y {
-            //         for x in start_bin_x..=end_bin_x {
-            //             let bin_idx = bin_indices[y*128+x];
-            //             bins[64*(y*128 + x) + bin_idx] = 3 * i as u32;
-            //             bin_indices[y*128+x] += 1;
-            //         }
-            //     }
-            // }
-            //
-            // self.queue
-            //     .write_buffer(&self.bins_buffer, 0, bytemuck::cast_slice(&bins[..]));
             self.queue.write_buffer(
                 &self.uniforms_buffer,
                 0,
@@ -611,35 +694,36 @@ impl ComputeRenderer {
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
             // TODO: upload uniforms...
 
-            let mut render_encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("render_encoder"),
-                });
+            let mut render_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("render_encoder"),
+                    });
             {
-            let mut render_scope  = self.profiler.scope("render", &mut render_encoder);
-            
-                let mut render_pass = render_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("compute pass"),
-                    timestamp_writes: None,
-                });
+                let mut render_scope = self.profiler.scope("render", &mut render_encoder);
+
+                let mut render_pass =
+                    render_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("compute pass"),
+                        timestamp_writes: None,
+                    });
                 render_pass.set_pipeline(&self.draw_pipeline);
 
                 render_pass.set_bind_group(0, &self.compute_bind_group, &[]);
                 // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                render_pass.dispatch_workgroups(16, 8, 1);
+                render_pass.dispatch_workgroups(8, 4, 1);
                 // rpass.draw(0..self.vertices.len() as u32, 0..1);
             }
-            
-            // let mut bin_encoder = self
-            //     .device
-            //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    // label: Some("bin_encoder"),
-                // });
 
+            // let mut bin_encoder =
+            //     self.device
+            //         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            //             label: Some("bin_encoder"),
+            //         });
+            //
             // {
-            // let mut bin_scope = self.profiler.scope("bin", &mut bin_encoder);
-            // 
+            //     let mut bin_scope = self.profiler.scope("bin", &mut bin_encoder);
+            //
             //     let mut bin_pass = bin_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
             //         label: Some("bins pass"),
             //         timestamp_writes: None,
@@ -647,11 +731,69 @@ impl ComputeRenderer {
             //     bin_pass.set_pipeline(&self.bins_pipeline);
             //
             //     bin_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+            //     // bin_pass.set_bind_group(0, &self.bin_bind_group, &[]);
             //     // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-            //     bin_pass.dispatch_workgroups(4, 4, 1);
+            //     bin_pass.dispatch_workgroups(2, 2, 1);
             //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
             // }
-            
+            let mut draw_pixels_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("draw pixels"),
+                    });
+
+            {
+                let mut pixels_scope = self.profiler.scope("pixels", &mut draw_pixels_encoder);
+
+                let mut pixels_pass =
+                    pixels_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("draw pixels pass"),
+                        timestamp_writes: None,
+                    });
+                pixels_pass.set_pipeline(&self.pixels_pipeline);
+
+                pixels_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+                // bin_pass.set_bind_group(0, &self.bin_bind_group, &[]);
+                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+
+                let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0;
+                let mut width_bin_x = (width) / 8;
+                if width_bin_x * 8 < width {
+                    width_bin_x += 1;
+                }
+                width_bin_x = min(64, width_bin_x);
+
+                let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1;
+                let mut width_bin_y = (height) / 8;
+                if width_bin_y * 8 < (height) {
+                    width_bin_y += 1;
+                }
+                width_bin_y = min(27, width_bin_y);
+                pixels_pass.dispatch_workgroups(width_bin_x as u32, width_bin_y as u32, 1);
+                // rpass.draw(0..self.vertices.len() as u32, 0..1);
+            }
+
+            //     let mut consolidate_encoder = self
+            //         .device
+            //         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            //             label: Some("consolidate_encoder"),
+            //         });
+            //     {
+            //     let mut consolidate_scope = self.profiler.scope("consolidate", &mut consolidate_encoder);
+            //
+            //         let mut bin_pass = consolidate_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //             label: Some("consolidate pass"),
+            //             timestamp_writes: None,
+            //         });
+            //         bin_pass.set_pipeline(&self.consolidate_pipeline);
+            //
+            //         bin_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+            //         // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+            //         bin_pass.dispatch_workgroups(16, 8, 1);
+            //
+            //         // rpass.draw(0..self.vertices.len() as u32, 0..1);
+            //     }
+
             // let mut clear_encoder = self
             //     .device
             //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -661,7 +803,7 @@ impl ComputeRenderer {
             //     let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
             //
             //     clear_scope.clear_buffer(&self.bins_buffer, 0, None);
-            // 
+            //
             //     // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
             //     //     label: Some("clear"),
             //     //     timestamp_writes: None,
@@ -673,14 +815,18 @@ impl ComputeRenderer {
             //     // clear_pass.dispatch_workgroups(16, 8, 1);
             //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
             // }
-            
+
             self.profiler.resolve_queries(&mut render_encoder);
             // self.profiler.resolve_queries(&mut bin_encoder);
+            self.profiler.resolve_queries(&mut draw_pixels_encoder);
+            // self.profiler.resolve_queries(&mut consolidate_encoder);
             // self.profiler.resolve_queries(&mut clear_encoder);
             let idx = self.queue.submit(vec![
                 // clear_encoder.finish(),
                 // bin_encoder.finish(),
+                // consolidate_encoder.finish(),
                 render_encoder.finish(),
+                draw_pixels_encoder.finish(),
             ]);
 
             // TODO: do we need sync here?
@@ -732,7 +878,11 @@ impl ComputeRenderer {
         let max_x = (v.x + width).min(0x400);
         let max_y = (v.y + height).min(0x200);
 
-        self.quick_fill((min_x as u16, min_y as u16), (max_x as u16, max_y as u16), color);
+        self.quick_fill(
+            (min_x as u16, min_y as u16),
+            (max_x as u16, max_y as u16),
+            color,
+        );
     }
 
     pub fn draw_line(
@@ -914,6 +1064,9 @@ impl ComputeRenderer {
         // let side = Vertex {x: side.x , y: side.y - 1};
         //
 
+        // self.prepare_draw(semi_trans, min_x, min_y, max_x, max_y);
+        // self.dirty_region
+        //     .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
 
         let mut flags = Flags(0);
         flags.set_textured(textured);
@@ -935,9 +1088,8 @@ impl ComputeRenderer {
             TextureDepth::T15Bit => 2,
         };
 
-        // let side = Vertex{x: side.x - 1, y:side.y - 1};
-        let tex_size_x = (side.x) as u16;
-        let tex_size_y = (side.y) as u16;
+        let tex_size_x = (side.x) as u16 - 1;
+        let tex_size_y = (side.y) as u16 - 1;
 
         // if textured {
         //    println!("render textured rectangle, uv: {}x{}, size: {}x{}, depth: {}", uv[0], uv[1], side.x, side.y, texture_depth);
@@ -1015,14 +1167,12 @@ impl ComputeRenderer {
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
         });
-        let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
-        let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
+        // let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
+        // let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
         self.ensure_vertex_room(3);
-        self.vertices.extend_from_slice(&[v0, v1, v2]);
-        // self.vertices.extend_from_slice(&[v2, v1, v0]);
+        self.vertices.extend_from_slice(&[v2, v1, v0]);
         self.ensure_vertex_room(3);
-        self.vertices.extend_from_slice(&[v3, v4, v5]);
-        // self.vertices.extend_from_slice(&[v4, v3, v5]);
+        self.vertices.extend_from_slice(&[v4, v3, v5]);
     }
 
     // TODO: The transfer is affected by Mask setting.
@@ -1093,6 +1243,24 @@ impl ComputeRenderer {
         let idx = self.queue.submit(vec![encoder.finish()]);
     }
 
+    // TODO: calculate dirty region and sync only it
+    pub fn prepare_draw(
+        &mut self,
+        semi_transparent: bool,
+        sx: i32,
+        sy: i32,
+        end_x: i32,
+        end_y: i32,
+    ) {
+        if semi_transparent {
+            if self.dirty_region.intersects(sx, sy, end_x, end_y) {
+                // self.flush();
+                // self.sync_readback_buffer(sx as u32, sy as u32, end_x as u32, end_y as u32);
+                // self.dirty_region.clear();
+            } else {
+            }
+        }
+    }
 
     pub fn sync_vram(&mut self) {
         //
@@ -1145,26 +1313,34 @@ impl ComputeRenderer {
 
     pub fn print_profiling_results(&self) {
         print!("\x1B[2J\x1B[1;1H"); // Clear terminal and put cursor to first row first column
-        println!("Welcome to wgpu_profiler demo!");
+        println!("... metrics ...");
         println!();
         // println!("Enabled device features: {enabled_features:?}");
         // println!();
         match &self.results {
-            Some( results) => {
+            Some(results) => {
                 let mut results: Vec<_> = results.iter().filter(|x| x.time.is_some()).collect();
                 results.sort_by(|x, y| x.label.cmp(&y.label));
                 let iter = results.chunk_by(|x, y| x.label.eq(&y.label));
                 for xs in iter {
-
                     let label = xs[0].label.clone();
-                    let ys: Vec<f64> = xs.iter().map(|x| ((x.time.clone().unwrap().end - x.time.clone().unwrap().start) * 1000.0 * 1000.0)).collect(); // TODO: think smth better
+                    let ys: Vec<f64> = xs
+                        .iter()
+                        .map(|x| {
+                            ((x.time.clone().unwrap().end - x.time.clone().unwrap().start)
+                                * 1000.0
+                                * 1000.0)
+                        })
+                        .collect(); // TODO: think smth better
                     let min = ys.iter().min_by(|a, b| a.total_cmp(b)).unwrap();
                     let max = ys.iter().max_by(|a, b| a.total_cmp(b)).unwrap();
                     let avg = ys.iter().sum::<f64>() / ys.len() as f64;
                     let total = ys.iter().sum::<f64>();
 
-                    println!("min: {:.3}μs, max: {:.3}μs, avg: {:.3}μs, total: {:.3}μs  - {} ",
-                        min, max, avg, total, label);
+                    println!(
+                        "min: {:.3}μs, max: {:.3}μs, avg: {:.3}μs, total: {:.3}μs  - {} ",
+                        min, max, avg, total, label
+                    );
 
                     // if let Some(time) = &scope.time {
                     //     println!(
@@ -1176,16 +1352,16 @@ impl ComputeRenderer {
                     //     println!("n/a - {}", scope.label);
                     // }
                 }
-                println!("invocations: {}", results.len());
+                println!("invocations: {}", results.len() / 2);
                 let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0;
-                let mut width_bin_x = (width) / 128;
-                if width_bin_x * 128 < width {
+                let mut width_bin_x = (width) / 64;
+                if width_bin_x * 64 < width {
                     width_bin_x += 1;
                 }
 
                 let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1;
-                let mut width_bin_y = (height) / 64;
-                if width_bin_y * 64 < (height) {
+                let mut width_bin_y = (height) / 32;
+                if width_bin_y * 32 < (height) {
                     width_bin_y += 1;
                 }
                 println!("bin: {}x{}", width_bin_x, width_bin_y);
@@ -1226,11 +1402,10 @@ impl ComputeRenderer {
         let results = self
             .profiler
             .process_finished_frame(self.queue.get_timestamp_period());
-
         self.update_results(results);
         if self.frame_num == 60 {
-           self.print_profiling_results();
-           self.frame_num = 0;
+            self.print_profiling_results();
+            self.frame_num = 0;
         }
         // self.sync_readback_buffer(0, 0, 1024, 512);
         self.frame_num += 1;
@@ -1322,83 +1497,76 @@ impl ComputeRenderer {
         // }
     }
 
-
-    pub fn quick_fill(
-        &mut self,
-        top_left: (u16, u16),
-        bottom_right: (u16, u16),
-        color: Colour,
-    ) {
+    pub fn quick_fill(&mut self, top_left: (u16, u16), bottom_right: (u16, u16), color: Colour) {
         let c = color.to_le_bytes();
         let c: u16 = u16::from_le_bytes(c);
         self.flush();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("quick_fill_encoder"),
+            });
         self.queue.write_buffer(
-                &self.uniforms_buffer,
-                0,
-                bytemuck::cast_slice(&[Uniforms {
-                    drawing_area_top: top_left.1 as u32,
-                    drawing_area_left: top_left.0 as u32,
-                    drawing_area_bottom: bottom_right.1 as u32,
-                    drawing_area_right: bottom_right.0 as u32,
-                    num_vertices: 0,
-                    fill_color: c as u32,
-                }]),
-            );
-            self.queue
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+            &self.uniforms_buffer,
+            0,
+            bytemuck::cast_slice(&[Uniforms {
+                drawing_area_top: top_left.1 as u32,
+                drawing_area_left: top_left.0 as u32,
+                drawing_area_bottom: bottom_right.1 as u32,
+                drawing_area_right: bottom_right.0 as u32,
+                num_vertices: 0,
+                fill_color: c as u32,
+            }]),
+        );
+        self.queue
+            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
 
-            
-            let mut fill_encoder = self
-                .device
+        let mut fill_encoder =
+            self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("fill_encoder"),
                 });
 
-            {
-            
-                let mut bin_pass = fill_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("quick fill pass"),
-                    timestamp_writes: None,
-                });
-                bin_pass.set_pipeline(&self.fill_pipeline);
+        {
+            let mut bin_pass = fill_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("quick fill pass"),
+                timestamp_writes: None,
+            });
+            bin_pass.set_pipeline(&self.fill_pipeline);
 
-                bin_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-                
-                let workgroups_x =  1024 /8;
-                let workgroups_y = 512 / 8; // can reduce it a bit ...
-                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                bin_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
-                // rpass.draw(0..self.vertices.len() as u32, 0..1);
-            }
-            
-            // let mut clear_encoder = self
-            //     .device
-            //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            //         label: Some("clear_encoder"),
-            //     });
-            // {
-            //     let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
-            //
-            //     clear_scope.clear_buffer(&self.bins_buffer, 0, None);
-            // 
-            //     // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            //     //     label: Some("clear"),
-            //     //     timestamp_writes: None,
-            //     // });
-            //     // clear_pass.set_pipeline(&self.clear_pipeline);
-            //     //
-            //     // clear_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-            //     // // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-            //     // clear_pass.dispatch_workgroups(16, 8, 1);
-            //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
-            // }
-            
-            // self.profiler.resolve_queries(&mut clear_encoder);
-            let idx = self.queue.submit(vec![
-                fill_encoder.finish(),
-            ]);
+            bin_pass.set_bind_group(0, &self.compute_bind_group, &[]);
 
+            let workgroups_x = 1024 / 8;
+            let workgroups_y = 512 / 8; // can reduce it a bit ...
+            // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+            bin_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+            // rpass.draw(0..self.vertices.len() as u32, 0..1);
+        }
 
+        // let mut clear_encoder = self
+        //     .device
+        //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        //         label: Some("clear_encoder"),
+        //     });
+        // {
+        //     let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
+        //
+        //     clear_scope.clear_buffer(&self.bins_buffer, 0, None);
+        //
+        //     // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        //     //     label: Some("clear"),
+        //     //     timestamp_writes: None,
+        //     // });
+        //     // clear_pass.set_pipeline(&self.clear_pipeline);
+        //     //
+        //     // clear_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+        //     // // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+        //     // clear_pass.dispatch_workgroups(16, 8, 1);
+        //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
+        // }
+
+        // self.profiler.resolve_queries(&mut clear_encoder);
+        let idx = self.queue.submit(vec![fill_encoder.finish()]);
 
         // TODO: do we need sync here?
         // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
@@ -1577,7 +1745,52 @@ impl ComputeRenderer {
     }
 }
 
+pub struct DirtyRegion {
+    ax: i32,
+    ay: i32,
+    bx: i32,
+    by: i32,
+    empty: bool,
+}
 
+impl DirtyRegion {
+    pub fn empty() -> Self {
+        DirtyRegion {
+            ax: 0,
+            ay: 0,
+            bx: 0,
+            by: 0,
+            empty: true,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.empty = true;
+    }
+
+    pub fn intersects(&self, ax: i32, ay: i32, bx: i32, by: i32) -> bool {
+        if self.empty {
+            false
+        } else {
+            (ax <= self.bx) && (bx >= self.ax) && (ay <= self.by) && (by >= self.ay)
+        }
+    }
+
+    pub fn merge(&mut self, ax: i32, ay: i32, bx: i32, by: i32) {
+        if self.empty {
+            self.ax = ax;
+            self.ay = ay;
+            self.bx = bx;
+            self.by = by;
+            self.empty = false;
+        } else {
+            self.ax = min(self.ax, ax);
+            self.ay = min(self.ay, ay);
+            self.bx = max(self.bx, bx);
+            self.by = max(self.by, by);
+        }
+    }
+}
 fn ensure_vertex_order(v0: Vert, v1: Vert, v2: Vert) -> (Vert, Vert, Vert) {
     let cross_product_z = ((v2.position[0] - v0.position[0]) * (v1.position[1] - v0.position[1])
         - (v1.position[0] - v0.position[0]) * (v2.position[1] - v0.position[1]));

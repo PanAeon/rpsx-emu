@@ -448,13 +448,61 @@ impl ComputeRenderer {
     }
 
     pub fn flush(&mut self) {
-        // {
-        // self.vertices.clear();
-        // push two triangles instead...
-        // let c1 = Colour { r: 255, g: 255, b: 255, m: 0 };
-        // self.render_triangle(&[c1;4], 0, 0, vs, uv, false, false, false, ctx);
-        // }
         if !self.vertices.is_empty() {
+       /* {
+        self.vertices.clear();
+        // push two triangles instead...
+        let c1 = Colour { r: 225, g: 225, b: 225, m: 0 };
+        let vs = [Vertex {x: 0, y: 0}, Vertex{x:640, y: 0}, Vertex {x: 0, y: 480}];
+        let uv = [[0, 0];3];
+        let ctx = 
+        RenderingContext {
+            page_base_x: 0,
+            page_base_y: 0,
+            semi_transparency: 0,
+            texture_depth: TextureDepth::T4Bit,
+            // dithering from 24 to 16 bits RGB
+            dithering: false,
+            draw_to_display: true,
+            // force "mask" bit of the pixel to 1 when writing to VRAM
+            force_set_mask_bit: false,
+            // don't draw to pixels which have the "mask" bit set
+            preserve_masked_pixels: false,
+            texture_disable: false,
+            hres: HorizontalRes::from_fields(1, 1),
+            vres: VerticalRes::Y480Lines,
+            // gpu itself always draws 15bit RGB, 24bit output must use external assets
+            display_depth: DisplayDepth::D15Bits,
+            interlaced: false,
+            display_disabled: false,
+
+            rectange_texture_x_flip: false,
+            rectange_texture_y_flip: false,
+
+            texture_window_x_mask: 0,
+            texture_window_y_mask: 0,
+            texture_window_x_offset: 0,
+            texture_window_y_offset: 0,
+            drawing_area_left: self.drawing_area_top_left.0,
+            drawing_area_top: self.drawing_area_top_left.1,
+            drawing_area_right: self.drawing_area_bottom_right.0,
+            drawing_area_bottom: self.drawing_area_bottom_right.1,
+            drawing_x_offset: 0,
+            drawing_y_offset: 0,
+            display_vram_x_start: 0,
+            display_vram_y_start: 0,
+            display_horiz_start: 0,
+            display_horiz_end: 0,
+            display_line_start: 0,
+            display_line_end: 0,
+        };
+        self.render_triangle(&[c1;3], 0, 0, &vs, &uv, false, false, false, &ctx);
+        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+        }*/
             {
                  let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
                 let mut width_bin_x = width / 128;
@@ -781,6 +829,18 @@ impl ComputeRenderer {
         // bounding box
         // self.prepare_draw(semi_trans, min_x, min_y, max_x, max_y);
 
+        self.ensure_vertex_room(3);
+        self.render_triangle(
+            &colors[0..3],
+            clut,
+            page,
+            &vs[0..3],
+            &uv[0..3],
+            textured,
+            semi_trans,
+            blend,
+            ctx,
+        );
         if !is_triangle {
             self.ensure_vertex_room(3);
             self.render_triangle(
@@ -795,18 +855,6 @@ impl ComputeRenderer {
                 ctx,
             );
         }
-        self.ensure_vertex_room(3);
-        self.render_triangle(
-            &colors[0..3],
-            clut,
-            page,
-            &vs[0..3],
-            &uv[0..3],
-            textured,
-            semi_trans,
-            blend,
-            ctx,
-        );
     }
 
     pub fn render_triangle(
@@ -826,10 +874,12 @@ impl ComputeRenderer {
         let min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
         let max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
-        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
-        else {
-            return;
-        };
+        // let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
+        // else {
+        //     println!("too large, skipped");
+        //     return;
+        // };
+//        println!("render triangle: a: {},{} b: {},{} c: {},{}; color: {} {} {}", vs[0].x, vs[0].y,vs[1].x, vs[1].y,vs[2].x, vs[2].y, colors[0].r, colors[0].g, colors[0].b);
         let clut = Clut::new(clut);
         let texture = Texture::new(page, clut);
         let texture_depth = match texture.depth {
@@ -940,7 +990,7 @@ impl ComputeRenderer {
         let tex_size_y = (side.y) as u16;
 
         // if textured {
-        //    println!("render textured rectangle, uv: {}x{}, size: {}x{}, depth: {}", uv[0], uv[1], side.x, side.y, texture_depth);
+           // println!("render rectangle, xy: {}x{}, size: {}x{}, depth: {}", v.x, v.y, side.x, side.y, texture_depth);
         // }
 
         let v0 = (Vert {
@@ -1177,13 +1227,13 @@ impl ComputeRenderer {
                     // }
                 }
                 println!("invocations: {}", results.len());
-                let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0;
+                let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
                 let mut width_bin_x = (width) / 128;
                 if width_bin_x * 128 < width {
                     width_bin_x += 1;
                 }
 
-                let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1;
+                let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1 + 1;
                 let mut width_bin_y = (height) / 64;
                 if width_bin_y * 64 < (height) {
                     width_bin_y += 1;
@@ -1413,8 +1463,8 @@ impl ComputeRenderer {
         size: (u16, u16),
         unaligned_data: &Vec<u32>,
     ) {
-        let cols = size.0 as usize;
-        let rows = size.1 as usize;
+        let unaligned_data: &[u16] = bytemuck::cast_slice(&unaligned_data[0..]);
+        let mut cols = size.0 as usize; let rows = size.1 as usize;
         self.flush();
         let mut encoder = self
             .device
@@ -1422,31 +1472,26 @@ impl ComputeRenderer {
                 label: Some("cpu_to_vram_copy_encoder"),
             });
         // align to 256 bytes... or 64 words
-        let mut num_extents = (cols / 64) + 1;
-        // if cols % 64 != 0 {
-        //     num_extents += 1;
+        // if cols % 2 != 0 {
+        //     // cols += 1;
+        //     println!("data len: {}, cols: {}, rows: {}", unaligned_data.len(), cols, rows);
+        //     panic!("oops");
         // }
+        let mut num_extents = (cols / 64) + 1;
         let mut data: Vec<u32> = vec![];
         {
             // let ppadding = cols & 1;
             let padding_words = (64 - (cols) % 64);
             let zeroes = vec![0; padding_words];
-            let mut i: usize = 0;
-            let half_cols = cols / 2;
-            // if cols % 2 != 0 {
-            //     // half_cols += 1;
-            // }
-            for _ in 0..rows {
-                for j in 0..half_cols {
-                    let word = unaligned_data[i + j];
-                    data.push(word & 0xFFFF);
-                    data.push((word >> 16) & 0xFFFF);
+            // let mut i: usize = 0;
+            for i in 0..rows {
+                for j in 0..cols {
+                    let word = unaligned_data[i*cols + j];
+                    data.push(word as u32);
+                    // data.push((word >> 16) & 0xFFFF);
                 }
-                // if cols % 2 != 0 {
-                //     data.push(0x00);
-                // }
                 data.extend_from_slice(&zeroes[0..]);
-                i += half_cols;
+                // i += half_cols;
             }
         }
 

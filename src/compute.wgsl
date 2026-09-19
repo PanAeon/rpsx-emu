@@ -19,18 +19,6 @@ struct Vertex {
     texpage_base_and_flags: u32,
 };
 
-// struct PartialDerivative {
-//     r_dx: i32,
-//     g_dx: i32,
-//     b_dx: i32,
-//     r_dy: i32,
-//     g_dy: i32,
-//     b_dy: i32,
-//     u_dx: i32,
-//     v_dx: i32,
-//     u_dy: i32,
-//     v_dy: i32,
-// }
 
 fn get_pos(v: Vertex) -> vec2<i32> {
     let _x = v.pos & 0xFFFF;
@@ -111,7 +99,6 @@ fn get_transparency(v: Vertex) -> u32 {
 @group(0) @binding(1) var<storage, read> vertex_buffer: array<Vertex>;
 @group(0) @binding(2) var<storage, read> uniforms: Uniforms;
 @group(0) @binding(3) var<storage, read_write> bins_buffer: array<u32>;
-// @group(0) @binding(4) var<storage, read_write> partial_derivatives: array<PartialDerivative>;
 
 // fn draw_triangle(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i32>) {
 //     // let part = get_partition(id);
@@ -134,6 +121,146 @@ fn get_transparency(v: Vertex) -> u32 {
 //         }
 //     }
 // }
+
+
+fn draw_triangle_barycentric(idx: u32, v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i32>) {
+    let p0 = get_pos(v1);
+    let p1 = get_pos(v2);
+    let p2 = get_pos(v3);
+
+    let c0 = rgb8_split_color(v1.color);
+    let c1 = rgb8_split_color(v2.color);
+    let c2 = rgb8_split_color(v3.color);
+
+    let uv0 = get_uv(v1);
+    let uv1 = get_uv(v2);
+    let uv2 = get_uv(v3);
+
+    // let triangle_bounds = get_bounds(p0, p1, p2);
+    // let bds = intersect(bounds, triangle_bounds);
+    // if bds.x == -1 {
+    //     return;
+    // }
+    let bds = bounds;
+
+    let is_textured = get_textured(v1);
+    let depth = get_depth(v1);
+    let blend = needs_blend(v1);
+    let dither = needs_dither(v1);
+    let semi_trans = is_semitrans(v1);
+    let force_set_mask_bit = is_forced_set_mask_bit(v1);
+    let preserve_masked_pixels = is_preserve_masked_pixles(v1);
+
+    let texture_window = get_texture_window(v1);
+    let texpage_base = get_texture_base(v1);
+    let clut = get_clut(v1);
+    let transparency = get_transparency(v1);
+
+    for (var y = bds.y; y <= bds.w; y++) {
+        for (var x = bds.x; x <= bds.z; x++) {
+            let lambda = barycentric(p0, p1, p2, x, y);
+            if lambda.x < 0.0001 || lambda.y < 0.0001 || lambda.z < 0.0001 {
+                continue;
+            }
+
+            let col = interpolate_color(lambda, c0, c1, c2);
+
+                // let col = vec3<f32>(
+                //     f32(r_num / sum),
+                //     f32(g_num / sum),
+                //     f32(b_num / sum),
+                // ) / 255.0;
+
+                if is_textured {
+                    var color: u32;
+                    let uv = compute_uv_offset(interpolate_uv(lambda, uv0, uv1, uv2), texture_window);
+                    switch depth {
+                        case 0: {
+                            let clut_idx = read_4bit(pack_h(texpage_base, 4) + uv);
+                            let coord = vec2(clut.x + i32(clut_idx), clut.y);
+                            let clut_color = read_16bit(coord);
+                            color = clut_color;
+                        }
+                        case 1: {
+                            let clut_idx = read_8bit(pack_h(texpage_base, 2) + uv);
+                            let coord = vec2(clut.x + i32(clut_idx), clut.y);
+                            color = read_16bit(coord);
+                        }
+                        default: {
+                            color = read_16bit(texpage_base + uv);
+                        }
+                    }
+                    if color == 0 {
+                        continue;
+                    }
+
+                    var c = unpack_color(color);
+
+                    if blend {
+                        let tex_color = vec3<u32>(vec3(c.r * 255, c.g * 255, c.b * 255));
+                        let vert_color = vec3<u32>(col * 255);
+
+                        let color_uint = min((tex_color * vert_color) >> vec3<u32>(7u), vec3<u32>(0xffu));
+                        c = vec4<f32>(vec3<f32>(color_uint) / 255.0, c.w);
+                    }
+
+                    if dither {
+                        c *= 255;
+                        var dither_pos: vec2<i32>;
+                        dither_pos = vec2(x, y) % 4;
+                        var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
+                        c.x += f32(dither_value);
+                        c.y += f32(dither_value);
+                        c.z += f32(dither_value);
+                        c = clamp(c, vec4(0), vec4(0xff));
+                        c /= 255;
+                    }
+
+                    // if semi_trans && c.w > 0.5 {
+                    if semi_trans && c.w > 0.5 {
+                        let prev = readExistingColor(vec2(x, y));
+                        c = blend_with_background(c, prev, transparency);
+                    }
+
+                    let pixel = pack_color(c.xyz, c.w > 0.5 || force_set_mask_bit);
+                    if preserve_masked_pixels {
+                        let prev = read_16bit(vec2(x, y));
+                        if ((prev << 15) & 0x1) != 1 {
+                             textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        }
+                    } else {
+                        textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                    }
+                } else {
+                    var c = vec4<f32>(col, 0.0);
+                    if dither {
+                        c *= 255;
+                        var dither_pos: vec2<i32>;
+                        dither_pos = vec2(x, y) % 4;
+                        var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
+                        c.x += f32(dither_value);
+                        c.y += f32(dither_value);
+                        c.z += f32(dither_value);
+                        c = clamp(c, vec4(0), vec4(0xff));
+                        c /= 255;
+                    }
+                    if semi_trans {
+                        let prev = readExistingColor(vec2(x, y));
+                        c = blend_with_background(c, prev, transparency);
+                    }
+                    let pixel = pack_color(c.xyz, force_set_mask_bit);
+                    if preserve_masked_pixels {
+                        let prev = read_16bit(vec2(x, y));
+                        if ((prev << 15) & 0x1) != 1 {
+                             textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        }
+                    } else {
+                         textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                    }
+            }
+        }
+    }
+}
 
 fn draw_triangle(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i32>) {
     let p0 = get_pos(v1);
@@ -569,14 +696,16 @@ fn is_top_left(a: vec2<i32>, b: vec2<i32>) -> bool {
     }
 }
 
-fn interpolate_color(lambda: vec3<f32>, v0: Vertex, v1: Vertex, v2: Vertex) -> vec3<f32> {
-    let c0 = rgb8_split_color(v0.color);
-    let c1 = rgb8_split_color(v1.color);
-    let c2 = rgb8_split_color(v2.color);
+fn interpolate_color(lambda: vec3<f32>, c0: vec3<f32>, c1: vec3<f32>, c2: vec3<f32>) -> vec3<f32> {
     let r = min(1.0, (lambda[0] * c0[0] + lambda[1] * c1[0] + lambda[2] * c2[0]));
     let g = min(1.0, (lambda[0] * c0[1] + lambda[1] * c1[1] + lambda[2] * c2[1]));
     let b = min(1.0, (lambda[0] * c0[2] + lambda[1] * c1[2] + lambda[2] * c2[2]));
     return vec3<f32>(r, g, b);
+}
+fn interpolate_uv(lambda: vec3<f32>, uv0: vec2<i32>, uv1: vec2<i32>, uv2: vec2<i32>) -> vec2<i32> {
+    let u = lambda[0] * f32(uv0[0]) + lambda[1] * f32(uv1[0]) + lambda[2] * f32(uv2[0]);
+    let v = lambda[0] * f32(uv0[1]) + lambda[1] * f32(uv1[1]) + lambda[2] * f32(uv2[1]);
+    return vec2<i32>(vec2(u, v));
 }
 
 fn rgb8_split_color(value: u32) -> vec3<f32> {
@@ -625,8 +754,8 @@ fn get_partition(id: vec2<u32>) -> vec4<i32> {
     return vec4<i32>(
         i32(id.x) * width_bin_x + uniforms.drawing_area_left-1,
         i32(id.y) * width_bin_y + uniforms.drawing_area_top-1,
-        (i32(id.x) + 1) * width_bin_x - 1 + uniforms.drawing_area_left-1,
-        (i32(id.y) + 1) * width_bin_y - 1 + uniforms.drawing_area_top-1,
+        min(uniforms.drawing_area_right, (i32(id.x) + 1) * width_bin_x - 1 + uniforms.drawing_area_left-1),
+        min(uniforms.drawing_area_bottom, (i32(id.y) + 1) * width_bin_y - 1 + uniforms.drawing_area_top-1),
     );
 }
 fn get_bounds(v1: vec2<i32>, v2: vec2<i32>, v3: vec2<i32>) -> vec4<i32> {
@@ -694,7 +823,8 @@ fn main(
         var v1 = vertex_buffer[vert_idx + 0u];
         var v2 = vertex_buffer[vert_idx + 1u];
         var v3 = vertex_buffer[vert_idx + 2u];
-        draw_triangle_shaded_textured(vert_idx, v1, v2, v3, bounds);
+        // draw_triangle_shaded_textured(vert_idx, v1, v2, v3, bounds);
+        draw_triangle_barycentric(vert_idx, v1, v2, v3, bounds);
     }
 
     // now we have local_invocation_id.xy to play with...

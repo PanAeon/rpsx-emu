@@ -63,6 +63,7 @@ bitfield::bitfield! {
     u8, _, set_transparency: 5,4;
     _, set_force_set_mask_bit: 6;
     _, set_preserve_masked_pixels: 7;
+    _, set_is_rectangle: 8;
 }
 
 fn create_draw_pipeline(
@@ -103,7 +104,7 @@ fn create_draw_pipeline(
 
     let bins_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("bins_buffer"),
-        size: (3*128 * 64 * 128 * 4) as u64, // 12Mb
+        size: (3 * 128 * 64 * 128 * 4) as u64, // 12Mb
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -129,7 +130,6 @@ fn create_draw_pipeline(
     //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     //     mapped_at_creation: false,
     // });
-
 
     let uniforms_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniforms_buffer"),
@@ -397,8 +397,7 @@ impl ComputeRenderer {
                             ctx,
                         );
                     }
-                    RendererMsg::FillRect { v, side, c, ctx } => 
-                       renderer.fill_rect(*v, *side, *c),
+                    RendererMsg::FillRect { v, side, c, ctx } => renderer.fill_rect(*v, *side, *c),
                     RendererMsg::Vram2VramBlit { src, dst, size } => {
                         renderer.vram2vram_blit(*src, *dst, *size)
                     }
@@ -449,80 +448,84 @@ impl ComputeRenderer {
 
     pub fn flush(&mut self) {
         if !self.vertices.is_empty() {
-       /* {
-        self.vertices.clear();
-        // push two triangles instead...
-        let c1 = Colour { r: 225, g: 225, b: 225, m: 0 };
-        let vs = [Vertex {x: 0, y: 0}, Vertex{x:640, y: 0}, Vertex {x: 0, y: 480}];
-        let uv = [[0, 0];3];
-        let ctx = 
-        RenderingContext {
-            page_base_x: 0,
-            page_base_y: 0,
-            semi_transparency: 0,
-            texture_depth: TextureDepth::T4Bit,
-            // dithering from 24 to 16 bits RGB
-            dithering: false,
-            draw_to_display: true,
-            // force "mask" bit of the pixel to 1 when writing to VRAM
-            force_set_mask_bit: false,
-            // don't draw to pixels which have the "mask" bit set
-            preserve_masked_pixels: false,
-            texture_disable: false,
-            hres: HorizontalRes::from_fields(1, 1),
-            vres: VerticalRes::Y480Lines,
-            // gpu itself always draws 15bit RGB, 24bit output must use external assets
-            display_depth: DisplayDepth::D15Bits,
-            interlaced: false,
-            display_disabled: false,
+            println!("flush, num vertices: {}", self.vertices.len());
+            /*{
+            self.vertices.clear();
+            // push two triangles instead...
+            let c1 = Colour { r: 225, g: 225, b: 225, m: 0 };
+            let vs = [Vertex {x: 0, y: 0}, Vertex{x:640, y: 0}, Vertex {x: 0, y: 480}];
+            let uv = [[0, 0];3];
+            let ctx =
+            RenderingContext {
+                page_base_x: 0,
+                page_base_y: 0,
+                semi_transparency: 0,
+                texture_depth: TextureDepth::T4Bit,
+                // dithering from 24 to 16 bits RGB
+                dithering: false,
+                draw_to_display: true,
+                // force "mask" bit of the pixel to 1 when writing to VRAM
+                force_set_mask_bit: false,
+                // don't draw to pixels which have the "mask" bit set
+                preserve_masked_pixels: false,
+                texture_disable: false,
+                hres: HorizontalRes::from_fields(1, 1),
+                vres: VerticalRes::Y480Lines,
+                // gpu itself always draws 15bit RGB, 24bit output must use external assets
+                display_depth: DisplayDepth::D15Bits,
+                interlaced: false,
+                display_disabled: false,
 
-            rectange_texture_x_flip: false,
-            rectange_texture_y_flip: false,
+                rectange_texture_x_flip: false,
+                rectange_texture_y_flip: false,
 
-            texture_window_x_mask: 0,
-            texture_window_y_mask: 0,
-            texture_window_x_offset: 0,
-            texture_window_y_offset: 0,
-            drawing_area_left: self.drawing_area_top_left.0,
-            drawing_area_top: self.drawing_area_top_left.1,
-            drawing_area_right: self.drawing_area_bottom_right.0,
-            drawing_area_bottom: self.drawing_area_bottom_right.1,
-            drawing_x_offset: 0,
-            drawing_y_offset: 0,
-            display_vram_x_start: 0,
-            display_vram_y_start: 0,
-            display_horiz_start: 0,
-            display_horiz_end: 0,
-            display_line_start: 0,
-            display_line_end: 0,
-        };
-        self.render_triangle(&[c1;3], 0, 0, &vs, &uv, false, false, false, &ctx);
-        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-        // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-        }*/
+                texture_window_x_mask: 0,
+                texture_window_y_mask: 0,
+                texture_window_x_offset: 0,
+                texture_window_y_offset: 0,
+                drawing_area_left: self.drawing_area_top_left.0,
+                drawing_area_top: self.drawing_area_top_left.1,
+                drawing_area_right: self.drawing_area_bottom_right.0,
+                drawing_area_bottom: self.drawing_area_bottom_right.1,
+                drawing_x_offset: 0,
+                drawing_y_offset: 0,
+                display_vram_x_start: 0,
+                display_vram_y_start: 0,
+                display_horiz_start: 0,
+                display_horiz_end: 0,
+                display_line_start: 0,
+                display_line_end: 0,
+            };
+            self.render_triangle(&[c1;3], 0, 0, &vs, &uv, false, false, false, &ctx);
+            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
+            }*/
             {
-                 let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
+                let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
                 let mut width_bin_x = width / 128;
                 if width_bin_x * 128 < width {
                     width_bin_x += 1;
                 }
 
-                 let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1 + 1;
+                let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1 + 1;
                 let mut width_bin_y = height / 64;
-                if  width_bin_y * 64 < (height) {
+                if width_bin_y * 64 < (height) {
                     width_bin_y += 1;
                 }
 
                 let mut bin_sizes = [0u32; 128 * 64];
                 let mut indices = [0u32; 128 * 64];
                 for (_, vs) in self.vertices.chunks_exact(3).enumerate() {
-                    let min_x = cmp::max(0,cmp::min(
-                        vs[0].position[0],
-                        cmp::min(vs[1].position[0], vs[2].position[0]),
-                    ));
+                    let min_x = cmp::max(
+                        0,
+                        cmp::min(
+                            vs[0].position[0],
+                            cmp::min(vs[1].position[0], vs[2].position[0]),
+                        ),
+                    );
                     let max_x = cmp::min(
                         1023,
                         cmp::max(
@@ -530,10 +533,13 @@ impl ComputeRenderer {
                             cmp::max(vs[1].position[0], vs[2].position[0]),
                         ),
                     );
-                    let min_y = cmp::max(0, cmp::min(
-                        vs[0].position[1],
-                        cmp::min(vs[1].position[1], vs[2].position[1]),
-                    ));
+                    let min_y = cmp::max(
+                        0,
+                        cmp::min(
+                            vs[0].position[1],
+                            cmp::min(vs[1].position[1], vs[2].position[1]),
+                        ),
+                    );
                     let max_y = cmp::min(
                         511,
                         (cmp::max(
@@ -542,35 +548,53 @@ impl ComputeRenderer {
                         )),
                     );
 
-                    let start_bin_x = min(127, (min_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
-                    let end_bin_x = min(127,(max_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
-                    let start_bin_y = min(63, (min_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
-                    let end_bin_y =min(63, (max_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
+                    let start_bin_x = min(
+                        127,
+                        (min_x as u16 - self.drawing_area_top_left.0) / width_bin_x,
+                    );
+                    let end_bin_x = min(
+                        127,
+                        (max_x as u16 - self.drawing_area_top_left.0) / width_bin_x,
+                    );
+                    let start_bin_y = min(
+                        63,
+                        (min_y as u16 - self.drawing_area_top_left.1) / width_bin_y,
+                    );
+                    let end_bin_y = min(
+                        63,
+                        (max_y as u16 - self.drawing_area_top_left.1) / width_bin_y,
+                    );
 
                     for y in start_bin_y..=end_bin_y {
                         for x in start_bin_x..=end_bin_x {
-                            bin_sizes[(y*128 + x) as usize] += 1;
+                            bin_sizes[(y * 128 + x) as usize] += 1;
                             // let bin_idx = bin_indices[y * 128 + x];
                             // bins[64 * (y * 128 + x) + bin_idx] = 3 * i as u32;
                             // bin_indices[y * 128 + x] += 1;
                         }
                     }
                 }
-                let mut offsets: Vec<u32> = bin_sizes.iter().scan(0, |state, x|{
-                    *state += x;
-                    Some(*state)
-                }).collect();
+                let mut offsets: Vec<u32> = bin_sizes
+                    .iter()
+                    .scan(0, |state, x| {
+                        *state += x;
+                        Some(*state)
+                    })
+                    .collect();
                 offsets.insert(0, 0);
                 // for o in &offsets {
                 //     print!("{} ", o);
                 // }
                 let len = offsets.remove(offsets.len() - 1);
-                let mut bins = vec![0u32; len as usize];//Vec::<u32>::with_capacity(len as usize);
+                let mut bins = vec![0u32; len as usize]; //Vec::<u32>::with_capacity(len as usize);
                 for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
-                    let min_x = cmp::max(0,cmp::min(
-                        vs[0].position[0],
-                        cmp::min(vs[1].position[0], vs[2].position[0]),
-                    ));
+                    let min_x = cmp::max(
+                        0,
+                        cmp::min(
+                            vs[0].position[0],
+                            cmp::min(vs[1].position[0], vs[2].position[0]),
+                        ),
+                    );
                     let max_x = cmp::min(
                         1023,
                         cmp::max(
@@ -578,10 +602,13 @@ impl ComputeRenderer {
                             cmp::max(vs[1].position[0], vs[2].position[0]),
                         ),
                     );
-                    let min_y = cmp::max(0,cmp::min(
-                        vs[0].position[1],
-                        cmp::min(vs[1].position[1], vs[2].position[1]),
-                    ));
+                    let min_y = cmp::max(
+                        0,
+                        cmp::min(
+                            vs[0].position[1],
+                            cmp::min(vs[1].position[1], vs[2].position[1]),
+                        ),
+                    );
                     let max_y = cmp::min(
                         511,
                         (cmp::max(
@@ -590,27 +617,38 @@ impl ComputeRenderer {
                         )),
                     );
 
-                    let start_bin_x = min(127, (min_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
-                    let end_bin_x = min(127,(max_x as u16 -self.drawing_area_top_left.0) / width_bin_x);
-                    let start_bin_y = min(63, (min_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
-                    let end_bin_y =min(63,(max_y as u16 -self.drawing_area_top_left.1) / width_bin_y);
+                    let start_bin_x = min(
+                        127,
+                        (min_x as u16 - self.drawing_area_top_left.0) / width_bin_x,
+                    );
+                    let end_bin_x = min(
+                        127,
+                        (max_x as u16 - self.drawing_area_top_left.0) / width_bin_x,
+                    );
+                    let start_bin_y = min(
+                        63,
+                        (min_y as u16 - self.drawing_area_top_left.1) / width_bin_y,
+                    );
+                    let end_bin_y = min(
+                        63,
+                        (max_y as u16 - self.drawing_area_top_left.1) / width_bin_y,
+                    );
 
                     for y in start_bin_y..=end_bin_y {
                         for x in start_bin_x..=end_bin_x {
                             let bin_idx = indices[(y * 128 + x) as usize];
-                            let start = offsets[(y*128 + x) as usize];
+                            let start = offsets[(y * 128 + x) as usize];
                             bins[(start + bin_idx) as usize] = 3 * i as u32;
                             indices[(y * 128 + x) as usize] += 1;
                         }
                     }
                 }
-                // println!(">>len: {}", bins.len());
-
+                println!(">>len: {}", bins.len());
 
                 let mut result = Vec::from_iter(bin_sizes);
                 result.extend_from_slice(&offsets);
                 result.extend_from_slice(&bins);
-                
+
                 self.queue
                     .write_buffer(&self.bins_buffer, 0, bytemuck::cast_slice(&result[..]));
             }
@@ -659,18 +697,19 @@ impl ComputeRenderer {
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
             // TODO: upload uniforms...
 
-            let mut render_encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("render_encoder"),
-                });
+            let mut render_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("render_encoder"),
+                    });
             {
-            let mut render_scope  = self.profiler.scope("render", &mut render_encoder);
-            
-                let mut render_pass = render_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("compute pass"),
-                    timestamp_writes: None,
-                });
+                let mut render_scope = self.profiler.scope("render", &mut render_encoder);
+
+                let mut render_pass =
+                    render_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("compute pass"),
+                        timestamp_writes: None,
+                    });
                 render_pass.set_pipeline(&self.draw_pipeline);
 
                 render_pass.set_bind_group(0, &self.compute_bind_group, &[]);
@@ -678,16 +717,16 @@ impl ComputeRenderer {
                 render_pass.dispatch_workgroups(16, 8, 1);
                 // rpass.draw(0..self.vertices.len() as u32, 0..1);
             }
-            
+
             // let mut bin_encoder = self
             //     .device
             //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    // label: Some("bin_encoder"),
-                // });
+            // label: Some("bin_encoder"),
+            // });
 
             // {
             // let mut bin_scope = self.profiler.scope("bin", &mut bin_encoder);
-            // 
+            //
             //     let mut bin_pass = bin_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
             //         label: Some("bins pass"),
             //         timestamp_writes: None,
@@ -699,7 +738,7 @@ impl ComputeRenderer {
             //     bin_pass.dispatch_workgroups(4, 4, 1);
             //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
             // }
-            
+
             // let mut clear_encoder = self
             //     .device
             //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -709,7 +748,7 @@ impl ComputeRenderer {
             //     let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
             //
             //     clear_scope.clear_buffer(&self.bins_buffer, 0, None);
-            // 
+            //
             //     // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
             //     //     label: Some("clear"),
             //     //     timestamp_writes: None,
@@ -721,15 +760,35 @@ impl ComputeRenderer {
             //     // clear_pass.dispatch_workgroups(16, 8, 1);
             //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
             // }
-            
+
             self.profiler.resolve_queries(&mut render_encoder);
             // self.profiler.resolve_queries(&mut bin_encoder);
             // self.profiler.resolve_queries(&mut clear_encoder);
+            let error_scope = self.device.push_error_scope(
+                wgpu::ErrorFilter::Validation
+                    // | wgpu::ErrorFilter::Internal
+                    // | wgpu::ErrorFilter::OutOfMemory,
+            );
             let idx = self.queue.submit(vec![
                 // clear_encoder.finish(),
                 // bin_encoder.finish(),
                 render_encoder.finish(),
             ]);
+
+            let maybe_error = pollster::block_on(error_scope.pop());
+            if let Some(error) = maybe_error {
+                match error {
+                    wgpu::Error::Validation { description, .. } => {
+                        println!("Validation error caught: {description}");
+                    }
+                    wgpu::Error::OutOfMemory { .. } => {
+                        println!("Out of memory!");
+                    }
+                    wgpu::Error::Internal { description, .. } => {
+                        println!("Internal error: {description}");
+                    }
+                }
+            }
 
             // TODO: do we need sync here?
             // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
@@ -780,7 +839,11 @@ impl ComputeRenderer {
         let max_x = (v.x + width).min(0x400);
         let max_y = (v.y + height).min(0x200);
 
-        self.quick_fill((min_x as u16, min_y as u16), (max_x as u16, max_y as u16), color);
+        self.quick_fill(
+            (min_x as u16, min_y as u16),
+            (max_x as u16, max_y as u16),
+            color,
+        );
     }
 
     pub fn draw_line(
@@ -879,7 +942,7 @@ impl ComputeRenderer {
         //     println!("too large, skipped");
         //     return;
         // };
-//        println!("render triangle: a: {},{} b: {},{} c: {},{}; color: {} {} {}", vs[0].x, vs[0].y,vs[1].x, vs[1].y,vs[2].x, vs[2].y, colors[0].r, colors[0].g, colors[0].b);
+               // println!("render triangle: a: {},{} b: {},{} c: {},{}; color: {} {} {}", vs[0].x, vs[0].y,vs[1].x, vs[1].y,vs[2].x, vs[2].y, colors[0].r, colors[0].g, colors[0].b);
         let clut = Clut::new(clut);
         let texture = Texture::new(page, clut);
         let texture_depth = match texture.depth {
@@ -955,24 +1018,27 @@ impl ComputeRenderer {
     ) {
         v.x += ctx.drawing_x_offset as i32;
         v.y += ctx.drawing_y_offset as i32;
+        // let side = Vertex {x: 127, y: 127};
 
-        let Some((min_x, min_y, max_x, max_y)) =
-            self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
-        else {
-            return;
-        };
+        // let Some((min_x, min_y, max_x, max_y)) =
+        //     self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
+        // else {
+        //     return;
+        // };
         // let side = Vertex {x: side.x , y: side.y - 1};
         //
-
 
         let mut flags = Flags(0);
         flags.set_textured(textured);
         flags.set_semitrans(semi_trans);
         flags.set_blend(blend);
+        //  flags.set_blend(false);
+        // flags.set_semitrans(false);
         flags.set_dither(false);
         flags.set_transparency(ctx.semi_transparency);
         flags.set_force_set_mask_bit(ctx.force_set_mask_bit);
         flags.set_preserve_masked_pixels(ctx.preserve_masked_pixels);
+        flags.set_is_rectangle(true);
 
         let clut = Clut::new(clut);
         let clut = [clut.base_x as u16, clut.base_y as u16];
@@ -990,9 +1056,54 @@ impl ComputeRenderer {
         let tex_size_y = (side.y) as u16;
 
         // if textured {
-           // println!("render rectangle, xy: {}x{}, size: {}x{}, depth: {}", v.x, v.y, side.x, side.y, texture_depth);
+        println!("render rectangle, textured: {} xy: {}x{}, size: {}x{}, depth: {}", textured, v.x, v.y, side.x, side.y, texture_depth);
+        println!("mask: {} {}", ctx.texture_window_x_mask, ctx.texture_window_y_mask);
+        println!("offset: {} {}", ctx.texture_window_x_offset, ctx.texture_window_y_offset);
+        println!("texpage base: {} {}", ctx.page_base_x, ctx.page_base_y);
+        println!("clut: {} {}", clut[0], clut[1]);
+        println!("ctx: {} {} {} {}", ctx.drawing_area_left, ctx.drawing_area_top, ctx.drawing_area_right, ctx.drawing_area_bottom);
+        println!("self: {} {} {} {}", self.drawing_area_top_left.0, self.drawing_area_top_left.1, self.drawing_area_bottom_right.0, self.drawing_area_bottom_right.1);
         // }
 
+        let v0 = (Vert {
+            position: [v.x as i16, v.y as i16],
+            uv,
+            color: [color.r, color.g, color.b],
+            texture_depth,
+            flags: flags.0,
+            clut,
+            texpage_base,
+            // _pad: 0,
+            texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+            texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+        });
+        let v1 = (Vert {
+            position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
+            uv: [uv[0], (uv[1] + tex_size_y)],
+            color: [color.r, color.g, color.b],
+            texture_depth,
+            flags: flags.0,
+            clut,
+            texpage_base,
+            texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+            texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+        });
+        let v2 = (Vert {
+            position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
+            uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
+            color: [color.r, color.g, color.b],
+            texture_depth,
+            flags: flags.0,
+            clut,
+            texpage_base,
+            // _pad: 0,
+            texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+            texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+        });
+        self.ensure_vertex_room(3);
+        self.vertices.extend_from_slice(&[v0, v1, v2]);
+
+        /*
         let v0 = (Vert {
             position: [v.x as i16, v.y as i16],
             uv,
@@ -1073,6 +1184,7 @@ impl ComputeRenderer {
         self.ensure_vertex_room(3);
         self.vertices.extend_from_slice(&[v3, v4, v5]);
         // self.vertices.extend_from_slice(&[v4, v3, v5]);
+       */
     }
 
     // TODO: The transfer is affected by Mask setting.
@@ -1143,7 +1255,6 @@ impl ComputeRenderer {
         let idx = self.queue.submit(vec![encoder.finish()]);
     }
 
-
     pub fn sync_vram(&mut self) {
         //
         let mut encoder = self
@@ -1200,21 +1311,29 @@ impl ComputeRenderer {
         // println!("Enabled device features: {enabled_features:?}");
         // println!();
         match &self.results {
-            Some( results) => {
+            Some(results) => {
                 let mut results: Vec<_> = results.iter().filter(|x| x.time.is_some()).collect();
                 results.sort_by(|x, y| x.label.cmp(&y.label));
                 let iter = results.chunk_by(|x, y| x.label.eq(&y.label));
                 for xs in iter {
-
                     let label = xs[0].label.clone();
-                    let ys: Vec<f64> = xs.iter().map(|x| ((x.time.clone().unwrap().end - x.time.clone().unwrap().start) * 1000.0 * 1000.0)).collect(); // TODO: think smth better
+                    let ys: Vec<f64> = xs
+                        .iter()
+                        .map(|x| {
+                            ((x.time.clone().unwrap().end - x.time.clone().unwrap().start)
+                                * 1000.0
+                                * 1000.0)
+                        })
+                        .collect(); // TODO: think smth better
                     let min = ys.iter().min_by(|a, b| a.total_cmp(b)).unwrap();
                     let max = ys.iter().max_by(|a, b| a.total_cmp(b)).unwrap();
                     let avg = ys.iter().sum::<f64>() / ys.len() as f64;
                     let total = ys.iter().sum::<f64>();
 
-                    println!("min: {:.3}μs, max: {:.3}μs, avg: {:.3}μs, total: {:.3}μs  - {} ",
-                        min, max, avg, total, label);
+                    println!(
+                        "min: {:.3}μs, max: {:.3}μs, avg: {:.3}μs, total: {:.3}μs  - {} ",
+                        min, max, avg, total, label
+                    );
 
                     // if let Some(time) = &scope.time {
                     //     println!(
@@ -1252,7 +1371,6 @@ impl ComputeRenderer {
         if results.len() > 0 {
             self.results = Some(res);
         }
-
     }
 
     pub fn render_fb(
@@ -1279,8 +1397,8 @@ impl ComputeRenderer {
 
         self.update_results(results);
         if self.frame_num == 60 {
-           self.print_profiling_results();
-           self.frame_num = 0;
+            self.print_profiling_results();
+            self.frame_num = 0;
         }
         // self.sync_readback_buffer(0, 0, 1024, 512);
         self.frame_num += 1;
@@ -1372,83 +1490,71 @@ impl ComputeRenderer {
         // }
     }
 
-
-    pub fn quick_fill(
-        &mut self,
-        top_left: (u16, u16),
-        bottom_right: (u16, u16),
-        color: Colour,
-    ) {
+    pub fn quick_fill(&mut self, top_left: (u16, u16), bottom_right: (u16, u16), color: Colour) {
         let c = color.to_le_bytes();
         let c: u16 = u16::from_le_bytes(c);
         self.flush();
         self.queue.write_buffer(
-                &self.uniforms_buffer,
-                0,
-                bytemuck::cast_slice(&[Uniforms {
-                    drawing_area_top: top_left.1 as u32,
-                    drawing_area_left: top_left.0 as u32,
-                    drawing_area_bottom: bottom_right.1 as u32,
-                    drawing_area_right: bottom_right.0 as u32,
-                    num_vertices: 0,
-                    fill_color: c as u32,
-                }]),
-            );
-            self.queue
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+            &self.uniforms_buffer,
+            0,
+            bytemuck::cast_slice(&[Uniforms {
+                drawing_area_top: top_left.1 as u32,
+                drawing_area_left: top_left.0 as u32,
+                drawing_area_bottom: bottom_right.1 as u32,
+                drawing_area_right: bottom_right.0 as u32,
+                num_vertices: 0,
+                fill_color: c as u32,
+            }]),
+        );
+        self.queue
+            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
 
-            
-            let mut fill_encoder = self
-                .device
+        let mut fill_encoder =
+            self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("fill_encoder"),
                 });
 
-            {
-            
-                let mut bin_pass = fill_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("quick fill pass"),
-                    timestamp_writes: None,
-                });
-                bin_pass.set_pipeline(&self.fill_pipeline);
+        {
+            let mut bin_pass = fill_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("quick fill pass"),
+                timestamp_writes: None,
+            });
+            bin_pass.set_pipeline(&self.fill_pipeline);
 
-                bin_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-                
-                let workgroups_x =  1024 /8;
-                let workgroups_y = 512 / 8; // can reduce it a bit ...
-                // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-                bin_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
-                // rpass.draw(0..self.vertices.len() as u32, 0..1);
-            }
-            
-            // let mut clear_encoder = self
-            //     .device
-            //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            //         label: Some("clear_encoder"),
-            //     });
-            // {
-            //     let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
-            //
-            //     clear_scope.clear_buffer(&self.bins_buffer, 0, None);
-            // 
-            //     // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            //     //     label: Some("clear"),
-            //     //     timestamp_writes: None,
-            //     // });
-            //     // clear_pass.set_pipeline(&self.clear_pipeline);
-            //     //
-            //     // clear_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-            //     // // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
-            //     // clear_pass.dispatch_workgroups(16, 8, 1);
-            //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
-            // }
-            
-            // self.profiler.resolve_queries(&mut clear_encoder);
-            let idx = self.queue.submit(vec![
-                fill_encoder.finish(),
-            ]);
+            bin_pass.set_bind_group(0, &self.compute_bind_group, &[]);
 
+            let workgroups_x = 1024 / 8;
+            let workgroups_y = 512 / 8; // can reduce it a bit ...
+            // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+            bin_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+            // rpass.draw(0..self.vertices.len() as u32, 0..1);
+        }
 
+        // let mut clear_encoder = self
+        //     .device
+        //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        //         label: Some("clear_encoder"),
+        //     });
+        // {
+        //     let mut clear_scope = self.profiler.scope("clear", &mut clear_encoder);
+        //
+        //     clear_scope.clear_buffer(&self.bins_buffer, 0, None);
+        //
+        //     // let mut clear_pass = clear_scope.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        //     //     label: Some("clear"),
+        //     //     timestamp_writes: None,
+        //     // });
+        //     // clear_pass.set_pipeline(&self.clear_pipeline);
+        //     //
+        //     // clear_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+        //     // // let num_workgroups = (self.vertices.len().div_ceil(3)) as u32;
+        //     // clear_pass.dispatch_workgroups(16, 8, 1);
+        //     // rpass.draw(0..self.vertices.len() as u32, 0..1);
+        // }
+
+        // self.profiler.resolve_queries(&mut clear_encoder);
+        let idx = self.queue.submit(vec![fill_encoder.finish()]);
 
         // TODO: do we need sync here?
         // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
@@ -1464,7 +1570,8 @@ impl ComputeRenderer {
         unaligned_data: &Vec<u32>,
     ) {
         let unaligned_data: &[u16] = bytemuck::cast_slice(&unaligned_data[0..]);
-        let mut cols = size.0 as usize; let rows = size.1 as usize;
+        let mut cols = size.0 as usize;
+        let rows = size.1 as usize;
         self.flush();
         let mut encoder = self
             .device
@@ -1486,7 +1593,7 @@ impl ComputeRenderer {
             // let mut i: usize = 0;
             for i in 0..rows {
                 for j in 0..cols {
-                    let word = unaligned_data[i*cols + j];
+                    let word = unaligned_data[i * cols + j];
                     data.push(word as u32);
                     // data.push((word >> 16) & 0xFFFF);
                 }
@@ -1545,7 +1652,7 @@ impl ComputeRenderer {
         }
         let imgsize = size.0 as u32 * size.1 as u32; // size in half-words
         // rounding so we have 16 bit of padding in last word
-        // let imgsize = (imgsize + 1) & !1;
+        let imgsize = (imgsize + 1) & !1;
 
         // align to 256 bytes...
         let num_extents = (4 * (size.0 as usize) / 256) + 1;
@@ -1592,9 +1699,10 @@ impl ComputeRenderer {
                 depth_or_array_layers: 1,
             },
         );
-        encoder.map_buffer_on_submit(&output_buffer, wgpu::MapMode::Read, .., |res| {
+        let (sender, receiver) = crossbeam::channel::bounded(16);
+        encoder.map_buffer_on_submit(&output_buffer, wgpu::MapMode::Read, .., move |res| {
             match res {
-                Ok(_) => {}
+                Ok(_) => sender.send(()).expect("OK"),
                 Err(x) => println!(">>> error mapping buffer {}", x),
             };
         });
@@ -1606,22 +1714,25 @@ impl ComputeRenderer {
             })
             .expect("ok");
 
+        receiver.recv().expect("ok");
         let buffer_view = output_buffer.get_mapped_range(..).expect("success");
         let vram_data: &[u32] = bytemuck::cast_slice(&buffer_view[..]);
-        let mut data = Vec::with_capacity(vram_data.len() / 2);
+        let mut data = Vec::with_capacity(imgsize as usize / 2);
 
-        let width_in_words = (((size.0 + 1) & !1) / 2) as usize;
-        // FIXME: need to pack two words into one
-        for i in 0..size.1 as usize {
-            let start = i * num_extents * 256 / 4;
-            data.extend_from_slice(&vram_data[start..start + width_in_words]);
+        for y in 0..size.1 as usize {
+            for x in (0..size.0 as usize).step_by(2) {
+                let low = vram_data[(y * 256 / 4) + x];
+                let high = vram_data[(y * 256 / 4) + x + 1];
+                data.push((high << 16) | (low & 0xFFFF));
+                // let start = i * num_extents * 256 / 4;
+                // data.extend_from_slice(&vram_data[start..start + width_in_words]);
+            }
         }
         // println!("expected len: {}, actual: {}", imgsize / 2, data.len());
 
         data
     }
 }
-
 
 fn ensure_vertex_order(v0: Vert, v1: Vert, v2: Vert) -> (Vert, Vert, Vert) {
     let cross_product_z = ((v2.position[0] - v0.position[0]) * (v1.position[1] - v0.position[1])

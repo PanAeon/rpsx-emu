@@ -35,12 +35,12 @@ use crate::spu::Spu;
 mod audio;
 mod bios;
 mod cdrom;
+mod compute_renderer;
 mod cpu;
 mod dma;
 mod gpu;
 mod gte;
 mod hw_renderer;
-mod compute_renderer;
 mod irq;
 mod mdec;
 mod ram;
@@ -244,8 +244,7 @@ impl State {
             })
             .await?;
 
-          println!("Selected adapter name: {}", adapter.get_info().name);
-
+        println!("Selected adapter name: {}", adapter.get_info().name);
 
         let limits = wgpu::Limits::default().using_resolution(adapter.limits());
         // limits.max_texture_dimension_2d *= 2;
@@ -254,7 +253,9 @@ impl State {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | wgpu::Features::VERTEX_WRITABLE_STORAGE | GpuProfiler::ALL_WGPU_TIMER_FEATURES,
+                required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                    | wgpu::Features::VERTEX_WRITABLE_STORAGE
+                    | GpuProfiler::ALL_WGPU_TIMER_FEATURES,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
@@ -268,6 +269,9 @@ impl State {
             })
             .await?;
 
+        device.on_uncaptured_error(Arc::new(|error| {
+            eprintln!("Uncaptured wgpu error: {:#?}", error);
+        }));
 
         let surface_caps = surface.get_capabilities(&adapter);
 
@@ -293,8 +297,7 @@ impl State {
             color_space: wgpu::wgt::SurfaceColorSpace::Auto,
         };
 
-        let texture_size = 
-        wgpu::Extent3d {
+        let texture_size = wgpu::Extent3d {
             width: 1024,
             height: 512,
             // All textures are stored as 3D, we represent our 2D texture
@@ -336,30 +339,31 @@ impl State {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("camera_bind_group_layout"),
                 entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(
-                            ::std::mem::size_of::<[[f32; 4]; 4]>() as u64
-                        ),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(
+                                ::std::mem::size_of::<[[f32; 4]; 4]>() as u64,
+                            ),
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::all(),
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(
-                            ::std::mem::size_of::<DisplayUniforms>() as u64
-                        ),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::all(),
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(
+                                ::std::mem::size_of::<DisplayUniforms>() as u64,
+                            ),
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                ],
             });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera_buffer"),
@@ -376,13 +380,16 @@ impl State {
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("camera_bind_group"),
             layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }, wgpu::BindGroupEntry {
-                binding: 1,
-                resource: uniforms_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: uniforms_buffer.as_entire_binding(),
+                },
+            ],
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex_buffer"),
@@ -1403,7 +1410,11 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 pub fn set_uniforms(state: &State, queue: &wgpu::Queue) {
-    let is_24bpp = if state.display_depth == DisplayDepth::D24Bits { 1 } else { 0 };
+    let is_24bpp = if state.display_depth == DisplayDepth::D24Bits {
+        1
+    } else {
+        0
+    };
     queue.write_buffer(
         &state.uniforms_buffer,
         0,

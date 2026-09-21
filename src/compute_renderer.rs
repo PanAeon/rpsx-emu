@@ -446,63 +446,28 @@ impl ComputeRenderer {
         (to_renderer_sender, gpu_receiver, handle)
     }
 
+    pub fn get_triangle_bounds(&self, vs: &[Vert]) -> (i16, i16, i16, i16) {
+        let min_x = cmp::min(
+            vs[0].position[0],
+            cmp::min(vs[1].position[0], vs[2].position[0]),
+        );
+        let max_x = cmp::max(
+            vs[0].position[0],
+            cmp::max(vs[1].position[0], vs[2].position[0]),
+        );
+        let min_y = cmp::min(
+            vs[0].position[1],
+            cmp::min(vs[1].position[1], vs[2].position[1]),
+        );
+        let max_y = cmp::max(
+            vs[0].position[1],
+            cmp::max(vs[1].position[1], vs[2].position[1]),
+        );
+        (min_x, min_y, max_x, max_y)
+    }
+
     pub fn flush(&mut self) {
         if !self.vertices.is_empty() {
-            println!("flush, num vertices: {}", self.vertices.len());
-            /*{
-            self.vertices.clear();
-            // push two triangles instead...
-            let c1 = Colour { r: 225, g: 225, b: 225, m: 0 };
-            let vs = [Vertex {x: 0, y: 0}, Vertex{x:640, y: 0}, Vertex {x: 0, y: 480}];
-            let uv = [[0, 0];3];
-            let ctx =
-            RenderingContext {
-                page_base_x: 0,
-                page_base_y: 0,
-                semi_transparency: 0,
-                texture_depth: TextureDepth::T4Bit,
-                // dithering from 24 to 16 bits RGB
-                dithering: false,
-                draw_to_display: true,
-                // force "mask" bit of the pixel to 1 when writing to VRAM
-                force_set_mask_bit: false,
-                // don't draw to pixels which have the "mask" bit set
-                preserve_masked_pixels: false,
-                texture_disable: false,
-                hres: HorizontalRes::from_fields(1, 1),
-                vres: VerticalRes::Y480Lines,
-                // gpu itself always draws 15bit RGB, 24bit output must use external assets
-                display_depth: DisplayDepth::D15Bits,
-                interlaced: false,
-                display_disabled: false,
-
-                rectange_texture_x_flip: false,
-                rectange_texture_y_flip: false,
-
-                texture_window_x_mask: 0,
-                texture_window_y_mask: 0,
-                texture_window_x_offset: 0,
-                texture_window_y_offset: 0,
-                drawing_area_left: self.drawing_area_top_left.0,
-                drawing_area_top: self.drawing_area_top_left.1,
-                drawing_area_right: self.drawing_area_bottom_right.0,
-                drawing_area_bottom: self.drawing_area_bottom_right.1,
-                drawing_x_offset: 0,
-                drawing_y_offset: 0,
-                display_vram_x_start: 0,
-                display_vram_y_start: 0,
-                display_horiz_start: 0,
-                display_horiz_end: 0,
-                display_line_start: 0,
-                display_line_end: 0,
-            };
-            self.render_triangle(&[c1;3], 0, 0, &vs, &uv, false, false, false, &ctx);
-            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-            // self.render_triangle(&[c1;4], 0, 0, &vs, &uv, false, false, false, &ctx);
-            }*/
             {
                 let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
                 let mut width_bin_x = width / 128;
@@ -519,51 +484,16 @@ impl ComputeRenderer {
                 let mut bin_sizes = [0u32; 128 * 64];
                 let mut indices = [0u32; 128 * 64];
                 for (_, vs) in self.vertices.chunks_exact(3).enumerate() {
-                    let min_x = cmp::max(
-                        0,
-                        cmp::min(
-                            vs[0].position[0],
-                            cmp::min(vs[1].position[0], vs[2].position[0]),
-                        ),
-                    );
-                    let max_x = cmp::min(
-                        1023,
-                        cmp::max(
-                            vs[0].position[0],
-                            cmp::max(vs[1].position[0], vs[2].position[0]),
-                        ),
-                    );
-                    let min_y = cmp::max(
-                        0,
-                        cmp::min(
-                            vs[0].position[1],
-                            cmp::min(vs[1].position[1], vs[2].position[1]),
-                        ),
-                    );
-                    let max_y = cmp::min(
-                        511,
-                        (cmp::max(
-                            vs[0].position[1],
-                            cmp::max(vs[1].position[1], vs[2].position[1]),
-                        )),
-                    );
+                    let (min_x, min_y, max_x, max_y) = self.get_triangle_bounds(vs);
+                    let min_x = (min_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
+                    let max_x = (max_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
+                    let min_y = (min_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
+                    let max_y = (max_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
 
-                    let start_bin_x = min(
-                        127,
-                        (min_x as u16 - self.drawing_area_top_left.0) / width_bin_x,
-                    );
-                    let end_bin_x = min(
-                        127,
-                        (max_x as u16 - self.drawing_area_top_left.0) / width_bin_x,
-                    );
-                    let start_bin_y = min(
-                        63,
-                        (min_y as u16 - self.drawing_area_top_left.1) / width_bin_y,
-                    );
-                    let end_bin_y = min(
-                        63,
-                        (max_y as u16 - self.drawing_area_top_left.1) / width_bin_y,
-                    );
+                    let start_bin_x = min(127, (min_x as u16 / width_bin_x));
+                    let end_bin_x = min(127, (max_x as u16) / width_bin_x);
+                    let start_bin_y = min(63, (min_y as u16) / width_bin_y);
+                    let end_bin_y = min(63, (max_y as u16) / width_bin_y);
 
                     for y in start_bin_y..=end_bin_y {
                         for x in start_bin_x..=end_bin_x {
@@ -588,51 +518,16 @@ impl ComputeRenderer {
                 let len = offsets.remove(offsets.len() - 1);
                 let mut bins = vec![0u32; len as usize]; //Vec::<u32>::with_capacity(len as usize);
                 for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
-                    let min_x = cmp::max(
-                        0,
-                        cmp::min(
-                            vs[0].position[0],
-                            cmp::min(vs[1].position[0], vs[2].position[0]),
-                        ),
-                    );
-                    let max_x = cmp::min(
-                        1023,
-                        cmp::max(
-                            vs[0].position[0],
-                            cmp::max(vs[1].position[0], vs[2].position[0]),
-                        ),
-                    );
-                    let min_y = cmp::max(
-                        0,
-                        cmp::min(
-                            vs[0].position[1],
-                            cmp::min(vs[1].position[1], vs[2].position[1]),
-                        ),
-                    );
-                    let max_y = cmp::min(
-                        511,
-                        (cmp::max(
-                            vs[0].position[1],
-                            cmp::max(vs[1].position[1], vs[2].position[1]),
-                        )),
-                    );
+                    let (min_x, min_y, max_x, max_y) = self.get_triangle_bounds(vs);
+                    let min_x = (min_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
+                    let max_x = (max_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
+                    let min_y = (min_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
+                    let max_y = (max_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
 
-                    let start_bin_x = min(
-                        127,
-                        (min_x as u16 - self.drawing_area_top_left.0) / width_bin_x,
-                    );
-                    let end_bin_x = min(
-                        127,
-                        (max_x as u16 - self.drawing_area_top_left.0) / width_bin_x,
-                    );
-                    let start_bin_y = min(
-                        63,
-                        (min_y as u16 - self.drawing_area_top_left.1) / width_bin_y,
-                    );
-                    let end_bin_y = min(
-                        63,
-                        (max_y as u16 - self.drawing_area_top_left.1) / width_bin_y,
-                    );
+                    let start_bin_x = min(127, (min_x as u16 / width_bin_x));
+                    let end_bin_x = min(127, (max_x as u16) / width_bin_x);
+                    let start_bin_y = min(63, (min_y as u16) / width_bin_y);
+                    let end_bin_y = min(63, (max_y as u16) / width_bin_y);
 
                     for y in start_bin_y..=end_bin_y {
                         for x in start_bin_x..=end_bin_x {
@@ -643,7 +538,6 @@ impl ComputeRenderer {
                         }
                     }
                 }
-                println!(">>len: {}", bins.len());
 
                 let mut result = Vec::from_iter(bin_sizes);
                 result.extend_from_slice(&offsets);
@@ -652,33 +546,6 @@ impl ComputeRenderer {
                 self.queue
                     .write_buffer(&self.bins_buffer, 0, bytemuck::cast_slice(&result[..]));
             }
-            // now we need to partition vertices into bins;
-            // let mut bins = vec![0xFFFFu32;64*64*128].into_boxed_slice();//Box::new([0xFFFFu32;64*64*128]);
-            // let mut bin_indices = [0;64*128];
-            // for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
-            //     let min_x = cmp::min(vs[0].position[0], cmp::min(vs[1].position[0], vs[2].position[0]));
-            //     let max_x = cmp::min(1023,cmp::max(vs[0].position[0], cmp::max(vs[1].position[0], vs[2].position[0])));
-            //     let min_y =  cmp::min(vs[0].position[1], cmp::min(vs[1].position[1], vs[2].position[1]));
-            //     let max_y = cmp::min( 511, (cmp::max(vs[0].position[1], cmp::max(vs[1].position[1], vs[2].position[1]))));
-            //
-            //
-            //
-            //     let start_bin_x = min_x as usize / 8;
-            //     let end_bin_x = max_x as usize / 8;
-            //     let start_bin_y = min_y as usize / 8;
-            //     let end_bin_y = max_y as usize / 8;
-            //
-            //     for y in start_bin_y..=end_bin_y {
-            //         for x in start_bin_x..=end_bin_x {
-            //             let bin_idx = bin_indices[y*128+x];
-            //             bins[64*(y*128 + x) + bin_idx] = 3 * i as u32;
-            //             bin_indices[y*128+x] += 1;
-            //         }
-            //     }
-            // }
-            //
-            // self.queue
-            //     .write_buffer(&self.bins_buffer, 0, bytemuck::cast_slice(&bins[..]));
             self.queue.write_buffer(
                 &self.uniforms_buffer,
                 0,
@@ -765,9 +632,8 @@ impl ComputeRenderer {
             // self.profiler.resolve_queries(&mut bin_encoder);
             // self.profiler.resolve_queries(&mut clear_encoder);
             let error_scope = self.device.push_error_scope(
-                wgpu::ErrorFilter::Validation
-                    // | wgpu::ErrorFilter::Internal
-                    // | wgpu::ErrorFilter::OutOfMemory,
+                wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
+                                               // | wgpu::ErrorFilter::OutOfMemory,
             );
             let idx = self.queue.submit(vec![
                 // clear_encoder.finish(),
@@ -937,12 +803,11 @@ impl ComputeRenderer {
         let min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
         let max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
-        // let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
-        // else {
-        //     println!("too large, skipped");
-        //     return;
-        // };
-               // println!("render triangle: a: {},{} b: {},{} c: {},{}; color: {} {} {}", vs[0].x, vs[0].y,vs[1].x, vs[1].y,vs[2].x, vs[2].y, colors[0].r, colors[0].g, colors[0].b);
+        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
+        else {
+            return;
+        };
+        // println!("render triangle: a: {},{} b: {},{} c: {},{}; color: {} {} {}", vs[0].x, vs[0].y,vs[1].x, vs[1].y,vs[2].x, vs[2].y, colors[0].r, colors[0].g, colors[0].b);
         let clut = Clut::new(clut);
         let texture = Texture::new(page, clut);
         let texture_depth = match texture.depth {
@@ -1020,11 +885,11 @@ impl ComputeRenderer {
         v.y += ctx.drawing_y_offset as i32;
         // let side = Vertex {x: 127, y: 127};
 
-        // let Some((min_x, min_y, max_x, max_y)) =
-        //     self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
-        // else {
-        //     return;
-        // };
+        let Some((min_x, min_y, max_x, max_y)) =
+            self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
+        else {
+            return;
+        };
         // let side = Vertex {x: side.x , y: side.y - 1};
         //
 
@@ -1032,13 +897,11 @@ impl ComputeRenderer {
         flags.set_textured(textured);
         flags.set_semitrans(semi_trans);
         flags.set_blend(blend);
-        //  flags.set_blend(false);
-        // flags.set_semitrans(false);
         flags.set_dither(false);
         flags.set_transparency(ctx.semi_transparency);
         flags.set_force_set_mask_bit(ctx.force_set_mask_bit);
         flags.set_preserve_masked_pixels(ctx.preserve_masked_pixels);
-        flags.set_is_rectangle(true);
+        // flags.set_is_rectangle(true);
 
         let clut = Clut::new(clut);
         let clut = [clut.base_x as u16, clut.base_y as u16];
@@ -1056,54 +919,56 @@ impl ComputeRenderer {
         let tex_size_y = (side.y) as u16;
 
         // if textured {
-        println!("render rectangle, textured: {} xy: {}x{}, size: {}x{}, depth: {}", textured, v.x, v.y, side.x, side.y, texture_depth);
-        println!("mask: {} {}", ctx.texture_window_x_mask, ctx.texture_window_y_mask);
-        println!("offset: {} {}", ctx.texture_window_x_offset, ctx.texture_window_y_offset);
-        println!("texpage base: {} {}", ctx.page_base_x, ctx.page_base_y);
-        println!("clut: {} {}", clut[0], clut[1]);
-        println!("ctx: {} {} {} {}", ctx.drawing_area_left, ctx.drawing_area_top, ctx.drawing_area_right, ctx.drawing_area_bottom);
-        println!("self: {} {} {} {}", self.drawing_area_top_left.0, self.drawing_area_top_left.1, self.drawing_area_bottom_right.0, self.drawing_area_bottom_right.1);
+        // println!("render rectangle, textured: {} xy: {}x{}, size: {}x{}, depth: {}", textured, v.x, v.y, side.x, side.y, texture_depth);
+        // println!("mask: {} {}", ctx.texture_window_x_mask, ctx.texture_window_y_mask);
+        // println!("offset: {} {}", ctx.texture_window_x_offset, ctx.texture_window_y_offset);
+        // println!("texpage base: {} {}", ctx.page_base_x, ctx.page_base_y);
+        // println!("clut: {} {}", clut[0], clut[1]);
+        // println!("ctx: {} {} {} {}", ctx.drawing_area_left, ctx.drawing_area_top, ctx.drawing_area_right, ctx.drawing_area_bottom);
+        // println!("self: {} {} {} {}", self.drawing_area_top_left.0, self.drawing_area_top_left.1, self.drawing_area_bottom_right.0, self.drawing_area_bottom_right.1);
         // }
 
-        let v0 = (Vert {
-            position: [v.x as i16, v.y as i16],
-            uv,
-            color: [color.r, color.g, color.b],
-            texture_depth,
-            flags: flags.0,
-            clut,
-            texpage_base,
-            // _pad: 0,
-            texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
-            texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
-        let v1 = (Vert {
-            position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
-            uv: [uv[0], (uv[1] + tex_size_y)],
-            color: [color.r, color.g, color.b],
-            texture_depth,
-            flags: flags.0,
-            clut,
-            texpage_base,
-            texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
-            texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
-        let v2 = (Vert {
-            position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
-            uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
-            color: [color.r, color.g, color.b],
-            texture_depth,
-            flags: flags.0,
-            clut,
-            texpage_base,
-            // _pad: 0,
-            texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
-            texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
-        self.ensure_vertex_room(3);
-        self.vertices.extend_from_slice(&[v0, v1, v2]);
-
         /*
+                let v0 = (Vert {
+                    position: [v.x as i16, v.y as i16],
+                    uv,
+                    color: [color.r, color.g, color.b],
+                    texture_depth,
+                    flags: flags.0,
+                    clut,
+                    texpage_base,
+                    // _pad: 0,
+                    texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+                    texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+                });
+                let v1 = (Vert {
+                    position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
+                    uv: [uv[0], (uv[1] + tex_size_y)],
+                    color: [color.r, color.g, color.b],
+                    texture_depth,
+                    flags: flags.0,
+                    clut,
+                    texpage_base,
+                    texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+                    texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+                });
+                let v2 = (Vert {
+                    position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
+                    uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
+                    color: [color.r, color.g, color.b],
+                    texture_depth,
+                    flags: flags.0,
+                    clut,
+                    texpage_base,
+                    // _pad: 0,
+                    texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+                    texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+                });
+                self.ensure_vertex_room(3);
+                self.vertices.extend_from_slice(&[v0, v1, v2]);
+
+        */
+
         let v0 = (Vert {
             position: [v.x as i16, v.y as i16],
             uv,
@@ -1184,7 +1049,6 @@ impl ComputeRenderer {
         self.ensure_vertex_room(3);
         self.vertices.extend_from_slice(&[v3, v4, v5]);
         // self.vertices.extend_from_slice(&[v4, v3, v5]);
-       */
     }
 
     // TODO: The transfer is affected by Mask setting.

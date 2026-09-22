@@ -768,6 +768,7 @@ impl ComputeRenderer {
             textured,
             semi_trans,
             blend,
+            shaded,
             ctx,
         );
         if !is_triangle {
@@ -781,6 +782,7 @@ impl ComputeRenderer {
                 textured,
                 semi_trans,
                 blend,
+                shaded,
                 ctx,
             );
         }
@@ -796,6 +798,7 @@ impl ComputeRenderer {
         textured: bool,
         semi_trans: bool,
         blend: bool,
+        shaded: bool,
         ctx: &RenderingContext,
     ) {
         let min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
@@ -822,7 +825,9 @@ impl ComputeRenderer {
         flags.set_textured(textured);
         flags.set_blend(blend);
         flags.set_semitrans(semi_trans);
-        flags.set_dither(texture.dithering);
+        flags.set_dither(blend | shaded);
+        // flags.set_dither(texture.dithering); // dither applied only when gourad shading or texture
+        // blending
         flags.set_transparency(texture.semi_transparency);
         flags.set_force_set_mask_bit(ctx.force_set_mask_bit);
         flags.set_preserve_masked_pixels(ctx.preserve_masked_pixels);

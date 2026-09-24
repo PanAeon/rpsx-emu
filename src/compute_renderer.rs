@@ -825,7 +825,7 @@ impl ComputeRenderer {
         flags.set_textured(textured);
         flags.set_blend(blend);
         flags.set_semitrans(semi_trans);
-        flags.set_dither(blend | shaded);
+        flags.set_dither(ctx.dithering & (blend | shaded));
         // flags.set_dither(texture.dithering); // dither applied only when gourad shading or texture
         // blending
         flags.set_transparency(texture.semi_transparency);

@@ -1422,8 +1422,8 @@ impl Texture {
         let base_x = ((data & 0xf) as usize) * 64; // n * 64
         let base_y = (((data >> 4) & 1) as usize) * 256; // n * 256
         let semi_transparency = ((data >> 5) & 3) as u8;
-        let dithering = (data >> 9) & 1 != 0;
-        let draw_to_display = (data >> 10) & 1 != 0;
+        let dithering = (data >> 9) & 1 != 0; // not used!!!
+        let draw_to_display = (data >> 10) & 1 != 0; // not used!!!
         // let depth = ((data >> 7) & 3) as u8;
 
         let depth = match (data >> 7) & 3 {

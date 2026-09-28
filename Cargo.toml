@@ -22,6 +22,11 @@ crossbeam = "*"
 num_enum = "*"
 arrayvec = "*"
 core_affinity = "0.8"
+cranelift = "*"
+cranelift-module = "*"
+cranelift-jit = "*"
+cranelift-native = "*"
+target-lexicon = "*"
 
 [dependencies.image]
 version = "0.25"

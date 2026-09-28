@@ -3,9 +3,9 @@ use std::thread::JoinHandle;
 
 use crossbeam::channel::{Receiver, Sender};
 
-use crate::{bios::Bios, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, gpu::{ Gpu }, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
+use crate::{bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, gpu::Gpu, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
 
-mod map {
+pub mod map {
     pub struct Range(u32, u32);
 
     impl Range {
@@ -23,7 +23,7 @@ mod map {
     pub const MEM_CTRL: Range = Range(0x1f801000, 36);
     pub const RAM_SIZE: Range = Range(0x1f801060, 4);
     pub const CACHE_CONTROL: Range = Range(0xfffe0130, 4);
-    pub const RAM: Range = Range(0x0000_0000, 8 * 1024 * 1024);
+    pub const RAM: Range = Range(0x0000_0000, 2 * 1024 * 1024);// why 8mb?
     pub const SCRATCHPAD: Range = Range(0x1f80_0000, 1024);
     pub const SPU: Range = Range(0x1f801c00, 640);
     pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
@@ -101,6 +101,7 @@ pub struct System {
     pub sio: Sio,
     pub mdec: Mdec,
     pub gpu: Gpu,
+    pub block_cache: BlockCache,
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -117,10 +118,10 @@ pub fn mask_region(addr: u32) -> u32 {
 
 impl System {
     pub fn new(bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, spu: Spu, irqctl: InterruptController,
-        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu) -> System {
+        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu, block_cache: BlockCache) -> System {
     
         System { bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
-        gpu}
+        gpu, block_cache}
     }
     pub fn load<T:Addressable>(&mut self, addr: u32) -> T {
         let address = mask_region(addr);
@@ -195,7 +196,7 @@ impl System {
             panic!("unaligned store{:?} address: {:08x}", T::width(), address)
         }
         if let Some(offset) = map::RAM.contains(address) {
-            return self.ram.store(offset, value);
+            return Ram::store(self, offset, value);
         }
         if let Some(offset) = map::GPU.contains(address) {
             // gpu::store(self, offset, value);
@@ -404,7 +405,7 @@ impl System {
                         },
                         _ => panic!("Unhandled DMA source port {}", port as u8)
                     };
-                    self.ram.store::<u32>(cur_addr, src_word);
+                    Ram::store::<u32>(self, cur_addr, src_word);
                 }
             };
 
@@ -450,4 +451,34 @@ impl System {
         Dma::done(self, port);
         // channel.done();
     }
+}
+
+pub extern "C" fn store_word(system_ptr: *mut System, addr: u32, val: u32) {
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+    System::store(system, addr, val);
+}
+
+pub extern "C" fn store_half_word(system_ptr: *mut System, addr: u32, val: u16) {
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+    System::store(system, addr, val);
+}
+
+pub extern "C" fn store_byte(system_ptr: *mut System, addr: u32, val: u8) {
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+    System::store(system, addr, val);
+}
+
+pub extern "C" fn load_word(system_ptr: *mut System, addr: u32) -> u32 {
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+    System::load(system, addr)
+}
+
+pub extern "C" fn load_half_word(system_ptr: *mut System, addr: u32) -> u16 {
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+    System::load(system, addr)
+}
+
+pub extern "C" fn load_byte(system_ptr: *mut System, addr: u32) -> u8 {
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+    System::load(system, addr)
 }

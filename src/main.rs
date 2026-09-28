@@ -54,6 +54,8 @@ mod timers;
 
 mod cdxa;
 mod resources;
+mod dynarec;
+mod block_cache;
 
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
@@ -196,7 +198,7 @@ pub struct State {
     // dimensions: (u32, u32),
     framebuffer: Arc<Mutex<Vec<u32>>>,
     // image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
-    cpu: cpu::Cpu,
+    cpu: dynarec::Dynarec,
     texture_size: wgpu::Extent3d,
     audio_sender: crossbeam::channel::Sender<[i16; 2]>,
     audio_stream: cpal::Stream,
@@ -547,10 +549,11 @@ impl State {
             )
         };
         let gpu = gpu::Gpu::new(sender, receiver, handle);
+        let block_cache = block_cache::BlockCache::new();
         let system = system::System::new(
-            bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu,
+            bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu, block_cache,
         );
-        let cpu = cpu::Cpu::new(system);
+        let cpu = dynarec::Dynarec::new(system);
 
         let core_ids = core_affinity::get_core_ids().unwrap();
         let res = core_affinity::set_for_current(core_ids[0]);
@@ -721,6 +724,7 @@ impl State {
     }
 
     fn sideload_exe(&mut self) {
+        /*
         // let filename = "/foo/psxtest_cpu.exe";
         // let filename = "/foo/psxtest_gte.exe";
         // let filename = "/foo/psxtest_gpu.exe";
@@ -785,6 +789,8 @@ impl State {
         }
         self.cpu.pc = initial_pc;
         self.cpu.next_pc = initial_pc + 4;
+        */
+        panic!("not implemented");
     }
 
     fn update_vertex_buffer_if_needed(
@@ -878,7 +884,7 @@ impl State {
     fn update(&mut self, event_loop: &ActiveEventLoop) {
         self.update_gamepad();
         if self.paused {
-            println!("current pc: 0x{:X}", self.cpu.pc);
+            // println!("current pc: 0x{:X}", self.cpu.pc);
             // self.cpu.system.irqctl.status.set_sio(true);
             // self.cpu.system.irqctl.status.set_ctl_mem(true);
             // self.cpu.pc = self.cpu.pc + 4;
@@ -965,11 +971,29 @@ impl State {
                     scheduler::Event::DsrOff => self.cpu.system.sio.turn_dsr_off(),
                 }
             }
-            for _ in 0..20 {
-                self.cpu.run_next_instruction();
-                self.cpu.check_for_tty_output();
-            }
-            self.cpu.system.scheduler.advance(40); // 40???
+            // ok everything works, except memory card... check that later
+            // let budget = self.cpu.system.scheduler.next_event_budget();
+            let pc = self.cpu.pc();
+            let block_idx = if let Some(entry) = self.cpu.system.block_cache.get_entry(pc) {
+                if entry.dirty {
+                    panic!("recompile block");
+                    // recompile block...
+                }
+                entry.block_idx
+            } else {
+                let block = self.cpu.compile_block(pc);
+                let idx = self.cpu.system.block_cache.insert_block(pc, block);
+                idx
+                // compile new block...
+            };
+            let num_cycles = self.cpu.run_block(block_idx);
+            // then run it...
+
+            // for _ in 0..(budget / 2) {
+            //     self.cpu.run_next_instruction();
+            //     self.cpu.check_for_tty_output();
+            // }
+            self.cpu.system.scheduler.advance(num_cycles); // 40???
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();

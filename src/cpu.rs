@@ -1,7 +1,7 @@
 use crate::{gte::Gte, system::{Addressable, System}};
 
 #[derive(Clone, Copy, Debug)]
-pub struct Instruction(u32);
+pub struct Instruction(pub u32);
 
 impl Instruction {
     /// Return bits 31..26
@@ -51,6 +51,22 @@ impl Instruction {
     pub fn imm26(&self) -> u32 {
         let Instruction(code) = self;
         code & 0x3ff_ffff
+    }
+
+    pub fn is_unconditional_jump(&self) -> bool {
+        let code = self.opcode();
+
+        // j, jal
+        if code == 0x02 || code == 0x03 {
+            return true;
+        }
+
+        if code == 0x00 {
+            let sec = self.secondary_opcode();
+            return sec == 0x08; // jr
+        }
+
+        false
     }
 }
 
@@ -305,9 +321,9 @@ impl Cpu {
     }
     pub fn delayed_load_chain(&mut self, reg:u32, val:u32) {
         let (pending_reg, pending_val) = self.load;
-        // if pending_reg != reg {
+        if pending_reg != reg {
             self.set_reg(pending_reg, pending_val);
-        // }
+        }
         self.load = (reg, val);
     }
 
@@ -400,10 +416,6 @@ impl Cpu {
             self.delayed_load();
             return self.exception(Exception::LoadAddressError(addr));
         }
-        // if self.sr & 0x10000 != 0 {
-        //     println!("Cache is isolated, ignoring read to {:08x}", addr);
-        //     return;
-        // }
         let v = self.load::<u32>(addr);
         self.delayed_load_chain(instr.rt(), v);
     }
@@ -764,7 +776,7 @@ impl Cpu {
         self.sr |= (mode << 2) & 0x3f;
 
         self.cause &= !0x7c;
-        self.cause = (cause.code() as u32) << 2;
+        self.cause |= (cause.code() as u32) << 2; // woot?
 
         if self.delay_slot { // this what happend?
             self.epc = self.current_pc.wrapping_sub(4);

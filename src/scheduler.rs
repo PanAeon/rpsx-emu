@@ -38,7 +38,7 @@ pub struct Scheduler {
     tasks: ArrayVec<Task, 32>,
     pub cycle: u64,
 }
-// FIXME: we have a problem: 668*735/2172 = 226.049.... gpu is not in sync
+//  we have a problem: 668*735/2172 = 226.049.... gpu is not in sync
 impl Scheduler {
     // pub fn new() -> Self {
     //     let mut timeline = vec![];
@@ -70,6 +70,13 @@ impl Scheduler {
         }
 
         Some(task.event)
+    }
+
+    pub fn next_event_budget(&mut self) -> u64 {
+        match self.tasks.first() {
+            Some(task) => task.cycle - self.cycle,
+            None => 1024
+        }
     }
 
     pub fn unschedule(&mut self, event: &Event) {

@@ -83,10 +83,28 @@ impl BlockCache {
         &self.blocks[idx as usize]
     }
 
-    pub(crate) fn invalidate_ram(&self, offset: u32, width: usize) {
-        let entry = self.ram[(offset / 4) as usize];
+    // wrooooong...
+    pub fn invalidate_ram(&mut self, offset: u32, width: usize) {
+        let idx = (offset / 4) as usize;
+        let entry =  self.ram[idx];
         if entry.protected {
-            panic!("dirty code!");
+            println!("protected mem overwrite!");
+            for i in 0..self.ram.len() {
+                self.ram[i].protected = false;
+            }
+            // entry.protected = false;
+            // let start = idx.saturating_sub(256);
+            // for i in start..=idx {
+            //     let entry = &mut self.ram[idx];
+            //     if entry.protected {
+            //         let block = &mut self.blocks[entry.block_idx as usize];
+            //         if i + block.length as usize >= idx {
+            //             entry.dirty = true;
+            //             // compute crc32 in ideal scenario
+            //         }
+            //     }
+            // }
+            // panic!("dirty code!");
         }
     }
 }

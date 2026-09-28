@@ -209,9 +209,18 @@ impl Dynarec {
     }
 
     pub fn run_block(&mut self, idx: u16) -> u64 {
+        // self.debug_print();
         let block = self.system.block_cache.get_block(idx);
         let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
         jit_fn() as u64
+    }
+
+    pub fn debug_print(&self) {
+        println!("CPU pc: 0x{:X}", self.regs.pc);
+        for (i, x) in self.regs.regs.iter().enumerate() {
+            println!("regs[{:02}]: 0x{:X}", i, x);
+        }
+        println!();
     }
 
     pub fn compile_block(&mut self, addr: u32) -> Block {
@@ -298,6 +307,7 @@ impl Dynarec {
         }
 
         if !last_jmp {
+            println!("not last jump");
             bldr.save_context();
             bldr.set_pc_imm(addr + (xs.len() as u32 * 4) + 4);
             let cycles = bldr.get_cycles();
@@ -365,10 +375,10 @@ impl Dynarec {
         &buff[0..len]
     }
 
-    pub fn create_data(&mut self) {
-        // self.module.declare_data(name, linkage, writable, tls)
-        // self.data_description.define(contents);
-    }
+    // pub fn create_data(&mut self) {
+    //     // self.module.declare_data(name, linkage, writable, tls)
+    //     // self.data_description.define(contents);
+    // }
 }
 
 struct BlockBuilder<'a> {
@@ -397,6 +407,7 @@ impl<'a> BlockBuilder<'a> {
             0x00 => match instr.secondary_opcode() {
                 0x00 => self.compile_sll(instr),
                 0x08 => self.compile_jr(instr),
+                0x20 => self.compile_add(instr),
                 0x21 => self.compile_addu(instr),
                 0x24 => self.compile_and(instr),
                 0x25 => self.compile_or(instr),
@@ -703,7 +714,8 @@ impl<'a> BlockBuilder<'a> {
         // FIXME: panic if next instruction is any kind of jump..
         self.compile_instr_in_delay_slot(next_instr);
 
-        let next_pc = self.get_current_pc().wrapping_add(offset);
+        // why wrapping add 4?????
+        let next_pc = self.get_current_pc().wrapping_add(offset).wrapping_add(4);
 
         self.save_context();
         self.set_pc_imm(next_pc);
@@ -764,9 +776,28 @@ impl<'a> BlockBuilder<'a> {
 
         self.bldr.switch_to_block(else_block);
         self.bldr.seal_block(else_block);
-        // if self.reg(instr.rs()) != self.reg(instr.rt()) {
-        //     self.branch(instr.imm_se());
-        // }
+    }
+    fn compile_add(&mut self, instr: Instruction) {
+        let reg_a = self.get_reg_read(instr.rs());
+        let reg_b = self.get_reg_read(instr.rt());
+        let a = self.bldr.use_var(reg_a);
+        let b = self.bldr.use_var(reg_b);
+        let (res, overflow) = self.bldr.ins().sadd_overflow(a, b);
+        self.compile_delayed_load();
+
+        let then_block = self.bldr.create_block();
+        let else_block = self.bldr.create_block();
+        self.bldr.ins().brif(overflow, then_block, &[], else_block, &[]);
+        self.bldr.switch_to_block(then_block);
+        self.bldr.seal_block(then_block);
+        self.compile_exception(Exception::Overflow, None);
+
+        self.bldr.switch_to_block(else_block);
+        self.bldr.seal_block(else_block);
+        if instr.rd() != 0 {
+            let dest = self.get_reg_write(instr.rd());
+            self.bldr.def_var(dest, res);
+        }
     }
 
     // add unsigned
@@ -805,21 +836,14 @@ impl<'a> BlockBuilder<'a> {
             let dest = self.get_reg_write(instr.rt());
             self.bldr.def_var(dest, res);
         }
-        // let i = instr.imm_se() as i32;
-        // let s = self.reg(instr.rs()) as i32;
-        // let v = match s.checked_add(i) {
-        //     Some(v) => v as u32,
-        //     None => return self.exception(Exception::Overflow),
-        // };
-        // self.delayed_load();
-        // self.set_reg(instr.rt(), v)
     }
 
+    // add immediate unsigned
     fn compile_addiu(&mut self, instr: Instruction) {
         let i = instr.imm_se();
         let src = self.get_reg_read(instr.rs());
         let v = self.bldr.use_var(src);
-        let res = self.bldr.ins().iadd_imm_u(v, i as i64);
+        let res = self.bldr.ins().iadd_imm_s(v, i as i64);
         self.compile_delayed_load();
         if instr.rt() != 0 {
             let dest = self.get_reg_write(instr.rt());
@@ -1227,6 +1251,7 @@ impl<'a> BlockBuilder<'a> {
             .call(self.load_byte, &[system, address]);
         let v = self.bldr.inst_results(res)[0];
         let v = self.bldr.ins().sextend(types::I32, v);
+        // let v = self.bldr.ins().uextend(types::I32, v);
 
         // do we sign extend it??? (yes)
 
@@ -1351,7 +1376,6 @@ impl<'a> BlockBuilder<'a> {
                 0x19 => compile_multu(instr),
                 0x1A => compile_div(instr),
                 0x1B => compile_divu(instr),
-                0x20 => compile_add(instr),
                 0x22 => compile_sub(instr),
                 0x23 => compile_subu(instr),
                 0x2A => compile_slt(instr),

@@ -455,6 +455,7 @@ impl System {
 
 pub extern "C" fn store_word(system_ptr: *mut System, addr: u32, val: u32) {
     let system = unsafe { system_ptr.as_mut().expect("ok") };
+    // println!("store word: addr: {:X}, val: {:X}", addr, val);
     System::store(system, addr, val);
 }
 

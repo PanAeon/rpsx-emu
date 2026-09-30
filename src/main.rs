@@ -56,6 +56,7 @@ mod cdxa;
 mod resources;
 mod dynarec;
 mod block_cache;
+mod dummy_renderer;
 
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
@@ -199,6 +200,7 @@ pub struct State {
     framebuffer: Arc<Mutex<Vec<u32>>>,
     // image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
     cpu: dynarec::Dynarec,
+    interpreter: cpu::Cpu,
     texture_size: wgpu::Extent3d,
     audio_sender: crossbeam::channel::Sender<[i16; 2]>,
     audio_stream: cpal::Stream,
@@ -523,16 +525,6 @@ impl State {
         let irqctl = irq::InterruptController::default();
         let sio = sio::Sio::new();
         let mdec = mdec::Mdec::new();
-        //
-        //     // let bytes = fs::read("/foo/SCPH1001.BIN")?;
-        //     for i in (0..40).step_by(4) {
-        //         print!("0x{:02X}", bios.data[i+3]);
-        //         print!("{:02X}", bios.data[i+2]);
-        //         print!("{:02X}", bios.data[i+1]);
-        //         print!("{:02X}", bios.data[i+0]);
-        //         println!();
-        //     }
-        //
         let mut scheduler = scheduler::Scheduler::default();
         scheduler.init();
         let timers = timers::Timers::new();
@@ -554,6 +546,34 @@ impl State {
             bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu, block_cache,
         );
         let cpu = dynarec::Dynarec::new(system);
+
+        // interpreter
+        let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
+        // let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
+        let ram = ram::Ram::new();
+        let scratchpad = scratchpad::Scratchpad::new();
+        let dma = dma::Dma::new();
+        // let gpu = gpu::Gpu::new();
+        let spu = spu::Spu::new();
+        let cdrom = CDRom::default();
+        // let spu = spu::Spu::default();
+        let irqctl = irq::InterruptController::default();
+        let sio = sio::Sio::new();
+        let mdec = mdec::Mdec::new();
+        let mut scheduler = scheduler::Scheduler::default();
+        scheduler.init();
+        let timers = timers::Timers::new();
+        let (sender, receiver, handle) =
+            renderer::Renderer::create();
+
+        let gpu = gpu::Gpu::new(sender, receiver, handle);
+        let block_cache = block_cache::BlockCache::new();
+        let system = system::System::new(
+            bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu, block_cache,
+        );
+        let interpreter = cpu::Cpu::new(system);
+
+
 
         let core_ids = core_affinity::get_core_ids().unwrap();
         let res = core_affinity::set_for_current(core_ids[0]);
@@ -608,6 +628,7 @@ impl State {
             // small_font,
             // sounds
             cpu,
+            interpreter,
             audio_stream,
             audio_sender,
             paused: false,
@@ -989,11 +1010,13 @@ impl State {
             let num_cycles = self.cpu.run_block(block_idx);
             // then run it...
 
-            // for _ in 0..(budget / 2) {
-            //     self.cpu.run_next_instruction();
-            //     self.cpu.check_for_tty_output();
-            // }
-            self.cpu.system.scheduler.advance(num_cycles); // 40???
+            let interpreter_pc = self.interpreter.pc;
+            for _ in 0..num_cycles {
+                self.interpreter.run_next_instruction();
+                // self.interpreter.check_for_tty_output();
+            }
+            check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
+            self.cpu.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -1301,6 +1324,23 @@ impl State {
         }
         // println!("0x{:X}", prev_buttons);
         self.cpu.system.sio.gamepad1.set_buttons(prev_buttons);
+    }
+}
+const REGISTER_NAMES : [&str;32] = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+  "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+  "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"];
+fn check_dynarec(pc: u32, interpreter_pc: u32, cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) {
+    let mut is_ok = true;
+    for i in 0..32 {
+        if interpreter.regs[i] != cpu.regs.regs[i] {
+            println!("different reg[{}] ({}), interpreter: {:X}, dynarec: {:X}", i, REGISTER_NAMES[i], interpreter.regs[i], cpu.regs.regs[i]);
+            is_ok = false;
+        }
+    }
+    if !is_ok {
+        println!("at block start pc: 0x{:X}, interpreter_pc: {:X}", pc, interpreter_pc);
+        println!("at block end pc: 0x{:X}, interpreter_pc: {:X}", cpu.regs.pc, interpreter.pc);
+        panic!("---");
     }
 }
 

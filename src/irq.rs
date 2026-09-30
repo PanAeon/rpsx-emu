@@ -55,9 +55,6 @@ impl InterruptController {
         // if T::width() != AccessWidth::Word {
         //     panic!("irqctl store for {:?} not implemented", T::width());
         // }
-        if offset == 4 {
-            println!("set interrupt mask: {}", value.as_u32());
-        }
         match offset {
             0 => self.status.0 &= value.as_u32(),
             4 => self.mask = value.as_u32(),

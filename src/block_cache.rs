@@ -3,12 +3,13 @@ use crate::system::map;
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct CacheEntry {
-    pub block_idx: u16,
+    pub block_idx: u32,
+    pub has_block: bool,
     pub protected: bool,
     pub dirty: bool,
 }
 
-const _: () = assert!(core::mem::size_of::<CacheEntry>() == 4);
+// const _: () = assert!(core::mem::size_of::<CacheEntry>() == 4);
 
 pub struct Block {
     pub ptr: *const u8,
@@ -55,31 +56,38 @@ impl BlockCache {
         }
         if let Some(offset) = map::RAM.contains(address) {
             let entry = self.ram[(offset / 4) as usize];
-            return entry.protected.then(|| entry)
+            return entry.has_block.then(|| entry)
         }
         if let Some(offset) = map::BIOS.contains(address) {
             let entry = self.bios[(offset / 4) as usize];
-            return entry.protected.then(|| entry)
+            return entry.has_block.then(|| entry)
         }
         panic!("unhandled load{:?} address: {:08x}", 4, address)
     }
 
-    pub fn insert_block(&mut self, addr: u32, block: Block) -> u16 {
+    pub fn insert_block(&mut self, addr: u32, block: Block) -> u32 {
         let idx = self.blocks.len();
+        let block_len = block.length;
         self.blocks.push(block);
 
         let entry = self.get_entry_mut(addr);
-        entry.block_idx = idx as u16;
+        entry.block_idx = idx as u32;
+        entry.has_block = true;
         entry.protected = true;
         entry.dirty = false;
+        for i in 1..block_len {
+            let entry = self.get_entry_mut(addr + (i * 4) as u32);
+            entry.protected = true;
+            entry.dirty = false;
+        }
 
 
-        idx as u16
+        idx as u32
 
         // &self.blocks[idx as usize]
     }
 
-    pub fn get_block(&self, idx: u16) -> &Block {
+    pub fn get_block(&self, idx: u32) -> &Block {
         &self.blocks[idx as usize]
     }
 
@@ -91,6 +99,7 @@ impl BlockCache {
             println!("protected mem overwrite!");
             for i in 0..self.ram.len() {
                 self.ram[i].protected = false;
+                self.ram[i].has_block = false;
             }
             // entry.protected = false;
             // let start = idx.saturating_sub(256);

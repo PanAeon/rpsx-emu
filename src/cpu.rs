@@ -63,7 +63,8 @@ impl Instruction {
 
         if code == 0x00 {
             let sec = self.secondary_opcode();
-            return sec == 0x08; // jr
+            return sec == 0x08 || sec == 0x09 || sec == 0x0D || sec == 0x0C; // jr, jalr, break,
+            // syscall
         }
 
         false
@@ -99,20 +100,20 @@ impl Exception {
 }
 
 pub struct Cpu {
-    regs: [u32; 32],
-    hi: u32,
-    lo: u32,
+    pub regs: [u32; 32],
+    pub hi: u32,
+    pub lo: u32,
     pub pc: u32, // reset value 0xBFC00000
     pub next_pc: u32,
     pub current_pc: u32,
     pub system: System,
 
-    sr: u32,
-    cause: u32,
-    epc: u32,
-    baddr: u32,
+    pub sr: u32,
+    pub cause: u32,
+    pub epc: u32,
+    pub baddr: u32,
     // out_regs: [u32; 32],
-    load: (u32, u32), // load initiated by the current instruction
+    pub load: (u32, u32), // load initiated by the current instruction
     branch: bool, // set by the current instruction if the branch occurred
     delay_slot:bool, // set if the current instruction executes in the delay slot
     gte: Gte,
@@ -662,7 +663,7 @@ impl Cpu {
 
         if d == 0 {
             self.hi = n as u32;
-                self.lo = 0xffffffff;
+            self.lo = 0xffffffff;
         } else {
             self.hi = (n % d) as u32;
             self.lo = (n / d) as u32;

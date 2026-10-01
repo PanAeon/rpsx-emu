@@ -920,8 +920,9 @@ impl State {
                         Spu::clock(&mut self.cpu.system);
                         // self.cpu.system.spu.clock();
                         // let spu = &mut self.cpu.system.spu;
-                        let cdrom = &mut self.cpu.system.cdrom;
-                        let sample = self.cpu.system.spu.mix(cdrom);
+                        // let cdrom = &mut self.cpu.system.cdrom;
+                        // let sample = self.cpu.system.spu.mix(cdrom);
+                        let sample = Spu::mix(&mut self.cpu.system);
                         self.audio_sender
                             .send(sample)
                             .expect("can't send audio sample");
@@ -992,8 +993,14 @@ impl State {
                     scheduler::Event::DsrOff => self.cpu.system.sio.turn_dsr_off(),
                 }
             }
+            // self.update_interpreter();
             // ok everything works, except memory card... check that later
             // let budget = self.cpu.system.scheduler.next_event_budget();
+            // TODO:
+            //if !pending_interrupt || (is_gte && !self.delay_slot) {
+            if self.cpu.check_for_pending_interrupts() {
+                self.cpu.external_interrupt();
+            }
             let pc = self.cpu.pc();
             let block_idx = if let Some(entry) = self.cpu.system.block_cache.get_entry(pc) {
                 if entry.dirty {
@@ -1011,11 +1018,11 @@ impl State {
             // then run it...
 
             let interpreter_pc = self.interpreter.pc;
-            for _ in 0..num_cycles {
-                self.interpreter.run_next_instruction();
-                // self.interpreter.check_for_tty_output();
-            }
-            check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
+            // for _ in 0..num_cycles {
+            //     self.interpreter.run_next_instruction();
+            //     // self.interpreter.check_for_tty_output();
+            // }
+            // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
             self.cpu.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {
@@ -1036,6 +1043,85 @@ impl State {
         //     audio_buffer.push(self.cpu.system.spu.mix());
         //     // self.audio_sender.send(self.cpu.system.spu.mix()).expect("can't send audio");
         // }
+    }
+
+    fn update_interpreter(&mut self) {
+            if let Some(event) = self.interpreter.system.scheduler.get_next_event() {
+                match event {
+                    scheduler::Event::SpuTick => {
+                        Spu::clock(&mut self.interpreter.system);
+                        // self.interpreter.system.spu.clock();
+                        // let spu = &mut self.interpreter.system.spu;
+                        let sample = Spu::mix(&mut self.interpreter.system);
+                        // self.audio_sender
+                        //     .send(sample)
+                        //     .expect("can't send audio sample");
+
+                        // self.audio_tick += 1;
+                        // if self.audio_tick == 735 {
+                        //     self.audio_tick = 0;
+                        //    break;
+                        // }
+
+                        // self.audio_buffer.push(sample);
+                        // if self.audio_buffer.len() == 20*735 {
+                        //     self.audio_buffer.clear();
+                        //     break;
+                        // }
+
+                        // self.writer.write_all(&sample[0].to_le_bytes()).expect("foo");
+                        // self.interpreter.system.spu.clock();
+                        // self.audio_buffer.push(sample);
+                        // if self.audio_buffer.len() == 735 {
+                        //     self.audio_buffer.iter().for_each(|sample| {
+                        //         self.audio_sender.send(*sample).expect("can't send audio sample");
+                        //     });
+                        //     self.audio_buffer.clear();
+                        //
+                        // }
+                    }
+                    scheduler::Event::VBlankStart => {
+                        // self.interpreter.system.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
+                        let (w, h, sx, sy, depth) = self
+                            .interpreter
+                            .system
+                            .gpu
+                            .render_fb(self.framebuffer.clone(), self.display_vram);
+                        self.update_vertex_buffer_if_needed(w, h, sx, sy, depth, false);
+                        // if self.interpreter.system.gpu.interrupt == false {
+                        self.interpreter.system.irqctl.status.set_vblank(true);
+                        // }
+                        timers::Timers::enter_vsync(&mut self.interpreter.system);
+                        // self.interpreter.system.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
+                        self.interpreter.system.gpu.enter_vsync();
+                    }
+                    scheduler::Event::VBlankEnd => {
+                        // self.interpreter.system.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
+                        self.interpreter.system.gpu.exit_vsync();
+                        timers::Timers::exit_vsync(&mut self.interpreter.system);
+                        // let (w, h) = self.interpreter.system.gpu_ctrl_receiver.recv().expect("ok");
+                        // self.update_vertex_buffer_if_needed(w, h, false);
+                    }
+                    scheduler::Event::HBlankStart => {
+                        // self.interpreter.system.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
+                        self.interpreter.system.gpu.enter_hsync();
+                        timers::Timers::enter_hsync(&mut self.interpreter.system);
+                    }
+                    scheduler::Event::HBlankEnd => {
+                        // self.interpreter.system.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
+                        self.interpreter.system.gpu.exit_hsync();
+                        timers::Timers::exit_hsync(&mut self.interpreter.system);
+                    }
+                    scheduler::Event::CDRomResultIrq(resp) => {
+                        cdrom::CDRom::process_response(&mut self.interpreter.system, resp);
+                    }
+                    scheduler::Event::Timer(i) => {
+                        timers::Timers::process_interrupt(&mut self.interpreter.system, i)
+                    }
+                    scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.interpreter.system),
+                    scheduler::Event::DsrOff => self.interpreter.system.sio.turn_dsr_off(),
+                }
+            }
     }
 
     fn render(&mut self, view: &wgpu::TextureView) {
@@ -1336,6 +1422,18 @@ fn check_dynarec(pc: u32, interpreter_pc: u32, cpu: &dynarec::Dynarec, interpret
             println!("different reg[{}] ({}), interpreter: {:X}, dynarec: {:X}", i, REGISTER_NAMES[i], interpreter.regs[i], cpu.regs.regs[i]);
             is_ok = false;
         }
+    }
+    if interpreter.pc != cpu.regs.pc {
+            is_ok = false;
+            println!("different return pc addresses");
+    }
+    if interpreter.hi != cpu.regs.hi {
+            is_ok = false;
+            println!("different hi reg, interpreter: {:X}, dynarec: {:X}", interpreter.hi, cpu.regs.hi);
+    }
+    if interpreter.lo != cpu.regs.lo {
+            is_ok = false;
+            println!("different lo reg, interpreter: {:X}, dynarec: {:X}", interpreter.lo, cpu.regs.lo);
     }
     if !is_ok {
         println!("at block start pc: 0x{:X}, interpreter_pc: {:X}", pc, interpreter_pc);

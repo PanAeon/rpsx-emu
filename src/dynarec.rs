@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::pin::Pin;
 
 use crate::block_cache;
 use crate::system::{load_byte, load_half_word, load_word, store_byte, store_half_word, store_word};
@@ -44,6 +45,7 @@ pub struct Registers {
 pub struct Constants {
     regs: *mut u8,
     system: *mut System,
+    gte: *mut Gte,
     store_word: FuncId,
     load_word: FuncId,
     store_half_word: FuncId,
@@ -51,6 +53,11 @@ pub struct Constants {
     load_half_word: FuncId,
     load_byte: FuncId,
     print_: FuncId,
+    gte_command: FuncId,
+    gte_data: FuncId,
+    gte_control: FuncId,
+    gte_set_data: FuncId,
+    gte_set_control: FuncId,
 }
 
 #[derive(Default)]
@@ -60,9 +67,9 @@ pub struct Debug {
 }
 
 pub struct Dynarec {
-    pub system: System,
-    pub regs: Box<Registers>,
-    pub gte: Gte,
+    pub system: Pin<Box<System>>,
+    pub regs: Pin<Box<Registers>>,
+    pub gte: Pin<Box<Gte>>,
     /// The function builder context, which is reused across multiple
     /// FunctionBuilder instances.
     builder_context: FunctionBuilderContext,
@@ -122,6 +129,11 @@ impl Dynarec {
         builder.symbol("load_half_word", load_half_word as *const u8);
         builder.symbol("load_byte", load_byte as *const u8);
         builder.symbol("print_", print_ as *const u8);
+        builder.symbol("gte_command", gte_command as *const u8);
+        builder.symbol("gte_data", gte_data as *const u8);
+        builder.symbol("gte_control", gte_control as *const u8);
+        builder.symbol("gte_set_data", gte_set_data as *const u8);
+        builder.symbol("gte_set_control", gte_set_control as *const u8);
 
         let mut module = JITModule::new(builder);
 
@@ -187,13 +199,62 @@ impl Dynarec {
             .declare_function("print_", Linkage::Import, &sig_external)
             .unwrap();
 
-        let mut regs = Box::new(regs);
+        let mut sig_external = module.make_signature();
+        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.call_conv = module.target_config().default_call_conv;
+        let gte_command = module
+            .declare_function("gte_command", Linkage::Import, &sig_external)
+            .unwrap();
+
+        let mut sig_external = module.make_signature();
+        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I8));
+        sig_external.returns.push(AbiParam::new(types::I32));
+        sig_external.call_conv = module.target_config().default_call_conv;
+        let gte_data = module
+            .declare_function("gte_data", Linkage::Import, &sig_external)
+            .unwrap();
+
+        let mut sig_external = module.make_signature();
+        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I8));
+        sig_external.returns.push(AbiParam::new(types::I32));
+        sig_external.call_conv = module.target_config().default_call_conv;
+        let gte_control = module
+            .declare_function("gte_control", Linkage::Import, &sig_external)
+            .unwrap();
+
+        let mut sig_external = module.make_signature();
+        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I8));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.call_conv = module.target_config().default_call_conv;
+        let gte_set_data = module
+            .declare_function("gte_set_data", Linkage::Import, &sig_external)
+            .unwrap();
+
+        let mut sig_external = module.make_signature();
+        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I8));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.call_conv = module.target_config().default_call_conv;
+        let gte_set_control = module
+            .declare_function("gte_set_control", Linkage::Import, &sig_external)
+            .unwrap();
+
+
+        let mut regs = Box::pin(regs);
         let regs_ptr = unsafe { std::mem::transmute(regs.as_mut()) };
-        let system_ptr = unsafe { std::mem::transmute(&system) };
+        let mut system = Box::pin(system);
+        let system_ptr: *mut System = &mut *system;
+        let mut gte = Box::pin(Gte::new());
+        let gte_ptr: *mut Gte = &mut *gte;
+        // let system_ptr = unsafe { std::mem::transmute(&*system) };
         Dynarec {
             system,
             regs,
-            gte: Gte::new(),
+            gte,
             builder_context: FunctionBuilderContext::new(),
             ctx: module.make_context(),
             data_description: DataDescription::new(),
@@ -202,6 +263,7 @@ impl Dynarec {
             constants: Constants {
                 regs: regs_ptr,
                 system: system_ptr,
+                gte: gte_ptr,
                 store_word,
                 store_half_word,
                 store_byte,
@@ -209,6 +271,11 @@ impl Dynarec {
                 load_half_word,
                 load_byte,
                 print_,
+                gte_command,
+                gte_data,
+                gte_control,
+                gte_set_data,
+                gte_set_control
             },
         }
     }
@@ -222,6 +289,51 @@ impl Dynarec {
         let block = self.system.block_cache.get_block(idx);
         let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
         jit_fn() as u64
+    }
+
+    pub fn check_for_pending_interrupts(&mut self) -> bool {
+        if self.system.irqctl.pending() {
+            self.regs.cause |= 1 << 10;
+        } else {
+            self.regs.cause &= !(1 << 10);
+        }
+        // mask bits 8..15
+        let pending = (self.regs.cause & self.regs.sr) & 0x700;//0xFF00;
+        pending != 0 && (self.regs.sr & 1 != 0)
+    }
+
+    pub fn external_interrupt(&mut self) {
+        self.exception(Exception::ExternalInterrupt);
+    }
+
+    pub fn exception(&mut self, cause: Exception) {
+        let mode = self.regs.sr & 0x3f;
+        self.regs.sr &= !0x3f;
+        self.regs.sr |= (mode << 2) & 0x3f;
+
+        self.regs.cause &= !0x7c;
+        self.regs.cause |= (cause.code() as u32) << 2; // woot?
+
+        // if self.regs.delay_slot { // this what happend?
+        //     self.regs.epc = self.regs.current_pc.wrapping_sub(4);
+        //     self.regs.cause |= 1 << 31;
+        // } else {
+            self.regs.epc = self.regs.pc;
+            self.regs.cause &= !(1 << 31);
+        // }
+
+        // exception handler address depends on the BEV bit
+        let handler: u32 = if self.regs.sr & (1 << 22) != 0 {
+            0xbfc00180
+            } else {
+            0x80000080
+        };
+
+        if let Exception::LoadAddressError | Exception::StoreAddressError = cause {
+            panic!("not implemented");
+        }
+
+        self.regs.pc = handler;
     }
 
     pub fn debug_print(&mut self) {
@@ -247,6 +359,7 @@ impl Dynarec {
     }
 
     pub fn compile_block(&mut self, addr: u32) -> block_cache::Block {
+        // woot?
         // if addr == 0x80000080 {
         //     panic!("at exception handler");
         // }
@@ -273,33 +386,6 @@ impl Dynarec {
 
         // builder.import_function(ExtFuncData { name: "", signature: (), colocated: (), patchable: () })
 
-        let store_word = self
-            .module
-            .declare_func_in_func(self.constants.store_word, &mut builder.func);
-
-        let store_half_word = self
-            .module
-            .declare_func_in_func(self.constants.store_half_word, &mut builder.func);
-
-        let store_byte = self
-            .module
-            .declare_func_in_func(self.constants.store_byte, &mut builder.func);
-
-        let load_word = self
-            .module
-            .declare_func_in_func(self.constants.load_word, &mut builder.func);
-
-        let load_half_word = self
-            .module
-            .declare_func_in_func(self.constants.load_half_word, &mut builder.func);
-
-        let load_byte = self
-            .module
-            .declare_func_in_func(self.constants.load_byte, &mut builder.func);
-
-        let print_ = self
-            .module
-            .declare_func_in_func(self.constants.print_, &mut builder.func);
 
         let mut bldr = BlockBuilder {
             bldr: builder,
@@ -307,13 +393,18 @@ impl Dynarec {
             module: &mut self.module,
             delayed_load: None,
             constants: &self.constants,
-            store_word,
-            store_half_word,
-            store_byte,
-            load_word,
-            load_half_word,
-            load_byte,
-            print_,
+            store_word: None,
+            store_half_word: None,
+            store_byte: None,
+            load_word: None,
+            load_half_word: None,
+            load_byte: None,
+            print_: None,
+            gte_command: None,
+            gte_data: None,
+            gte_control: None,
+            gte_set_data: None,
+            gte_set_control: None,
             i: 0,
             addr,
             next_instr: None,
@@ -363,8 +454,8 @@ impl Dynarec {
             }
         };
         if !last_jmp {
-           println!("{}", self.ctx.func.display());
-           panic!("last command is not jump");
+           // println!("{}", self.ctx.func.display());
+           println!("last command is not jump");
         }
         //
         let id = self
@@ -412,6 +503,10 @@ impl Dynarec {
                 len = i + 2;
                 break;
             }
+        } 
+        if len == 255 && buff[254].is_conditional_jump() {
+            buff[255] = Instruction(self.system.load::<u32>(addr + (255) as u32 * 4));
+            len = 256;
         }
         &buff[0..len]
     }
@@ -428,17 +523,22 @@ struct BlockBuilder<'a> {
     module: &'a mut JITModule,
     delayed_load: Option<(u32, Value)>,
     constants: &'a Constants,
-    store_word: FuncRef,
-    load_word: FuncRef,
     i: usize,
     addr: u32,
     next_instr: Option<Instruction>,
     delay_slot: bool,
-    store_half_word: FuncRef,
-    store_byte: FuncRef,
-    load_half_word: FuncRef,
-    load_byte: FuncRef,
-    print_: FuncRef,
+    store_word: Option<FuncRef>,
+    load_word: Option<FuncRef>,
+    store_half_word: Option<FuncRef>,
+    store_byte: Option<FuncRef>,
+    load_half_word: Option<FuncRef>,
+    load_byte: Option<FuncRef>,
+    print_: Option<FuncRef>,
+    gte_command: Option<FuncRef>,
+    gte_data: Option<FuncRef>,
+    gte_control: Option<FuncRef>,
+    gte_set_data: Option<FuncRef>,
+    gte_set_control: Option<FuncRef>,
     // entry_block: Block,
     // start_block: Block,
 }
@@ -451,6 +551,9 @@ impl<'a> BlockBuilder<'a> {
                 0x00 => self.compile_sll(instr),
                 0x02 => self.compile_srl(instr),
                 0x03 => self.compile_sra(instr),
+                0x04 => self.compile_sllv(instr),
+                0x06 => self.compile_srlv(instr),
+                0x07 => self.compile_srav(instr),
                 0x08 => self.compile_jr(instr),
                 0x09 => self.compile_jalr(instr),
                 0x0C => self.compile_syscall(instr),
@@ -461,8 +564,11 @@ impl<'a> BlockBuilder<'a> {
                 0x13 => self.compile_mtlo(instr),
                 0x1A => self.compile_div(instr),
                 0x1B => self.compile_divu(instr),
+                0x18 => self.compile_mult(instr),
+                0x19 => self.compile_multu(instr),
                 0x20 => self.compile_add(instr),
                 0x21 => self.compile_addu(instr),
+                0x22 => self.compile_sub(instr),
                 0x23 => self.compile_subu(instr),
                 0x24 => self.compile_and(instr),
                 0x25 => self.compile_or(instr),
@@ -477,26 +583,35 @@ impl<'a> BlockBuilder<'a> {
             },
             0x01 => self.compile_bxx(instr),
             0x02 => self.compile_j(instr),
-            0x04 => self.compile_beq(instr),
             0x03 => self.compile_jal(instr),
+            0x04 => self.compile_beq(instr),
             0x05 => self.compile_bne(instr),
             0x06 => self.compile_blez(instr),
             0x07 => self.compile_bgtz(instr),
             0x08 => self.compile_addi(instr),
             0x09 => self.compile_addiu(instr),
+            0x12 => self.compile_cop2(instr),
             0x0A => self.compile_slti(instr),
             0x0B => self.compile_sltiu(instr),
             0x0C => self.compile_andi(instr),
             0x0D => self.compile_ori(instr),
+            0x0E => self.compile_xori(instr),
             0x0F => self.compile_lui(instr),
             0x10 => self.compile_cop0(instr),
             0x20 => self.compile_lb(instr),
             0x21 => self.compile_lh(instr),
+            0x22 => self.compile_lwl(instr),
             0x23 => self.compile_lw(instr),
             0x24 => self.compile_lbu(instr),
+            0x25 => self.compile_lhu(instr),
+            0x26 => self.compile_lwr(instr),
             0x28 => self.compile_sb(instr),
             0x29 => self.compile_sh(instr),
+            0x2a => self.compile_swl(instr),
             0x2B => self.compile_sw(instr),
+            0x2E => self.compile_swr(instr),
+            0x32 => self.compile_lwc2(instr),
+            0x3A => self.compile_swc2(instr),
             _ => panic!(
                 "Unhandled instruction: {:08X}, opcode: {:02X}, address: {:X}",
                 instr.0,
@@ -520,6 +635,7 @@ impl<'a> BlockBuilder<'a> {
 
     fn inject_print_tty_output(&mut self) {
         let pc = self.get_current_pc() & 0x1FFFFFFF;
+        let print_ = self.get_print_();
         if pc == 0xA0 {
             let reg = self.get_reg_read(9);
             let reg = self.bldr.use_var(reg);
@@ -538,7 +654,7 @@ impl<'a> BlockBuilder<'a> {
             let reg4 = self.bldr.ins().ireduce(types::I8, reg4);
             self.bldr
                 .ins()
-                .call(self.print_, &[reg4]);
+                .call(print_, &[reg4]);
 
             self.bldr.ins().jump(else_block, &[]);
             self.bldr.switch_to_block(else_block);
@@ -561,7 +677,7 @@ impl<'a> BlockBuilder<'a> {
             let reg4 = self.bldr.ins().ireduce(types::I8, reg4);
             self.bldr
                 .ins()
-                .call(self.print_, &[reg4]);
+                .call(print_, &[reg4]);
 
             self.bldr.ins().jump(else_block, &[]);
             self.bldr.switch_to_block(else_block);
@@ -1111,6 +1227,28 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
+    fn compile_sub(&mut self, instr: Instruction) {
+        let reg_a = self.get_reg_read(instr.rs());
+        let reg_b = self.get_reg_read(instr.rt());
+        let a = self.bldr.use_var(reg_a);
+        let b = self.bldr.use_var(reg_b);
+        let (res, overflow) = self.bldr.ins().ssub_overflow(a, b);
+        self.compile_delayed_load(true);
+
+        let then_block = self.bldr.create_block();
+        let else_block = self.bldr.create_block();
+        self.bldr.ins().brif(overflow, then_block, &[], else_block, &[]);
+        self.bldr.switch_to_block(then_block);
+        self.bldr.seal_block(then_block);
+        self.compile_exception(Exception::Overflow, None);
+
+        self.bldr.switch_to_block(else_block);
+        self.bldr.seal_block(else_block);
+        if instr.rd() != 0 {
+            let dest = self.get_reg_write(instr.rd());
+            self.bldr.def_var(dest, res);
+        }
+    }
     // substract unsigned
     fn compile_subu(&mut self, instr: Instruction) {
         let reg_a = self.get_reg_read(instr.rs());
@@ -1209,6 +1347,54 @@ impl<'a> BlockBuilder<'a> {
 
     }
 
+    fn compile_multu(&mut self, instr: Instruction) {
+        let reg_a = self.get_reg_read(instr.rs());
+        let reg_b = self.get_reg_read(instr.rt());
+        let a = self.bldr.use_var(reg_a);
+        let b = self.bldr.use_var(reg_b);
+        let a = self.bldr.ins().uextend(types::I64, a);
+        let b = self.bldr.ins().uextend(types::I64, b);
+
+        self.compile_delayed_load(true);
+
+        let result = self.bldr.ins().imul(a, b);
+
+        let hi_reg = self.get_reg_write(REG_HI);
+        let lo_reg = self.get_reg_write(REG_LO);
+
+
+
+        let lo_res = self.bldr.ins().ireduce(types::I32, result);
+        let hi_res = self.bldr.ins().ushr_imm_u(result, 32);
+        let hi_res = self.bldr.ins().ireduce(types::I32, hi_res);
+        self.bldr.def_var(hi_reg, hi_res);
+        self.bldr.def_var(lo_reg, lo_res);
+
+    }
+    fn compile_mult(&mut self, instr: Instruction) {
+        let reg_a = self.get_reg_read(instr.rs());
+        let reg_b = self.get_reg_read(instr.rt());
+        let a = self.bldr.use_var(reg_a);
+        let b = self.bldr.use_var(reg_b);
+        let a = self.bldr.ins().sextend(types::I64, a);
+        let b = self.bldr.ins().sextend(types::I64, b);
+
+        self.compile_delayed_load(true);
+
+        let result = self.bldr.ins().imul(a, b);
+
+        let hi_reg = self.get_reg_write(REG_HI);
+        let lo_reg = self.get_reg_write(REG_LO);
+
+
+
+        let lo_res = self.bldr.ins().ireduce(types::I32, result);
+        let hi_res = self.bldr.ins().ushr_imm_u(result, 32);
+        let hi_res = self.bldr.ins().ireduce(types::I32, hi_res);
+        self.bldr.def_var(hi_reg, hi_res);
+        self.bldr.def_var(lo_reg, lo_res);
+
+    }
     fn compile_divu(&mut self, instr: Instruction) {
         let reg_a = self.get_reg_read(instr.rs());
         let reg_b = self.get_reg_read(instr.rt());
@@ -1398,7 +1584,6 @@ impl<'a> BlockBuilder<'a> {
     }
 
     fn compile_ori(&mut self, instr: Instruction) {
-        // let ty = Type::int(32).unwrap();
         let v = instr.imm();
         let src_reg = instr.rs();
         let target_reg = instr.rt();
@@ -1406,6 +1591,23 @@ impl<'a> BlockBuilder<'a> {
         let src_reg_var = self.get_reg_read(src_reg);
         let src_reg_val = self.bldr.use_var(src_reg_var);
         let res_val = self.bldr.ins().bor_imm_u(src_reg_val, v as i64);
+
+        self.compile_delayed_load(true);
+
+        if target_reg != 0 {
+            let res_var = self.get_reg_write(target_reg);
+            self.bldr.def_var(res_var, res_val);
+        }
+    }
+
+    fn compile_xori(&mut self, instr: Instruction) {
+        let v = instr.imm();
+        let src_reg = instr.rs();
+        let target_reg = instr.rt();
+
+        let src_reg_var = self.get_reg_read(src_reg);
+        let src_reg_val = self.bldr.use_var(src_reg_var);
+        let res_val = self.bldr.ins().bxor_imm_u(src_reg_val, v as i64);
 
         self.compile_delayed_load(true);
 
@@ -1515,6 +1717,34 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
+    fn compile_sllv(&mut self, instr: Instruction) {
+        let value_reg = self.get_reg_read(instr.rt());
+        let shift_reg = self.get_reg_read(instr.rs());
+        let shift = self.bldr.use_var(shift_reg);
+        let shift = self.bldr.ins().band_imm_u(shift, 0x1f);
+        let value = self.bldr.use_var(value_reg);
+        let result = self.bldr.ins().ishl(value, shift);
+        self.compile_delayed_load(true);
+        if instr.rd() != 0 {
+            let target_reg = self.get_reg_write(instr.rd());
+            self.bldr.def_var(target_reg, result);
+        }
+    }
+
+    fn compile_srlv(&mut self, instr: Instruction) {
+        let value_reg = self.get_reg_read(instr.rt());
+        let shift_reg = self.get_reg_read(instr.rs());
+        let shift = self.bldr.use_var(shift_reg);
+        let shift = self.bldr.ins().band_imm_u(shift, 0x1f);
+        let value = self.bldr.use_var(value_reg);
+        let result = self.bldr.ins().ushr(value, shift);
+        self.compile_delayed_load(true);
+        if instr.rd() != 0 {
+            let target_reg = self.get_reg_write(instr.rd());
+            self.bldr.def_var(target_reg, result);
+        }
+    }
+
     // shift right arithmetic
     fn compile_sra(&mut self, instr: Instruction) {
         let i = instr.imm5();
@@ -1522,6 +1752,21 @@ impl<'a> BlockBuilder<'a> {
         let value_reg = self.get_reg_read(instr.rt());
         let value = self.bldr.use_var(value_reg);
         let result = self.bldr.ins().sshr_imm_u(value, i as i64);
+        self.compile_delayed_load(true);
+        if instr.rd() != 0 {
+            let target_reg = self.get_reg_write(instr.rd());
+            self.bldr.def_var(target_reg, result);
+        }
+    }
+    // shift right arythmetic value
+    fn compile_srav(&mut self, instr: Instruction) {
+        let value_reg = self.get_reg_read(instr.rt());
+        let shift_reg = self.get_reg_read(instr.rs());
+        let shift = self.bldr.use_var(shift_reg);
+        let shift = self.bldr.ins().band_imm_u(shift, 0x1f);
+
+        let value = self.bldr.use_var(value_reg);
+        let result = self.bldr.ins().sshr(value, shift);
         self.compile_delayed_load(true);
         if instr.rd() != 0 {
             let target_reg = self.get_reg_write(instr.rd());
@@ -1614,9 +1859,10 @@ impl<'a> BlockBuilder<'a> {
             .bldr
             .ins()
             .iconst(types::I64, self.constants.system as usize as i64);
+        let store_word = self.get_store_word();
         self.bldr
             .ins()
-            .call(self.store_word, &[system, address, val]);
+            .call(store_word, &[system, address, val]);
         self.bldr.ins().jump(then_block, &[]);
 
         self.bldr.switch_to_block(then_block);
@@ -1680,9 +1926,10 @@ impl<'a> BlockBuilder<'a> {
             .bldr
             .ins()
             .iconst(types::I64, self.constants.system as usize as i64);
+        let store_half_word = self.get_store_half_word();
         self.bldr
             .ins()
-            .call(self.store_half_word, &[system, address, val]);
+            .call(store_half_word, &[system, address, val]);
         self.bldr.ins().jump(then_block, &[]);
 
         self.bldr.switch_to_block(then_block);
@@ -1726,9 +1973,10 @@ impl<'a> BlockBuilder<'a> {
             .bldr
             .ins()
             .iconst(types::I64, self.constants.system as usize as i64);
+        let store_byte = self.get_store_byte();
         self.bldr
             .ins()
-            .call(self.store_byte, &[system, address, val]);
+            .call(store_byte, &[system, address, val]);
         self.bldr.ins().jump(then_block, &[]);
 
         self.bldr.switch_to_block(then_block);
@@ -1758,7 +2006,7 @@ impl<'a> BlockBuilder<'a> {
         self.bldr.switch_to_block(then_block);
         self.bldr.seal_block(then_block);
         self.compile_delayed_load(false);
-        self.compile_exception(Exception::StoreAddressError, Some(address));
+        self.compile_exception(Exception::LoadAddressError, Some(address));
 
         self.bldr.switch_to_block(else_block);
         self.bldr.seal_block(else_block);
@@ -1767,11 +2015,50 @@ impl<'a> BlockBuilder<'a> {
             .bldr
             .ins()
             .iconst(types::I64, self.constants.system as usize as i64);
+        let load_half_word = self.get_load_half_word();
         let res = self.bldr
             .ins()
-            .call(self.load_half_word, &[system, address]);
+            .call(load_half_word, &[system, address]);
         let v = self.bldr.inst_results(res)[0];
         let v = self.bldr.ins().sextend(types::I32, v);
+        self.compile_delayed_load_chain(instr.rt(), v);
+    }
+
+    fn compile_lhu(&mut self, instr: Instruction) {
+        let v = instr.imm_se();
+
+        let addr_reg = self.get_reg_read(instr.rs());
+
+        // let result_reg = self.get_reg_read(instr.rt());
+
+        let imm_val = self.bldr.ins().iconst(types::I32, v as i64);
+        let addr = self.bldr.use_var(addr_reg);
+
+        let address = self.bldr.ins().iadd(imm_val, addr);
+
+        let addr = self.bldr.ins().band_imm_u(address, 0x1);
+
+        let then_block = self.bldr.create_block();
+        let else_block = self.bldr.create_block();
+        self.bldr.ins().brif(addr, then_block, &[], else_block, &[]);
+        self.bldr.switch_to_block(then_block);
+        self.bldr.seal_block(then_block);
+        self.compile_delayed_load(false);
+        self.compile_exception(Exception::LoadAddressError, Some(address));
+
+        self.bldr.switch_to_block(else_block);
+        self.bldr.seal_block(else_block);
+
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as usize as i64);
+        let load_half_word = self.get_load_half_word();
+        let res = self.bldr
+            .ins()
+            .call(load_half_word, &[system, address]);
+        let v = self.bldr.inst_results(res)[0];
+        let v = self.bldr.ins().uextend(types::I32, v);
         self.compile_delayed_load_chain(instr.rt(), v);
     }
 
@@ -1795,7 +2082,7 @@ impl<'a> BlockBuilder<'a> {
         self.bldr.switch_to_block(then_block);
         self.bldr.seal_block(then_block);
         self.compile_delayed_load(false);
-        self.compile_exception(Exception::StoreAddressError, Some(address));
+        self.compile_exception(Exception::LoadAddressError, Some(address));
 
         self.bldr.switch_to_block(else_block);
         self.bldr.seal_block(else_block);
@@ -1803,13 +2090,245 @@ impl<'a> BlockBuilder<'a> {
         let system = self
             .bldr
             .ins()
-            .iconst(types::I64, self.constants.system as usize as i64);
+            .iconst(types::I64, self.constants.system as i64);
+        let load_word = self.get_load_word();
         let res = self.bldr
             .ins()
-            .call(self.load_word, &[system, address]);
+            .call(load_word, &[system, address]);
         let v = self.bldr.inst_results(res)[0];
         self.compile_delayed_load_chain(instr.rt(), v);
     }
+
+    // load word left 
+    fn compile_lwl(&mut self, instr: Instruction) {
+        let v = instr.imm_se();
+
+        let addr_reg = self.get_reg_read(instr.rs());
+
+        // let result_reg = self.get_reg_read(instr.rt());
+
+        let imm_val = self.bldr.ins().iconst(types::I32, v as i64);
+        let addr = self.bldr.use_var(addr_reg);
+
+        let address = self.bldr.ins().iadd(imm_val, addr);
+        // let address = self.bldr.ins().band_imm_u(address, 0x3);
+
+        let aligned_address = self.bldr.ins().band_imm_u(address, !0x3);
+
+        // This instruction bypasses the load delay restriction: this instruction will merge the new
+        // contents with the value currently being loaded if need be.
+        self.compile_delayed_load(false);
+
+        let curr_v = self.get_reg_read(instr.rt());
+        let curr_v = self.bldr.use_var(curr_v);
+
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as i64);
+        let load_word = self.get_load_word();
+        let res = self.bldr
+            .ins()
+            .call(load_word, &[system, aligned_address]);
+        let v = self.bldr.inst_results(res)[0];
+        // now interesting part
+        // TODO: verify me
+        let curr_mask = self.bldr.ins().iconst(types::I32, 0x00ffffff);
+        let bits = self.bldr.ins().band_imm_u(address, 0x3);
+        let bits_x2 = self.bldr.ins().imul_imm_u(bits, 8);
+        let curr_mask = self.bldr.ins().ushr(curr_mask, bits_x2);
+        let curr_v = self.bldr.ins().band(curr_v, curr_mask);
+
+        let three = self.bldr.ins().iconst(types::I32, 0x3);
+        let inv_bits = self.bldr.ins().isub(three, bits);
+        let aligned_shift = self.bldr.ins().imul_imm_u(inv_bits, 8);
+
+        let v = self.bldr.ins().ishl(v, aligned_shift);
+
+        let v = self.bldr.ins().bor(curr_v, v);
+
+        // let v = match addr & 3 {
+        //     0 => (cur_v & 0x00ffffff) | (aligned_word << 24),
+        //     1 => (cur_v & 0x0000ffff) | (aligned_word << 16),
+        //     2 => (cur_v & 0x000000ff) | (aligned_word << 8),
+        //     3 => (cur_v & 0x00000000) | (aligned_word),
+        //     _ => unreachable!()
+        // };
+        self.compile_delayed_load_chain(instr.rt(), v);
+    }
+
+    // load word right
+    fn compile_lwr(&mut self, instr: Instruction) {
+        let v = instr.imm_se();
+
+        let addr_reg = self.get_reg_read(instr.rs());
+
+        // let result_reg = self.get_reg_read(instr.rt());
+
+        let imm_val = self.bldr.ins().iconst(types::I32, v as i64);
+        let addr = self.bldr.use_var(addr_reg);
+
+        let address = self.bldr.ins().iadd(imm_val, addr);
+        // let address = self.bldr.ins().band_imm_u(address, 0x3);
+
+        let aligned_address = self.bldr.ins().band_imm_u(address, !0x3);
+
+        // This instruction bypasses the load delay restriction: this instruction will merge the new
+        // contents with the value currently being loaded if need be.
+        self.compile_delayed_load(false);
+
+        let curr_v = self.get_reg_read(instr.rt());
+        let curr_v = self.bldr.use_var(curr_v);
+
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as i64);
+        let load_word = self.get_load_word();
+        let res = self.bldr
+            .ins()
+            .call(load_word, &[system, aligned_address]);
+        let v = self.bldr.inst_results(res)[0];
+        // now interesting part
+        // TODO: verify me
+        let curr_mask = self.bldr.ins().iconst(types::I32, 0xffffff00);
+        let bits = self.bldr.ins().band_imm_u(address, 0x3);
+        let three = self.bldr.ins().iconst(types::I32, 0x3);
+        let inv_bits = self.bldr.ins().isub(three, bits);
+        let bits_x2 = self.bldr.ins().imul_imm_u(inv_bits, 8);
+        let curr_mask = self.bldr.ins().ishl(curr_mask, bits_x2);
+        let curr_v = self.bldr.ins().band(curr_v, curr_mask);
+
+        let aligned_shift = self.bldr.ins().imul_imm_u(bits, 8);
+
+        let v = self.bldr.ins().ushr(v, aligned_shift);
+
+        let v = self.bldr.ins().bor(curr_v, v);
+
+        // let v = match addr & 3 {
+        //     0 => (cur_v & 0x00000000) | (aligned_word),
+        //     1 => (cur_v & 0xff000000) | (aligned_word >> 8),
+        //     2 => (cur_v & 0xffff0000) | (aligned_word >> 16),
+        //     3 => (cur_v & 0xffffff00) | (aligned_word >> 24),
+        //     _ => unreachable!()
+        // };
+        self.compile_delayed_load_chain(instr.rt(), v);
+    }
+
+    // store word left 
+    fn compile_swl(&mut self, instr: Instruction) {
+        let addr_reg = self.get_reg_read(instr.rs());
+
+        let imm_val = self.bldr.ins().iconst(types::I32, instr.imm_se() as i64);
+        let addr = self.bldr.use_var(addr_reg);
+
+        let address = self.bldr.ins().iadd(imm_val, addr);
+
+        let aligned_address = self.bldr.ins().band_imm_u(address, !0x3);
+
+
+        let curr_v = self.get_reg_read(instr.rt());
+        let curr_v = self.bldr.use_var(curr_v);
+
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as i64);
+        let load_word = self.get_load_word();
+        let res = self.bldr
+            .ins()
+            .call(load_word, &[system, aligned_address]);
+        let curr_memory = self.bldr.inst_results(res)[0];
+        // now interesting part
+        // TODO: verify me
+        let curr_mask = self.bldr.ins().iconst(types::I32, 0xffffff00);
+        let bits = self.bldr.ins().band_imm_u(address, 0x3);
+        let bits_x2 = self.bldr.ins().imul_imm_u(bits, 8);
+        let curr_mask = self.bldr.ins().ishl(curr_mask, bits_x2);
+        let curr_memory = self.bldr.ins().band(curr_memory, curr_mask);
+
+        let three = self.bldr.ins().iconst(types::I32, 0x3);
+        let inv_bits = self.bldr.ins().isub(three, bits);
+        let aligned_shift = self.bldr.ins().imul_imm_u(inv_bits, 8);
+
+        let curr_v = self.bldr.ins().ushr(curr_v, aligned_shift);
+
+        let v = self.bldr.ins().bor(curr_v, curr_memory);
+
+        self.compile_delayed_load(true);
+
+        let store_word = self.get_store_word();
+        self.bldr
+            .ins()
+            .call(store_word, &[system, aligned_address, v]);
+
+        // let mem = match addr & 3 {
+        //     0 => (cur_mem & 0xffffff00) | (v >> 24),
+        //     1 => (cur_mem & 0xffff0000) | (v >> 16),
+        //     2 => (cur_mem & 0xff000000) | (v >> 8),
+        //     3 => (cur_mem & 0x00000000) | (v),
+        //     _ => unreachable!()
+        // };
+    }
+
+    fn compile_swr(&mut self, instr: Instruction) {
+        let addr_reg = self.get_reg_read(instr.rs());
+
+        let imm_val = self.bldr.ins().iconst(types::I32, instr.imm_se() as i64);
+        let addr = self.bldr.use_var(addr_reg);
+
+        let address = self.bldr.ins().iadd(imm_val, addr);
+
+        let aligned_address = self.bldr.ins().band_imm_u(address, !0x3);
+
+
+        let curr_v = self.get_reg_read(instr.rt());
+        let curr_v = self.bldr.use_var(curr_v);
+
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as i64);
+        let load_word = self.get_load_word();
+        let res = self.bldr
+            .ins()
+            .call(load_word, &[system, aligned_address]);
+        let curr_memory = self.bldr.inst_results(res)[0];
+        // now interesting part
+        // TODO: verify me
+        let curr_mask = self.bldr.ins().iconst(types::I32, 0x00ffffff);
+        let bits = self.bldr.ins().band_imm_u(address, 0x3);
+        let three = self.bldr.ins().iconst(types::I32, 0x3);
+        let inv_bits = self.bldr.ins().isub(three, bits);
+        let bits_x2 = self.bldr.ins().imul_imm_u(inv_bits, 8);
+        let curr_mask = self.bldr.ins().ushr(curr_mask, bits_x2);
+        let curr_memory = self.bldr.ins().band(curr_memory, curr_mask);
+
+        let aligned_shift = self.bldr.ins().imul_imm_u(bits, 8);
+
+        let curr_v = self.bldr.ins().ishl(curr_v, aligned_shift);
+
+        let v = self.bldr.ins().bor(curr_v, curr_memory);
+
+        self.compile_delayed_load(true);
+
+
+
+        let store_word = self.get_store_word();
+        self.bldr
+            .ins()
+            .call(store_word, &[system, aligned_address, v]);
+
+        // let mem = match addr & 3 {
+        //     0 => (cur_mem & 0x00000000) | (v),
+        //     1 => (cur_mem & 0x000000ff) | (v << 8),
+        //     2 => (cur_mem & 0x0000ffff) | (v << 16),
+        //     3 => (cur_mem & 0x00ffffff) | (v << 24),
+        //     _ => unreachable!()
+        // };
+
+    }
+
 
     fn compile_lb(&mut self, instr: Instruction) {
         let v = instr.imm_se();
@@ -1827,9 +2346,10 @@ impl<'a> BlockBuilder<'a> {
             .bldr
             .ins()
             .iconst(types::I64, self.constants.system as usize as i64);
+        let load_byte = self.get_load_byte();
         let res = self.bldr
             .ins()
-            .call(self.load_byte, &[system, address]);
+            .call(load_byte, &[system, address]);
         let v = self.bldr.inst_results(res)[0];
         let v = self.bldr.ins().sextend(types::I32, v);
         // let v = self.bldr.ins().uextend(types::I32, v);
@@ -1855,9 +2375,10 @@ impl<'a> BlockBuilder<'a> {
             .bldr
             .ins()
             .iconst(types::I64, self.constants.system as usize as i64);
+        let load_byte = self.get_load_byte();
         let res = self.bldr
             .ins()
-            .call(self.load_byte, &[system, address]);
+            .call(load_byte, &[system, address]);
         let v = self.bldr.inst_results(res)[0];
         let v = self.bldr.ins().uextend(types::I32, v);
         // let v = self.bldr.ins().uextend(types::I32, v);
@@ -1952,6 +2473,203 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
+    fn compile_cop2(&mut self, instr: Instruction) {
+        let cop_opcode = instr.cop_opcode();
+
+        if cop_opcode & 0x10 != 0 {
+            let gte_command = self.get_gte_command();
+            // GTE command
+            self.compile_delayed_load(true);
+            let i = self.bldr.ins().iconst(types::I32, instr.0 as i64);
+            let gte = self
+                .bldr
+                .ins()
+                .iconst(types::I64, self.constants.gte as usize as i64);
+            let res = self.bldr
+                .ins()
+                .call(gte_command, &[gte, i]);
+            // self.gte.command(instr.0);
+        } else {
+            match cop_opcode {
+                0b00000 => self.compile_mfc2(instr),
+                0b00010 => self.compile_cfc2(instr),
+                0b00100 => self.compile_mtc2(instr),
+                0b00110 => self.compile_ctc2(instr),
+                _ => panic!(
+                    "Unhandled cop2 instruction:  {:02X} ({:b})",
+                    instr.cop_opcode(),
+                    instr.cop_opcode()
+                ),
+            }
+        }
+    }
+
+    fn compile_mfc2(&mut self, instr: Instruction) {
+        let cop_r = instr.rd();
+        let gte_data = self.get_gte_data();
+        let gte = self.get_gte();
+
+        let cop_r = self.bldr.ins().iconst(types::I8, cop_r as i64);
+
+        let res = self.bldr
+                .ins()
+                .call(gte_data, &[gte, cop_r]);
+        let res = self.bldr.inst_results(res)[0];
+        self.compile_delayed_load_chain(instr.rt(), res);
+    }
+
+    fn compile_cfc2(&mut self, instr: Instruction) {
+        let cop_r = instr.rd();
+        let gte_data = self.get_gte_control();
+        let gte = self.get_gte();
+
+        let cop_r = self.bldr.ins().iconst(types::I8, cop_r as i64);
+
+        let res = self.bldr
+                .ins()
+                .call(gte_data, &[gte, cop_r]);
+        let res = self.bldr.inst_results(res)[0];
+        self.compile_delayed_load_chain(instr.rt(), res);
+    }
+    fn compile_mtc2(&mut self, instr: Instruction) {
+        let cpu_r = self.get_reg_read(instr.rt());
+        let cop_r = instr.rd();
+        let set_data = self.get_gte_set_data();
+        let gte = self.get_gte();
+
+        let cpu_v = self.bldr.use_var(cpu_r);
+
+        let cop_r = self.bldr.ins().iconst(types::I8, cop_r as i64);
+
+        self.compile_delayed_load(true);
+
+        self.bldr
+                .ins()
+                .call(set_data, &[gte, cop_r, cpu_v]);
+    }
+    fn compile_ctc2(&mut self, instr: Instruction) {
+        let cpu_r = self.get_reg_read(instr.rt());
+        let cop_r = instr.rd();
+        let set_control = self.get_gte_set_control();
+        let gte = self.get_gte();
+
+        let cpu_v = self.bldr.use_var(cpu_r);
+
+        let cop_r = self.bldr.ins().iconst(types::I8, cop_r as i64);
+
+        self.compile_delayed_load(true);
+
+        self.bldr
+                .ins()
+                .call(set_control, &[gte, cop_r, cpu_v]);
+    }
+
+    fn compile_lwc2(&mut self, instr: Instruction) {
+        let cop_r = instr.rt();
+
+        let addr_reg = self.get_reg_read(instr.rs());
+
+        let imm_val = self.bldr.ins().iconst(types::I32, instr.imm_se() as i64);
+        let addr = self.bldr.use_var(addr_reg);
+
+        let address = self.bldr.ins().iadd(imm_val, addr);
+
+        let addr = self.bldr.ins().band_imm_u(address, 0x3);
+
+        self.compile_delayed_load(true);
+
+        let then_block = self.bldr.create_block();
+        let else_block = self.bldr.create_block();
+        self.bldr.ins().brif(addr, then_block, &[], else_block, &[]);
+        self.bldr.switch_to_block(then_block);
+        self.bldr.seal_block(then_block);
+        self.compile_exception(Exception::LoadAddressError, Some(address));
+
+        self.bldr.switch_to_block(else_block);
+        self.bldr.seal_block(else_block);
+
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as i64);
+        let load_word = self.get_load_word();
+        let res = self.bldr
+            .ins()
+            .call(load_word, &[system, address]);
+        let res = self.bldr.inst_results(res)[0];
+
+        let gte = self.get_gte();
+        let cop_r = self.bldr.ins().iconst(types::I8, cop_r as i64);
+        let set_data = self.get_gte_set_data();
+        self.bldr
+                .ins()
+                .call(set_data, &[gte, cop_r, res]);
+    }
+
+    fn compile_swc2(&mut self, instr: Instruction) {
+        let v = instr.imm_se();
+        let addr_reg = instr.rs();
+        let cop_reg = instr.rt();
+
+        let addr_reg_var = self.get_reg_read(addr_reg);
+
+        let imm_val = self.bldr.ins().iconst(types::I32, v as i64);
+        let addr_val = self.bldr.use_var(addr_reg_var);
+
+        let address = self.bldr.ins().iadd(imm_val, addr_val);
+
+        self.compile_delayed_load(true);
+
+        let addr = self.bldr.ins().band_imm_u(address, 0x3);
+
+        let then_block = self.bldr.create_block();
+        let else_block = self.bldr.create_block();
+        self.bldr.ins().brif(addr, then_block, &[], else_block, &[]);
+        self.bldr.switch_to_block(then_block);
+        self.bldr.seal_block(then_block);
+        self.compile_exception(Exception::StoreAddressError, Some(address));
+
+        self.bldr.switch_to_block(else_block);
+        self.bldr.seal_block(else_block);
+
+
+        let sr = self.get_reg_read(REG_SR);
+        let sr = self.bldr.use_var(sr);
+        let sr = self.bldr.ins().band_imm_u(sr, 0x10000);
+        // if self.sr & 0x10000 != 0 {
+        //     // println!("Ignoring store while cache is isolated");
+        //     return;
+        // }
+        let then_block = self.bldr.create_block();
+        let else_block = self.bldr.create_block();
+        self.bldr.ins().brif(sr, then_block, &[], else_block, &[]);
+        self.bldr.switch_to_block(else_block);
+        self.bldr.seal_block(else_block);
+
+        let gte_data = self.get_gte_data();
+        let gte = self.get_gte();
+
+        let cop_r = self.bldr.ins().iconst(types::I8, cop_reg as i64);
+
+        let res = self.bldr
+                .ins()
+                .call(gte_data, &[gte, cop_r]);
+        let res = self.bldr.inst_results(res)[0];
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as usize as i64);
+        let store_word = self.get_store_word();
+        self.bldr
+            .ins()
+            .call(store_word, &[system, address, res]);
+        self.bldr.ins().jump(then_block, &[]);
+
+        self.bldr.switch_to_block(then_block);
+        self.bldr.seal_block(then_block);
+
+    }
+
     fn compile_rfe(&mut self, instr: Instruction) {
         if instr.0 & 0x3f != 0b010000 {
             panic!("Invalid cop0 instruction {:x}", instr.0);
@@ -1970,37 +2688,183 @@ impl<'a> BlockBuilder<'a> {
         // self.sr |= mode >> 2;
         self.bldr.def_var(sr_var, sr);
     }
+
+    pub fn get_store_word(&mut self) -> FuncRef {
+        match self.store_word {
+            Some(f) => f,
+            None => {
+                let store_word = self
+                    .module
+                    .declare_func_in_func(self.constants.store_word, &mut self.bldr.func);
+                self.store_word = Some(store_word);
+                store_word
+            }
+        }
+    }
+
+    pub fn get_store_half_word(&mut self) -> FuncRef {
+        match self.store_half_word {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.store_half_word, &mut self.bldr.func);
+                self.store_half_word = Some(f);
+                f
+            }
+        }
+    }
+
+    pub fn get_store_byte(&mut self) -> FuncRef {
+        match self.store_byte {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.store_byte, &mut self.bldr.func);
+                self.store_byte = Some(f);
+                f
+            }
+        }
+    }
+
+    pub fn get_load_word(&mut self) -> FuncRef {
+        match self.load_word {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.load_word, &mut self.bldr.func);
+                self.load_word = Some(f);
+                f
+            }
+        }
+    }
+
+    pub fn get_load_half_word(&mut self) -> FuncRef {
+        match self.load_half_word {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.load_half_word, &mut self.bldr.func);
+                self.load_half_word = Some(f);
+                f
+            }
+        }
+    }
+    pub fn get_load_byte(&mut self) -> FuncRef {
+        match self.load_byte {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.load_byte, &mut self.bldr.func);
+                self.load_byte = Some(f);
+                f
+            }
+        }
+    }
+
+    pub fn get_print_(&mut self) -> FuncRef {
+        match self.print_ {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.print_, &mut self.bldr.func);
+                self.print_ = Some(f);
+                f
+            }
+        }
+    }
+
+    pub fn get_gte(&mut self) -> Value {
+        self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.gte as usize as i64)
+    }
+
+    pub fn get_gte_command(&mut self) -> FuncRef {
+        match self.gte_command {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.gte_command, &mut self.bldr.func);
+                self.gte_command = Some(f);
+                f
+            }
+        }
+    }
+
+    pub fn get_gte_data(&mut self) -> FuncRef {
+        match self.gte_data {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.gte_data, &mut self.bldr.func);
+                self.gte_data = Some(f);
+                f
+            }
+        }
+    }
+    pub fn get_gte_control(&mut self) -> FuncRef {
+        match self.gte_control {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.gte_control, &mut self.bldr.func);
+                self.gte_control = Some(f);
+                f
+            }
+        }
+    }
+    pub fn get_gte_set_data(&mut self) -> FuncRef {
+        match self.gte_set_data {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.gte_set_data, &mut self.bldr.func);
+                self.gte_set_data = Some(f);
+                f
+            }
+        }
+    }
+    pub fn get_gte_set_control(&mut self) -> FuncRef {
+        match self.gte_set_control {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.gte_set_control, &mut self.bldr.func);
+                self.gte_set_control = Some(f);
+                f
+            }
+        }
+    }
+        // let print_ = self
+        //     .module
+        //     .declare_func_in_func(self.constants.print_, &mut builder.func);
 }
 
 /*
     pub fn decode_and_execute(&mut self, instr: Instruction) {
         match instr.opcode() {
             0x00 => match instr.secondary_opcode() {
-                0x04 => compile_sllv(instr),
-                0x06 => compile_srlv(instr),
-                0x07 => compile_srav(instr),
-                0x18 => compile_mult(instr),
-                0x19 => compile_multu(instr),
-                0x22 => compile_sub(instr),
                 _    => compile_illegal(instr), // TODO: bltz/bgez undocumented dupes
             },
-            0x0E => compile_xori(instr),
             0x11 => compile_cop1(instr),
-            0x12 => compile_cop2(instr),
             0x13 => compile_cop3(instr),
-            0x22 => compile_lwl(instr),
-            0x25 => compile_lhu(instr),
-            0x26 => compile_lwr(instr),
-            0x2a => compile_swl(instr),
-            0x2b => compile_sw(instr),
-            0x2e => compile_swr(instr),
             0x30 => compile_lwc0(instr),
             0x31 => compile_lwc1(instr),
-            0x32 => compile_lwc2(instr),
             0x33 => compile_lwc3(instr),
             0x38 => compile_swc0(instr),
             0x39 => compile_swc1(instr),
-            0x3A => compile_swc2(instr),
             0x3B => compile_swc3(instr),
             // _ => panic!("Unhandled instruction: {:08X}, opcode: {:02X}", instr, instr.opcode())
             _ => compile_illegal(instr),
@@ -2009,7 +2873,7 @@ impl<'a> BlockBuilder<'a> {
 */
 
 
-enum Exception {
+pub enum Exception {
     ExternalInterrupt,
     LoadAddressError, // baddr
     StoreAddressError, // baddr
@@ -2040,4 +2904,29 @@ impl Exception {
 
 pub extern "C" fn print_(ch: u8) {
     print!("{}", ch as char);
+}
+
+pub extern "C" fn gte_command(gte_ptr: *mut Gte, command: u32) {
+    let gte = unsafe { gte_ptr.as_mut().expect("ok") };
+    gte.command(command);
+}
+
+pub extern "C" fn gte_data(gte_ptr: *mut Gte, reg: u8) -> u32 {
+    let gte = unsafe { gte_ptr.as_mut().expect("ok") };
+    gte.data(reg)
+}
+
+pub extern "C" fn gte_control(gte_ptr: *mut Gte, reg: u8) -> u32 {
+    let gte = unsafe { gte_ptr.as_mut().expect("ok") };
+    gte.control(reg)
+}
+
+pub extern "C" fn gte_set_data(gte_ptr: *mut Gte, reg: u8, val: u32) {
+    let gte = unsafe { gte_ptr.as_mut().expect("ok") };
+    gte.set_data(reg, val)
+}
+
+pub extern "C" fn gte_set_control(gte_ptr: *mut Gte, reg: u8, val: u32) {
+    let gte = unsafe { gte_ptr.as_mut().expect("ok") };
+    gte.set_control(reg, val)
 }

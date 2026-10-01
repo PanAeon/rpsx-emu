@@ -487,31 +487,33 @@ impl Spu {
         spu.last_irq_line = irq_line;
     }
 
-    pub fn mix(&mut self, cdrom: &mut CDRom) -> [i16; 2] {
+    pub fn mix(system: &mut System) -> [i16; 2] {
+        let spu = &mut system.spu;
+        let cdrom = &mut system.cdrom;
         let mut mixed_sample_l: i32 = 0;
         let mut mixed_sample_r: i32 = 0;
         let mut mixed_reverb = [0i32;2];
 
-        let (cd_l, cd_r) = if self.control.cd_audio_enabled() {
+        let (cd_l, cd_r) = if spu.control.cd_audio_enabled() {
             (cdrom.get_audio_sample(), cdrom.get_audio_sample())
         } else 
         { (0_i16, 0_i16) };
 
-        self.write_capture_buffer(cd_l, 0x000);
-        self.write_capture_buffer(cd_r, 0x400);
+        spu.write_capture_buffer(cd_l, 0x000);
+        spu.write_capture_buffer(cd_r, 0x400);
 
-        let cd_l = apply_volume(cd_l, self.cd_audio_input_volume_left);
-        let cd_r = apply_volume(cd_r, self.cd_audio_input_volume_right);
+        let cd_l = apply_volume(cd_l, spu.cd_audio_input_volume_left);
+        let cd_r = apply_volume(cd_r, spu.cd_audio_input_volume_right);
 
-        if !self.control.enabled() {
+        if !spu.control.enabled() {
             return [cd_l, cd_r];
         }
 
-        let noise_sample = self.noise.lfsr.cast_signed();
+        let noise_sample = spu.noise.lfsr.cast_signed();
 
         for i in 0..24 {
             // Apply ADSR envelope first
-            let voice = &mut self.voices[i];
+            let voice = &mut spu.voices[i];
             let envelope_sample = if voice.noise_mode {
                 apply_volume(noise_sample, voice.envelope.level as i16)
             } else {
@@ -529,29 +531,29 @@ impl Spu {
 
 
             if i == 1 {
-                self.write_capture_buffer(envelope_sample, 0x800);
+                spu.write_capture_buffer(envelope_sample, 0x800);
             }
             if i == 3 {
-                self.write_capture_buffer(envelope_sample, 0xC00);
+                spu.write_capture_buffer(envelope_sample, 0xC00);
             }
 
             mixed_sample_l += output_l as i32;
             mixed_sample_r += output_r as i32;
         }
-        self.capture_buffer_idx = (self.capture_buffer_idx + 2) & 0x3FF;
+        spu.capture_buffer_idx = (spu.capture_buffer_idx + 2) & 0x3FF;
 
-        if self.control.cd_audio_reverb() {
+        if spu.control.cd_audio_reverb() {
             mixed_reverb[0] += i32::from(cd_l);
             mixed_reverb[1] += i32::from(cd_r);
         }
 
         // TODO: this is incorrect when reverb is enabled for cd audio only?
-        self.reverb.tick(mixed_reverb, &mut self.memory, self.control.reverb_master_enabled());
+        spu.reverb.tick(mixed_reverb, &mut spu.memory, spu.control.reverb_master_enabled());
 
-        mixed_sample_l += i32::from(cd_l) + self.reverb.l_out;
-        mixed_sample_r += i32::from(cd_r) + self.reverb.r_out;
+        mixed_sample_l += i32::from(cd_l) + spu.reverb.l_out;
+        mixed_sample_r += i32::from(cd_r) + spu.reverb.r_out;
 
-        if !self.control.unmuted() {
+        if !spu.control.unmuted() {
             return [cd_l, cd_r];
         }
         
@@ -559,8 +561,8 @@ impl Spu {
         let clamped_l = mixed_sample_l.clamp(-0x8000, 0x7FFF) as i16;
         let clamped_r = mixed_sample_r.clamp(-0x8000, 0x7FFF) as i16;
 
-        let output_l = apply_volume(clamped_l, self.main_volume_left);
-        let output_r = apply_volume(clamped_r, self.main_volume_right);
+        let output_l = apply_volume(clamped_l, spu.main_volume_left);
+        let output_r = apply_volume(clamped_r, spu.main_volume_right);
         [output_l, output_r]
     }
 

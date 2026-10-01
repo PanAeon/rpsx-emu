@@ -69,6 +69,14 @@ impl Instruction {
 
         false
     }
+    pub fn is_conditional_jump(&self) -> bool {
+        let code = self.opcode();
+        // bxx, beq, bne, blez, bgtz
+        if code == 0x01 || code == 0x04 || code == 0x05 || code == 0x06 || code == 0x07 {
+            return true;
+        }
+        false
+    }
 }
 
 enum Exception {

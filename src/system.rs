@@ -187,7 +187,8 @@ impl System {
         //     println!("Unhandled read from ??? address {:x}", address);
         //     return T::from_u32(0);
         // }
-        panic!("Unhandled load{:?} address: {:08x}", T::width(), address)
+        panic!("Unhandled load{:?} address: {:08x}", T::width(), address);
+        // T::from_u32(0x0)
     }
 
     pub fn store<T:Addressable>(&mut self, addr: u32, value: T) {

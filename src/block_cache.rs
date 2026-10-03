@@ -91,16 +91,24 @@ impl BlockCache {
         &self.blocks[idx as usize]
     }
 
-    // wrooooong...
     pub fn invalidate_ram(&mut self, offset: u32, width: usize) {
         let idx = (offset / 4) as usize;
         let entry =  self.ram[idx];
         if entry.protected {
             println!("protected mem overwrite!");
-            for i in 0..self.ram.len() {
-                self.ram[i].protected = false;
-                self.ram[i].has_block = false;
+            let boundary = idx.saturating_sub(256);
+            let mut start = idx;
+            while start > 1 && start > boundary && self.ram[start].protected {
+                start -= 1;
             }
+            for i in start..=idx {
+                 self.ram[i].protected = false;
+                 self.ram[i].has_block = false;
+            }
+            // for i in 0..self.ram.len() {
+            //     self.ram[i].protected = false;
+            //     self.ram[i].has_block = false;
+            // }
             // entry.protected = false;
             // let start = idx.saturating_sub(256);
             // for i in start..=idx {
@@ -115,6 +123,12 @@ impl BlockCache {
             // }
             // panic!("dirty code!");
         }
+    }
+    pub fn invalidate(&mut self) {
+            for i in 0..self.ram.len() {
+                self.ram[i].protected = false;
+                self.ram[i].has_block = false;
+            }
     }
 }
 

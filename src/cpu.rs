@@ -158,15 +158,43 @@ impl Cpu {
         self.current_pc = self.pc;
         self.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
-        let (reg, val) = self.load;
-        self.set_reg(reg, val);
-        self.load = (0, 0);
+        // let (reg, val) = self.load;
+        // self.set_reg(reg, val);
+        // self.load = (0, 0);
         self.delay_slot = self.branch;
         self.branch = false;
 
 
         let is_gte = (instr.0 & 0xFE00_0000) == 0x4A00_0000;
         let pending_interrupt = self.check_for_pending_interrupts();
+
+        if !pending_interrupt || (is_gte && !self.delay_slot) {
+            self.decode_and_execute(instr);
+        }
+
+        if pending_interrupt {
+            self.exception(Exception::ExternalInterrupt);
+        }
+        // self.regs = self.out_regs;
+    }
+
+    pub fn run_next_instruction_debug(&mut self, process_interrupts: bool) {
+        if self.pc & 3 != 0 {
+            return self.exception(Exception::LoadAddressError(self.pc));
+        }
+        let instr = Instruction(self.load::<u32>(self.pc));
+        self.current_pc = self.pc;
+        self.pc = self.next_pc;
+        self.next_pc = self.next_pc.wrapping_add(4);
+        // let (reg, val) = self.load;
+        // self.set_reg(reg, val);
+        // self.load = (0, 0);
+        self.delay_slot = self.branch;
+        self.branch = false;
+
+
+        let is_gte = (instr.0 & 0xFE00_0000) == 0x4A00_0000;
+        let pending_interrupt = process_interrupts && self.check_for_pending_interrupts();
 
         if !pending_interrupt || (is_gte && !self.delay_slot) {
             self.decode_and_execute(instr);
@@ -428,6 +456,7 @@ impl Cpu {
         let v = self.load::<u32>(addr);
         self.delayed_load_chain(instr.rt(), v);
     }
+    // load word left
     pub fn op_lwl(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
         let mut cur_v = self.regs[instr.rt() as usize];

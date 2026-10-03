@@ -214,6 +214,7 @@ pub struct State {
     display_depth: DisplayDepth,
     display_vram: bool,
     software_render: bool,
+    sideload_exe: Option<String>
 }
 
 impl State {
@@ -641,6 +642,8 @@ impl State {
             sx: 0,
             sy: 0,
             display_depth: DisplayDepth::D15Bits, // writer,
+            // sideload_exe: None,
+            sideload_exe: Some("/foo/psxtest_cpu.exe".to_string())
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -743,37 +746,21 @@ impl State {
             //     texture::Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
         }
     }
+    fn sideload_exe_dynarec(&mut self) {
+        let Some(filename) = self.sideload_exe.take() else {
+            panic!("not filename specified");
+        };
 
-    fn sideload_exe(&mut self) {
-        /*
-        // let filename = "/foo/psxtest_cpu.exe";
-        // let filename = "/foo/psxtest_gte.exe";
-        // let filename = "/foo/psxtest_gpu.exe";
-        // let filename = "/foo/psx/PSX/CPUTest/CPU/LOADSTORE/LB/CPULB.exe";
-        // let filename = "/foo/psx/PSX/GPU/16BPP/MemoryTransfer/MemoryTransfer16BPP.exe";
-        let filename = "/foo/psx/PSX/Cube/Cube.exe";
-        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT4BPP/RenderTextureRectangleCLUT4BPP.exe";
-        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT8BPP/RenderTextureRectangleCLUT8BPP.exe";
-        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/15BPP/RenderTextureRectangle15BPP.exe";
-        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderLine/RenderLine16BPP.exe";
         let mut file = match std::fs::File::open(filename) {
             Ok(file) => file,
             Err(e) => panic!("Can't load exe {}", e),
         };
-        // let mut file = match std::fs::File::open() {
-        //     Ok(file) => file,
-        //     Err(e) => panic!("Can't load exe {}", e),
-        // };
+
         let mut data: Vec<u8> = Vec::new();
         let file_size = match file.read_to_end(&mut data) {
             Ok(x) => x,
             Err(e) => panic!("Can't read exe {}", e),
         };
-        while self.cpu.pc != 0x8003_0000 {
-            self.cpu.run_next_instruction();
-            self.cpu.check_for_tty_output();
-        }
-
         // exe header
         let initial_pc = u32::from_le_bytes(data[0x10..0x14].try_into().unwrap());
         let initial_r28 = u32::from_le_bytes(data[0x14..0x18].try_into().unwrap());
@@ -791,6 +778,7 @@ impl State {
         println!("exe size: {}", exe_size);
         self.cpu.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
+        self.cpu.system.block_cache.invalidate();
         //  let dest = self
         //     .cpu.system.ram.data
         //     .bytes()
@@ -803,15 +791,85 @@ impl State {
         //
         // dest.copy_from_slice(src);
 
-        self.cpu.set_reg(28, initial_r28);
+        self.cpu.regs.regs[28] = initial_r28;
         if initial_sp != 0 {
-            self.cpu.set_reg(29, initial_sp);
-            self.cpu.set_reg(30, initial_sp);
+            self.cpu.regs.regs[29] = initial_sp;
+            self.cpu.regs.regs[30] = initial_sp;
         }
-        self.cpu.pc = initial_pc;
-        self.cpu.next_pc = initial_pc + 4;
-        */
-        panic!("not implemented");
+        self.cpu.regs.pc = initial_pc;
+    }
+
+    fn sideload_exe(&mut self) {
+        let Some(filename) = &self.sideload_exe else {
+            panic!("not filename specified");
+        };
+        
+        
+        // let filename = "/foo/psxtest_cpu.exe";
+        // let filename = "/foo/psxtest_gte.exe";
+        // let filename = "/foo/psxtest_gpu.exe";
+        // let filename = "/foo/psx/PSX/CPUTest/CPU/LOADSTORE/LB/CPULB.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/MemoryTransfer/MemoryTransfer16BPP.exe";
+        // let filename = "/foo/psx/PSX/Cube/Cube.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT4BPP/RenderTextureRectangleCLUT4BPP.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/CLUT8BPP/RenderTextureRectangleCLUT8BPP.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderTextureRectangle/15BPP/RenderTextureRectangle15BPP.exe";
+        // let filename = "/foo/psx/PSX/GPU/16BPP/RenderLine/RenderLine16BPP.exe";
+        let mut file = match std::fs::File::open(filename) {
+            Ok(file) => file,
+            Err(e) => panic!("Can't load exe {}", e),
+        };
+        // let mut file = match std::fs::File::open() {
+        //     Ok(file) => file,
+        //     Err(e) => panic!("Can't load exe {}", e),
+        // };
+        let mut data: Vec<u8> = Vec::new();
+        let file_size = match file.read_to_end(&mut data) {
+            Ok(x) => x,
+            Err(e) => panic!("Can't read exe {}", e),
+        };
+        // while self.cpu.pc != 0x8003_0000 {
+        //     self.cpu.run_next_instruction();
+        //     self.cpu.check_for_tty_output();
+        // }
+
+        // exe header
+        let initial_pc = u32::from_le_bytes(data[0x10..0x14].try_into().unwrap());
+        let initial_r28 = u32::from_le_bytes(data[0x14..0x18].try_into().unwrap());
+        let exe_ram_addr = u32::from_le_bytes(data[0x18..0x1C].try_into().unwrap()) & 0x001F_FFFF;
+        let exe_size = u32::from_le_bytes(data[0x1C..0x20].try_into().unwrap()) as usize;
+        let initial_sp = u32::from_le_bytes(data[0x30..0x34].try_into().unwrap());
+
+        // exe_ram_addr = crate::system::mask_region(exe_ram_addr);
+        println!("exe ram addr: 0x{:X}", exe_ram_addr);
+        println!("initial pc: 0x{:X}", initial_pc);
+
+        // let exe_size = (file_size - 2048) as u32;
+        // let exe_size = (exe_size_2kb);
+        // let exe_size = 1013760 - 2048;
+        println!("exe size: {}", exe_size);
+        self.interpreter.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
+            .copy_from_slice(&data[2048..2048 + exe_size as usize]);
+        //  let dest = self
+        //     .cpu.system.ram.data
+        //     .bytes()
+        //     .get_mut(exe_ram_addr as usize..exe_ram_addr as usize + exe_size)
+        //     .context("EXE load address out of RAM bounds")?;
+        //
+        // let src = data
+        //     .get(2048..2048 + exe_size)
+        //     .context("EXE file truncated")?;
+        //
+        // dest.copy_from_slice(src);
+
+        self.interpreter.set_reg(28, initial_r28);
+        if initial_sp != 0 {
+            self.interpreter.set_reg(29, initial_sp);
+            self.interpreter.set_reg(30, initial_sp);
+        }
+        self.interpreter.pc = initial_pc;
+        self.interpreter.next_pc = initial_pc + 4;
+        
     }
 
     fn update_vertex_buffer_if_needed(
@@ -994,6 +1052,7 @@ impl State {
                 }
             }
             // self.update_interpreter();
+
             // ok everything works, except memory card... check that later
             // let budget = self.cpu.system.scheduler.next_event_budget();
             // TODO:
@@ -1001,7 +1060,15 @@ impl State {
             if self.cpu.check_for_pending_interrupts() {
                 self.cpu.external_interrupt();
             }
+            if self.sideload_exe.is_some() && self.cpu.regs.pc == 0x8003_0000 {
+                self.sideload_exe();
+                self.sideload_exe_dynarec();
+            }
+            if self.cpu.regs.pc & 3 != 0 {
+                self.cpu.exception(crate::dynarec::Exception::LoadAddressError, Some(self.cpu.regs.pc));
+            }
             let pc = self.cpu.pc();
+
             let block_idx = if let Some(entry) = self.cpu.system.block_cache.get_entry(pc) {
                 if entry.dirty {
                     panic!("recompile block");
@@ -1018,11 +1085,12 @@ impl State {
             // then run it...
 
             let interpreter_pc = self.interpreter.pc;
-            // for _ in 0..num_cycles {
-            //     self.interpreter.run_next_instruction();
+            // self.interpreter.run_next_instruction_debug(true);
+            // for _ in 1..num_cycles {
+            //     self.interpreter.run_next_instruction_debug(false);
             //     // self.interpreter.check_for_tty_output();
             // }
-            // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
+            // // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
             self.cpu.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {
@@ -1415,8 +1483,16 @@ impl State {
 const REGISTER_NAMES : [&str;32] = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
   "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
   "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"];
+
+fn check_mem(cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) -> bool {
+    cpu.system.ram.data[..] == interpreter.system.ram.data[..]
+}
 fn check_dynarec(pc: u32, interpreter_pc: u32, cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) {
     let mut is_ok = true;
+    // if !check_mem(cpu, interpreter) {
+    //     println!("memory different!");
+    //     is_ok = false;
+    // }
     for i in 0..32 {
         if interpreter.regs[i] != cpu.regs.regs[i] {
             println!("different reg[{}] ({}), interpreter: {:X}, dynarec: {:X}", i, REGISTER_NAMES[i], interpreter.regs[i], cpu.regs.regs[i]);

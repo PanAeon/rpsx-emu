@@ -303,10 +303,10 @@ impl Dynarec {
     }
 
     pub fn external_interrupt(&mut self) {
-        self.exception(Exception::ExternalInterrupt);
+        self.exception(Exception::ExternalInterrupt, None);
     }
 
-    pub fn exception(&mut self, cause: Exception) {
+    pub fn exception(&mut self, cause: Exception, baddr: Option<u32>) {
         let mode = self.regs.sr & 0x3f;
         self.regs.sr &= !0x3f;
         self.regs.sr |= (mode << 2) & 0x3f;
@@ -330,7 +330,7 @@ impl Dynarec {
         };
 
         if let Exception::LoadAddressError | Exception::StoreAddressError = cause {
-            panic!("not implemented");
+            self.regs.baddr = baddr.unwrap();
         }
 
         self.regs.pc = handler;
@@ -852,6 +852,16 @@ impl<'a> BlockBuilder<'a> {
             }
         }
     }
+    fn get_reg_from_delay_load(&mut self, r: u32) -> Value {
+        // what to do with runtime loads?
+        if let Some((reg, val)) = self.delayed_load {
+            if reg == r {
+                return val;
+            }
+        }
+        let r = self.get_reg_read(r);
+        self.bldr.use_var(r)
+    }
 
     fn compile_delayed_load_chain(&mut self, reg: u32, val: Value) {
         self.check_for_load_in_regs(Some(reg));
@@ -995,12 +1005,14 @@ impl<'a> BlockBuilder<'a> {
         let next_instr = self.next_instr.unwrap();
         // FIXME: panic if next instruction is any kind of jump..
         self.compile_delayed_load(true);
-        self.compile_instr_in_delay_slot(next_instr);
 
         let ra = self.get_current_pc().wrapping_add(8);
-        let r31 = self.get_reg_write(31);
-        let ra = self.bldr.ins().iconst(types::I32, ra as i64);
-        self.bldr.def_var(r31, ra);
+        if instr.rd() != 0 {
+            let target_reg = self.get_reg_write(instr.rd());
+            let ra = self.bldr.ins().iconst(types::I32, ra as i64);
+            self.bldr.def_var(target_reg, ra);
+        }
+        self.compile_instr_in_delay_slot(next_instr);
 
         self.save_context();
         self.set_pc(val);
@@ -1304,7 +1316,7 @@ impl<'a> BlockBuilder<'a> {
         // self.set_reg(instr.rt(), v)
     }
 
-    fn compile_div(&mut self, instr: Instruction) {
+    fn compile_divu(&mut self, instr: Instruction) {
         let reg_a = self.get_reg_read(instr.rs());
         let reg_b = self.get_reg_read(instr.rt());
         let n = self.bldr.use_var(reg_a);
@@ -1395,7 +1407,7 @@ impl<'a> BlockBuilder<'a> {
         self.bldr.def_var(lo_reg, lo_res);
 
     }
-    fn compile_divu(&mut self, instr: Instruction) {
+    fn compile_div(&mut self, instr: Instruction) {
         let reg_a = self.get_reg_read(instr.rs());
         let reg_b = self.get_reg_read(instr.rt());
         let n = self.bldr.use_var(reg_a);
@@ -1476,18 +1488,22 @@ impl<'a> BlockBuilder<'a> {
     // mov from hi,
     fn compile_mfhi(&mut self, instr: Instruction) {
         self.compile_delayed_load(true);
-        let reg = self.get_reg_write(instr.rd());
         let hi = self.get_reg_read(REG_HI);
         let hi = self.bldr.use_var(hi);
-        self.bldr.def_var(reg, hi);
+        if instr.rd() != 0 {
+            let reg = self.get_reg_write(instr.rd());
+            self.bldr.def_var(reg, hi);
+        }
     }
 
     fn compile_mflo(&mut self, instr: Instruction) {
         self.compile_delayed_load(true);
-        let reg = self.get_reg_write(instr.rd());
         let lo = self.get_reg_read(REG_LO);
         let lo = self.bldr.use_var(lo);
-        self.bldr.def_var(reg, lo);
+        if instr.rd() != 0 {
+            let reg = self.get_reg_write(instr.rd());
+            self.bldr.def_var(reg, lo);
+        }
     }
     fn compile_mtlo(&mut self, instr: Instruction) {
         let reg = self.get_reg_read(instr.rs());
@@ -2029,7 +2045,6 @@ impl<'a> BlockBuilder<'a> {
 
         let addr_reg = self.get_reg_read(instr.rs());
 
-        // let result_reg = self.get_reg_read(instr.rt());
 
         let imm_val = self.bldr.ins().iconst(types::I32, v as i64);
         let addr = self.bldr.use_var(addr_reg);
@@ -2117,10 +2132,10 @@ impl<'a> BlockBuilder<'a> {
 
         // This instruction bypasses the load delay restriction: this instruction will merge the new
         // contents with the value currently being loaded if need be.
-        self.compile_delayed_load(false);
+        // self.compile_delayed_load(false);
 
-        let curr_v = self.get_reg_read(instr.rt());
-        let curr_v = self.bldr.use_var(curr_v);
+        let curr_v = self.get_reg_from_delay_load(instr.rt());
+        // let curr_v = self.bldr.use_var(curr_v);
 
         let system = self
             .bldr
@@ -2175,10 +2190,11 @@ impl<'a> BlockBuilder<'a> {
 
         // This instruction bypasses the load delay restriction: this instruction will merge the new
         // contents with the value currently being loaded if need be.
-        self.compile_delayed_load(false);
+        // self.compile_delayed_load(false);
 
-        let curr_v = self.get_reg_read(instr.rt());
-        let curr_v = self.bldr.use_var(curr_v);
+        let curr_v = self.get_reg_from_delay_load(instr.rt());
+        // let curr_v = self.get_reg_read(instr.rt());
+        // let curr_v = self.bldr.use_var(curr_v);
 
         let system = self
             .bldr

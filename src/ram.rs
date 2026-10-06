@@ -1,21 +1,24 @@
+use std::pin::Pin;
+
 use crate::system::{Addressable, System};
 
 
 pub struct Ram {
-    pub data: Vec<u8>
+    pub data: Pin<Box<[u8]>>
 }
 
 impl Ram {
     pub fn new() -> Ram {
-        let data = vec![0xca; 2 * 1024 * 1024];
-        Ram { data }
+        let data = vec![0xca; 2 * 1024 * 1024].into_boxed_slice();
+        
+        Ram { data: Box::into_pin(data) }
     }
 
 
     pub fn load<T:Addressable>(&self, address: u32) -> T {
         let width = T::width() as usize;
         let addr = address as usize;
-        let mut buffer = [0u8;4];
+        let mut buffer = [0;4];
         buffer[..width].copy_from_slice(&self.data[addr..addr+width]);
         T::from_u32(u32::from_le_bytes(buffer))
     }

@@ -642,8 +642,8 @@ impl State {
             sx: 0,
             sy: 0,
             display_depth: DisplayDepth::D15Bits, // writer,
-            // sideload_exe: None,
-            sideload_exe: Some("/foo/psxtest_cpu.exe".to_string())
+            sideload_exe: None,
+            // sideload_exe: Some("/foo/psxtest_cpu.exe".to_string())
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -1051,7 +1051,7 @@ impl State {
                     scheduler::Event::DsrOff => self.cpu.system.sio.turn_dsr_off(),
                 }
             }
-            // self.update_interpreter();
+            self.update_interpreter();
 
             // ok everything works, except memory card... check that later
             // let budget = self.cpu.system.scheduler.next_event_budget();
@@ -1090,7 +1090,7 @@ impl State {
             //     self.interpreter.run_next_instruction_debug(false);
             //     // self.interpreter.check_for_tty_output();
             // }
-            // // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
+            // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
             self.cpu.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {

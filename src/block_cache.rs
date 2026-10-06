@@ -1,3 +1,5 @@
+use std::pin::Pin;
+
 use crate::system::map;
 
 #[repr(C)]
@@ -9,7 +11,7 @@ pub struct CacheEntry {
     pub dirty: bool,
 }
 
-// const _: () = assert!(core::mem::size_of::<CacheEntry>() == 4);
+const _: () = assert!(core::mem::size_of::<CacheEntry>() == 8);
 
 pub struct Block {
     pub ptr: *const u8,
@@ -20,7 +22,7 @@ pub struct Block {
 // we got RAM 2mb and bios 512kb.
 pub struct BlockCache {
     bios: Box<[CacheEntry]>,
-    ram: Box<[CacheEntry]>,
+    pub ram: Pin<Box<[CacheEntry]>>, // 4 Mb
     pub blocks: Vec<Block>
 }
 
@@ -29,7 +31,7 @@ impl BlockCache {
     pub fn new() -> BlockCache {
         BlockCache {
             bios: vec![CacheEntry::default();128*1024].into_boxed_slice(),
-            ram: vec![CacheEntry::default();2 * 256 * 1024].into_boxed_slice(),
+            ram: Box::into_pin(vec![CacheEntry::default();2 * 256 * 1024].into_boxed_slice()),
             blocks: vec![] 
         }
 

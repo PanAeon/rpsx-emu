@@ -472,6 +472,10 @@ pub extern "C" fn store_byte(system_ptr: *mut System, addr: u32, val: u8) {
 
 pub extern "C" fn load_word(system_ptr: *mut System, addr: u32) -> u32 {
     let system = unsafe { system_ptr.as_mut().expect("ok") };
+    // let masked_address = mask_region(addr);
+    // if let Some(_) = map::RAM.contains(addr) {
+    //         println!("system ram load");
+    // }
     System::load(system, addr)
 }
 

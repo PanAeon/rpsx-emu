@@ -906,7 +906,6 @@ impl ComputeRenderer {
         flags.set_transparency(ctx.semi_transparency);
         flags.set_force_set_mask_bit(ctx.force_set_mask_bit);
         flags.set_preserve_masked_pixels(ctx.preserve_masked_pixels);
-        // flags.set_is_rectangle(true);
 
         let clut = Clut::new(clut);
         let clut = [clut.base_x as u16, clut.base_y as u16];
@@ -933,7 +932,8 @@ impl ComputeRenderer {
         // println!("self: {} {} {} {}", self.drawing_area_top_left.0, self.drawing_area_top_left.1, self.drawing_area_bottom_right.0, self.drawing_area_bottom_right.1);
         // }
 
-        /*
+        
+        /*flags.set_is_rectangle(true);
                 let v0 = (Vert {
                     position: [v.x as i16, v.y as i16],
                     uv,
@@ -971,8 +971,8 @@ impl ComputeRenderer {
                 });
                 self.ensure_vertex_room(3);
                 self.vertices.extend_from_slice(&[v0, v1, v2]);
-
-        */
+*/
+        
 
         let v0 = (Vert {
             position: [v.x as i16, v.y as i16],
@@ -1054,6 +1054,7 @@ impl ComputeRenderer {
         self.ensure_vertex_room(3);
         self.vertices.extend_from_slice(&[v3, v4, v5]);
         // self.vertices.extend_from_slice(&[v4, v3, v5]);
+        
     }
 
     // TODO: The transfer is affected by Mask setting.

@@ -57,6 +57,7 @@ mod resources;
 mod dynarec;
 mod block_cache;
 mod dummy_renderer;
+mod interpreter;
 
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
@@ -187,9 +188,6 @@ pub struct State {
     camera_buffer: wgpu::Buffer,
     uniforms_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
-    // camera_controller: CameraController,
-    // tilemap: TilemapData<'static>,
-    // sprites: TilemapData<'static>,
     vertex_buffer: wgpu::Buffer,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -200,7 +198,7 @@ pub struct State {
     framebuffer: Arc<Mutex<Vec<u32>>>,
     // image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
     cpu: dynarec::Dynarec,
-    interpreter: cpu::Cpu,
+    interpreter: interpreter::Interpreter,
     texture_size: wgpu::Extent3d,
     audio_sender: crossbeam::channel::Sender<[i16; 2]>,
     audio_stream: cpal::Stream,
@@ -549,30 +547,31 @@ impl State {
         let cpu = dynarec::Dynarec::new(system);
 
         // interpreter
-        let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
-        // let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
-        let ram = ram::Ram::new();
-        let scratchpad = scratchpad::Scratchpad::new();
-        let dma = dma::Dma::new();
-        // let gpu = gpu::Gpu::new();
-        let spu = spu::Spu::new();
-        let cdrom = CDRom::default();
-        // let spu = spu::Spu::default();
-        let irqctl = irq::InterruptController::default();
-        let sio = sio::Sio::new();
-        let mdec = mdec::Mdec::new();
-        let mut scheduler = scheduler::Scheduler::default();
-        scheduler.init();
-        let timers = timers::Timers::new();
-        let (sender, receiver, handle) =
-            renderer::Renderer::create();
-
-        let gpu = gpu::Gpu::new(sender, receiver, handle);
-        let block_cache = block_cache::BlockCache::new();
-        let system = system::System::new(
-            bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu, block_cache,
-        );
-        let interpreter = cpu::Cpu::new(system);
+        // let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
+        // // let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
+        // let ram = ram::Ram::new();
+        // let scratchpad = scratchpad::Scratchpad::new();
+        // let dma = dma::Dma::new();
+        // // let gpu = gpu::Gpu::new();
+        // let spu = spu::Spu::new();
+        // let cdrom = CDRom::default();
+        // // let spu = spu::Spu::default();
+        // let irqctl = irq::InterruptController::default();
+        // let sio = sio::Sio::new();
+        // let mdec = mdec::Mdec::new();
+        // let mut scheduler = scheduler::Scheduler::default();
+        // scheduler.init();
+        // let timers = timers::Timers::new();
+        // let (sender, receiver, handle) =
+        //     renderer::Renderer::create();
+        //
+        // let gpu = gpu::Gpu::new(sender, receiver, handle);
+        // let block_cache = block_cache::BlockCache::new();
+        // let system = system::System::new(
+        //     bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu, block_cache,
+        // );
+        // let interpreter = cpu::Cpu::new(system);
+        let interpreter = interpreter::Interpreter::new();
 
 
 
@@ -799,7 +798,7 @@ impl State {
         self.cpu.regs.pc = initial_pc;
     }
 
-    fn sideload_exe(&mut self) {
+    /*fn sideload_exe(&mut self) {
         let Some(filename) = &self.sideload_exe else {
             panic!("not filename specified");
         };
@@ -850,6 +849,7 @@ impl State {
         println!("exe size: {}", exe_size);
         self.interpreter.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
+
         //  let dest = self
         //     .cpu.system.ram.data
         //     .bytes()
@@ -870,7 +870,7 @@ impl State {
         self.interpreter.pc = initial_pc;
         self.interpreter.next_pc = initial_pc + 4;
         
-    }
+    }*/
 
     fn update_vertex_buffer_if_needed(
         &mut self,
@@ -984,7 +984,10 @@ impl State {
                         self.audio_sender
                             .send(sample)
                             .expect("can't send audio sample");
-
+                        // if self.audio_sender.len() > 4*735 { // 2.5 * 735
+                        //     break;
+                        // }
+                        //
                         // self.audio_tick += 1;
                         // if self.audio_tick == 735 {
                         //     self.audio_tick = 0;
@@ -1029,7 +1032,9 @@ impl State {
                         timers::Timers::exit_vsync(&mut self.cpu.system);
                         // let (w, h) = self.cpu.system.gpu_ctrl_receiver.recv().expect("ok");
                         // self.update_vertex_buffer_if_needed(w, h, false);
-                        break;
+                        if self.audio_sender.len() > 5*735 { // 2.5 * 735
+                           break;
+                        }
                     }
                     scheduler::Event::HBlankStart => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
@@ -1051,7 +1056,7 @@ impl State {
                     scheduler::Event::DsrOff => self.cpu.system.sio.turn_dsr_off(),
                 }
             }
-            self.update_interpreter();
+            // self.update_interpreter();
 
             // ok everything works, except memory card... check that later
             // let budget = self.cpu.system.scheduler.next_event_budget();
@@ -1061,7 +1066,7 @@ impl State {
                 self.cpu.external_interrupt();
             }
             if self.sideload_exe.is_some() && self.cpu.regs.pc == 0x8003_0000 {
-                self.sideload_exe();
+                // self.sideload_exe();
                 self.sideload_exe_dynarec();
             }
             if self.cpu.regs.pc & 3 != 0 {
@@ -1084,7 +1089,7 @@ impl State {
             let num_cycles = self.cpu.run_block(block_idx);
             // then run it...
 
-            let interpreter_pc = self.interpreter.pc;
+            // let interpreter_pc = self.interpreter.pc;
             // self.interpreter.run_next_instruction_debug(true);
             // for _ in 1..num_cycles {
             //     self.interpreter.run_next_instruction_debug(false);
@@ -1113,7 +1118,7 @@ impl State {
         // }
     }
 
-    fn update_interpreter(&mut self) {
+    /*fn update_interpreter(&mut self) {
             if let Some(event) = self.interpreter.system.scheduler.get_next_event() {
                 match event {
                     scheduler::Event::SpuTick => {
@@ -1190,7 +1195,7 @@ impl State {
                     scheduler::Event::DsrOff => self.interpreter.system.sio.turn_dsr_off(),
                 }
             }
-    }
+    }*/
 
     fn render(&mut self, view: &wgpu::TextureView) {
         self.upload_framebuffer();

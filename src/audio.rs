@@ -15,7 +15,7 @@ const AUDIO_STREAM_CONFIG: StreamConfig = StreamConfig {
 };
 
 pub fn build_audio_stream() -> anyhow::Result<(cpal::Stream, Sender<AudioSample>)> {
-    let (prod, cons) = crossbeam::channel::bounded(4096);
+    let (prod, cons) = crossbeam::channel::bounded(6*735);
 
     let device = cpal::host_from_id(cpal::HostId::PipeWire)
         .expect("fail to open audio device")
@@ -30,13 +30,13 @@ pub fn build_audio_stream() -> anyhow::Result<(cpal::Stream, Sender<AudioSample>
                 // println!("data len: {}", data.len());
                 if catch_up {
                     catch_up = false;
-                    std::thread::sleep(std::time::Duration::from_millis(17*8));
+                    std::thread::sleep(std::time::Duration::from_millis(60*16));
                 }
                 for d in data.as_chunks_mut::<2>().0 {
                     match cons.try_recv() {
                         Ok(sample) => *d = sample,
                         Err(_) => {
-                            // println!("<audio buffer underrun>");
+                            println!("<audio buffer underrun>");
                             catch_up = true;
                             // std::thread::sleep(std::time::Duration::from_millis(400));
                             return;

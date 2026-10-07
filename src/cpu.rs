@@ -79,7 +79,7 @@ impl Instruction {
     }
 }
 
-enum Exception {
+pub enum Exception {
     ExternalInterrupt,
     LoadAddressError(u32),
     StoreAddressError(u32),

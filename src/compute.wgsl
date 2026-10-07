@@ -288,12 +288,16 @@ fn draw_triangle_barycentric( v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i
     let texpage_base = get_texture_base(v1);
     let clut = get_clut(v1);
     let transparency = get_transparency(v1);
-// 0.0001
+
+    let bias1 = 0.000000001 * f32(!is_top_left(p0, p1));
+    let bias2 = 0.000000001 * f32(!is_top_left(p1, p2));
+    let bias3 = 0.000000001 * f32(!is_top_left(p2, p0));
 
     for (var y = bds.y; y <= bds.w; y++) {
         for (var x = bds.x; x <= bds.z; x++) {
             let lambda = barycentric(p0, p1, p2, x, y);
-            if lambda.x < 0.0000 || lambda.y < 0.0000 || lambda.z < 0.0000 {
+            // if lambda.x < bias1 || lambda.y < bias3 || lambda.z < bias2 {
+            if lambda.x < bias2 || lambda.y < bias3 || lambda.z < bias1 {
                 continue;
             }
 
@@ -1127,7 +1131,7 @@ fn main(
         var v3 = vertex_buffer[vert_idx + 2u];
         // draw_triangle_shaded_textured(v1, v2, v3, bounds);
         // if is_rectangle(v1) {
-        //     draw_rectangle(v1, v2, bounds);
+            // draw_rectangle(v1, v2, bounds);
         // } else {
             draw_triangle_barycentric( v1, v2, v3, bounds);
             // draw_triangle_shaded_textured( v1, v2, v3, bounds);

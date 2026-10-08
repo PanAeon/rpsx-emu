@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 
-use crate::block_cache::{self, CacheEntry};
+use crate::block_cache::{self, BlockCache, CacheEntry};
 use crate::system::{
     load_byte, load_half_word, load_word, store_byte, store_half_word, store_word,
 };
@@ -16,6 +18,7 @@ use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use cranelift::codegen::ir::{BlockCall, FuncRef, MachMemFlags, ValueListPool};
 use cranelift::codegen::verifier::verify_function;
 
+use crossbeam::channel::Sender;
 use target_lexicon::PointerWidth;
 
 const REG_HI: u32 = 32;
@@ -74,25 +77,8 @@ pub struct Dynarec {
     pub system: Pin<Box<System>>,
     pub regs: Pin<Box<Registers>>,
     pub gte: Pin<Box<Gte>>,
-    /// The function builder context, which is reused across multiple
-    /// FunctionBuilder instances.
-    builder_context: FunctionBuilderContext,
-
-    /// The main Cranelift context, which holds the state for codegen. Cranelift
-    /// separates this from `Module` to allow for parallel compilation, with a
-    /// context per thread, though this isn't in the simple demo here.
-    ctx: codegen::Context,
-
-    /// The data description, which is to data objects what `ctx` is to functions.
-    data_description: DataDescription,
-
-    /// The module, with the jit backend, which manages the JIT'd
-    /// functions.
-    module: JITModule,
-
-    constants: Constants,
-
-    debug: Debug,
+    sender: Sender<CompileMsg>,
+    handle: JoinHandle<()>,
 }
 
 impl Dynarec {
@@ -115,6 +101,191 @@ impl Dynarec {
             // branch: false,
             // delay_slot: false,
         };
+        let mut regs = Box::pin(regs);
+        let regs_ptr: *mut u8 = unsafe { std::mem::transmute(regs.as_mut()) };
+        let mut system = Box::pin(system);
+        let system_ptr: *mut System = &mut *system;
+        let mut gte = Box::pin(Gte::new());
+        let gte_ptr: *mut Gte = &mut *gte;
+        let ram_ptr: *mut [u8] = &mut *system.ram.data;
+        let mut bc = system.block_cache.lock().unwrap();
+        let cache_ptr: *mut [CacheEntry] = &mut *bc.ram;
+        drop(bc);
+        // let system_ptr = unsafe { std::mem::transmute(&*system) };
+        let (sender, handle) = create_compiler_thread(MySafePointer { ram: ram_ptr, system: system_ptr, regs: regs_ptr, gte: gte_ptr, cache: cache_ptr }, system.block_cache.clone());
+        Dynarec { system, regs, gte, sender, handle }
+    }
+
+    pub fn pc(&self) -> u32 {
+        self.regs.pc
+    }
+
+    pub fn run_block(&mut self, idx: u32) -> u64 {
+        // self.debug_print();
+        let bc = self.system.block_cache.lock().unwrap();
+        let block = bc.get_block(idx);
+        let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
+        drop(bc);
+        jit_fn() as u64
+    }
+
+    pub fn check_for_pending_interrupts(&mut self) -> bool {
+        if self.system.irqctl.pending() {
+            self.regs.cause |= 1 << 10;
+        } else {
+            self.regs.cause &= !(1 << 10);
+        }
+        // mask bits 8..15
+        let pending = (self.regs.cause & self.regs.sr) & 0x700; //0xFF00;
+        pending != 0 && (self.regs.sr & 1 != 0)
+    }
+
+    pub fn external_interrupt(&mut self) {
+        self.exception(Exception::ExternalInterrupt, None);
+    }
+
+    pub fn exception(&mut self, cause: Exception, baddr: Option<u32>) {
+        let mode = self.regs.sr & 0x3f;
+        self.regs.sr &= !0x3f;
+        self.regs.sr |= (mode << 2) & 0x3f;
+
+        self.regs.cause &= !0x7c;
+        self.regs.cause |= (cause.code() as u32) << 2; // woot?
+
+        // if self.regs.delay_slot { // this what happend?
+        //     self.regs.epc = self.regs.current_pc.wrapping_sub(4);
+        //     self.regs.cause |= 1 << 31;
+        // } else {
+        self.regs.epc = self.regs.pc;
+        self.regs.cause &= !(1 << 31);
+        // }
+
+        // exception handler address depends on the BEV bit
+        let handler: u32 = if self.regs.sr & (1 << 22) != 0 {
+            0xbfc00180
+        } else {
+            0x80000080
+        };
+
+        if let Exception::LoadAddressError | Exception::StoreAddressError = cause {
+            self.regs.baddr = baddr.unwrap();
+        }
+
+        self.regs.pc = handler;
+    }
+
+    pub fn schedule_compile_block(&mut self, addr: u32) {
+        let mut buff = [Instruction(0); 256];
+        let xs = self.parse_block(addr, &mut buff);
+        self.sender.send(CompileMsg { pc: addr, block: xs.to_vec() }).expect("ok");
+    }
+    pub fn parse_block<'a, 'b>(
+        &'a mut self,
+        addr: u32,
+        buff: &'b mut [Instruction],
+    ) -> &'b [Instruction] {
+        let mut len = 255;
+        for i in 0..255 {
+            buff[i] = Instruction(self.system.load::<u32>(addr + i as u32 * 4));
+            if buff[i].is_unconditional_jump() {
+                buff[i + 1] = Instruction(self.system.load::<u32>(addr + (i + 1) as u32 * 4));
+                // what to do with syscall? break?
+                len = i + 2;
+                break;
+            }
+        }
+        if len == 255 && buff[254].is_conditional_jump() {
+            buff[255] = Instruction(self.system.load::<u32>(addr + (255) as u32 * 4));
+            len = 256;
+        }
+        &buff[0..len]
+    }
+
+    // pub fn create_data(&mut self) {
+    //     // self.module.declare_data(name, linkage, writable, tls)
+    //     // self.data_description.define(contents);
+    // }
+}
+
+struct CompileMsg {
+    pc: u32,
+    block: Vec<Instruction>,
+}
+
+struct MySafePointer {
+    ram: *mut [u8],
+    system: *mut System,
+    regs: *mut u8,
+    gte: *mut Gte,
+    cache: *mut [CacheEntry],
+}
+unsafe impl Send for MySafePointer {}
+
+fn create_compiler_thread(
+    ptr: MySafePointer,
+    block_cache: Arc<Mutex<BlockCache>>,
+) -> (Sender<CompileMsg>, JoinHandle<()>) {
+    let (sender, receiver) = crossbeam::channel::bounded(32096);
+    let handle = thread::spawn(move || {
+        let ptr = ptr;
+        let mut compiler = Compiler::new(ptr.ram, ptr.system, ptr.regs, ptr.gte, ptr.cache);
+        let core_ids = core_affinity::get_core_ids().unwrap();
+        let res = core_affinity::set_for_current(core_ids[2]);
+        if res {
+            println!("compiler thread pinned to 2");
+        }
+        loop {
+            let msg = match receiver.recv() {
+                Ok(msg) => msg,
+                Err(_) => return,
+            };
+            let CompileMsg { pc, block } = msg;
+
+            // check that block is not compiled already...
+            let bc = block_cache.lock().expect("ok");
+            if bc.get_entry(pc).is_some() {
+                continue;
+            }
+            drop(bc);
+            let block = compiler.compile_block(pc, block);
+            let mut bc = block_cache.lock().expect("ok");
+            // hmm, need to check that block is still valid?
+            bc.insert_block(pc, block);
+        }
+    });
+
+    (sender, handle)
+}
+
+struct Compiler {
+    /// The function builder context, which is reused across multiple
+    /// FunctionBuilder instances.
+    builder_context: FunctionBuilderContext,
+
+    /// The main Cranelift context, which holds the state for codegen. Cranelift
+    /// separates this from `Module` to allow for parallel compilation, with a
+    /// context per thread, though this isn't in the simple demo here.
+    ctx: codegen::Context,
+
+    /// The data description, which is to data objects what `ctx` is to functions.
+    data_description: DataDescription,
+
+    /// The module, with the jit backend, which manages the JIT'd
+    /// functions.
+    module: JITModule,
+
+    constants: Constants,
+    // block_cache: Arc<Mutex<BlockCache>>
+}
+
+impl Compiler {
+    pub fn new(
+        ram: *mut [u8],
+        system: *mut System,
+        regs: *mut u8,
+        gte: *mut Gte,
+        cache: *mut [CacheEntry],
+    ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
@@ -247,30 +418,18 @@ impl Dynarec {
             .declare_function("gte_set_control", Linkage::Import, &sig_external)
             .unwrap();
 
-        let mut regs = Box::pin(regs);
-        let regs_ptr = unsafe { std::mem::transmute(regs.as_mut()) };
-        let mut system = Box::pin(system);
-        let system_ptr: *mut System = &mut *system;
-        let mut gte = Box::pin(Gte::new());
-        let gte_ptr: *mut Gte = &mut *gte;
-        let ram_ptr: *mut [u8] = &mut *system.ram.data;
-        let cache_ptr: *mut [CacheEntry] = &mut *system.block_cache.ram;
-        // let system_ptr = unsafe { std::mem::transmute(&*system) };
-        Dynarec {
-            system,
-            regs,
-            gte,
+        Compiler {
+            // block_cache,
             builder_context: FunctionBuilderContext::new(),
             ctx: module.make_context(),
             data_description: DataDescription::new(),
             module,
-            debug: Default::default(),
             constants: Constants {
-                regs: regs_ptr,
-                system: system_ptr,
-                ram: ram_ptr,
-                cache: cache_ptr,
-                gte: gte_ptr,
+                regs,
+                system,
+                ram,
+                cache,
+                gte,
                 store_word,
                 store_half_word,
                 store_byte,
@@ -287,92 +446,14 @@ impl Dynarec {
         }
     }
 
-    pub fn pc(&self) -> u32 {
-        self.regs.pc
-    }
-
-    pub fn run_block(&mut self, idx: u32) -> u64 {
-        // self.debug_print();
-        let block = self.system.block_cache.get_block(idx);
-        let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
-        jit_fn() as u64
-    }
-
-    pub fn check_for_pending_interrupts(&mut self) -> bool {
-        if self.system.irqctl.pending() {
-            self.regs.cause |= 1 << 10;
-        } else {
-            self.regs.cause &= !(1 << 10);
-        }
-        // mask bits 8..15
-        let pending = (self.regs.cause & self.regs.sr) & 0x700; //0xFF00;
-        pending != 0 && (self.regs.sr & 1 != 0)
-    }
-
-    pub fn external_interrupt(&mut self) {
-        self.exception(Exception::ExternalInterrupt, None);
-    }
-
-    pub fn exception(&mut self, cause: Exception, baddr: Option<u32>) {
-        let mode = self.regs.sr & 0x3f;
-        self.regs.sr &= !0x3f;
-        self.regs.sr |= (mode << 2) & 0x3f;
-
-        self.regs.cause &= !0x7c;
-        self.regs.cause |= (cause.code() as u32) << 2; // woot?
-
-        // if self.regs.delay_slot { // this what happend?
-        //     self.regs.epc = self.regs.current_pc.wrapping_sub(4);
-        //     self.regs.cause |= 1 << 31;
-        // } else {
-        self.regs.epc = self.regs.pc;
-        self.regs.cause &= !(1 << 31);
-        // }
-
-        // exception handler address depends on the BEV bit
-        let handler: u32 = if self.regs.sr & (1 << 22) != 0 {
-            0xbfc00180
-        } else {
-            0x80000080
-        };
-
-        if let Exception::LoadAddressError | Exception::StoreAddressError = cause {
-            self.regs.baddr = baddr.unwrap();
-        }
-
-        self.regs.pc = handler;
-    }
-
-    pub fn debug_print(&mut self) {
-        if !self.debug.hit_breakpoint {
-            if self.regs.pc == 0xBFC02EA0 {
-                self.debug.hit_breakpoint = true;
-            }
-        }
-        if self.debug.hit_breakpoint {
-            if self.debug.i < 40 {
-                println!("CPU pc: 0x{:X}", self.regs.pc);
-                self.debug.i += 1;
-            } else {
-                println!("CPU pc: 0x{:X}", self.regs.pc);
-                panic!("done");
-            }
-        }
-        // println!("CPU pc: 0x{:X}", self.regs.pc);
-        // for (i, x) in self.regs.regs.iter().enumerate() {
-        //     println!("regs[{:02}]: 0x{:X}", i, x);
-        // }
-        // println!();
-    }
-
-    pub fn compile_block(&mut self, addr: u32) -> block_cache::Block {
+    pub fn compile_block(&mut self, addr: u32, xs: Vec<Instruction>) -> block_cache::Block {
         // woot?
         // if addr == 0x80000080 {
         //     panic!("at exception handler");
         // }
-        let mut buff = [Instruction(0); 256];
+        // let mut buff = [Instruction(0); 256];
         // I guess first parse the block
-        let xs = self.parse_block(addr, &mut buff);
+        // let xs = self.parse_block(addr, &mut buff);
 
         self.ctx
             .func
@@ -423,9 +504,8 @@ impl Dynarec {
             // start_block,
         };
 
-
         for i in 0..xs.len() {
-           bldr.get_registers(xs[i]);
+            bldr.get_registers(xs[i]);
         }
 
         bldr.compile_entry_block();
@@ -501,33 +581,6 @@ impl Dynarec {
             length: xs.len() as u32,
         }
     }
-
-    pub fn parse_block<'a, 'b>(
-        &'a mut self,
-        addr: u32,
-        buff: &'b mut [Instruction],
-    ) -> &'b [Instruction] {
-        let mut len = 255;
-        for i in 0..255 {
-            buff[i] = Instruction(self.system.load::<u32>(addr + i as u32 * 4));
-            if buff[i].is_unconditional_jump() {
-                buff[i + 1] = Instruction(self.system.load::<u32>(addr + (i + 1) as u32 * 4));
-                // what to do with syscall? break?
-                len = i + 2;
-                break;
-            }
-        }
-        if len == 255 && buff[254].is_conditional_jump() {
-            buff[255] = Instruction(self.system.load::<u32>(addr + (255) as u32 * 4));
-            len = 256;
-        }
-        &buff[0..len]
-    }
-
-    // pub fn create_data(&mut self) {
-    //     // self.module.declare_data(name, linkage, writable, tls)
-    //     // self.data_description.define(contents);
-    // }
 }
 
 struct BlockBuilder<'a> {
@@ -1233,17 +1286,21 @@ impl<'a> BlockBuilder<'a> {
                 .ins()
                 .iconst(types::I64, self.constants.regs as usize as i64);
             let delayed_load_reg = self.get_reg_read(REG_LOAD_REG);
-            let reg = self
-                .bldr
-                .ins()
-                .load(types::I32, MachMemFlags::trusted(), regs_address, REG_LOAD_REG as i32 * 4);
+            let reg = self.bldr.ins().load(
+                types::I32,
+                MachMemFlags::trusted(),
+                regs_address,
+                REG_LOAD_REG as i32 * 4,
+            );
             self.bldr.def_var(delayed_load_reg, reg);
             // let reg = self.bldr.use_var(delayed_load_reg);
             let delayed_load_val = self.get_reg_read(REG_LOAD_VAL);
-            let delayed_load = self
-                .bldr
-                .ins()
-                .load(types::I32, MachMemFlags::trusted(), regs_address, REG_LOAD_VAL as i32 * 4);
+            let delayed_load = self.bldr.ins().load(
+                types::I32,
+                MachMemFlags::trusted(),
+                regs_address,
+                REG_LOAD_VAL as i32 * 4,
+            );
             self.bldr.def_var(delayed_load_val, delayed_load);
             // let delayed_load = self.bldr.use_var(delayed_load_val);
             let zero = self.bldr.ins().iconst(types::I32, 0);
@@ -2561,16 +2618,16 @@ impl<'a> BlockBuilder<'a> {
         self.compile_delayed_load_chain(instr.rt(), v);
     }
 
-// const REGION_MASK: [u32; 8] = [
-//     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KUSEG: 2048MB,
-//     0x7fffffff, // KSEG0: 512MB,
-//     0x1fffffff, // KSEG1: 512MB,
-//     0xffffffff, 0xffffffff, // KSEG2: 1024MB, cache cotnrol hw registers
-// ];
-// pub fn mask_region(addr: u32) -> u32 {
-//     let index = (addr >> 29) as usize;
-//     addr & REGION_MASK[index]
-// }
+    // const REGION_MASK: [u32; 8] = [
+    //     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KUSEG: 2048MB,
+    //     0x7fffffff, // KSEG0: 512MB,
+    //     0x1fffffff, // KSEG1: 512MB,
+    //     0xffffffff, 0xffffffff, // KSEG2: 1024MB, cache cotnrol hw registers
+    // ];
+    // pub fn mask_region(addr: u32) -> u32 {
+    //     let index = (addr >> 29) as usize;
+    //     addr & REGION_MASK[index]
+    // }
     // now make polymorphic...
     fn compile_load(&mut self, ty: Type, address: Value) -> Value {
         //self.bldr.func.dfg.value_type(my_value);
@@ -2580,8 +2637,6 @@ impl<'a> BlockBuilder<'a> {
         let is_kuseg = self.bldr.ins().band_not(kuseg_test, index);
         let is_kseg2 = self.bldr.ins().band_imm_u(index, 0b010);
         let is_kseg1 = self.bldr.ins().band_imm_u(index, 0b001);
-
-
 
         let kseg0_mask = self.bldr.ins().iconst(types::I32, 0x7fffffff);
         let kseg1_mask = self.bldr.ins().iconst(types::I32, 0x1fffffff);
@@ -2597,15 +2652,19 @@ impl<'a> BlockBuilder<'a> {
 
         // now check if we in ram:
         // pub const RAM: Range = Range(0x0000_0000, 2 * 1024 * 1024);
-        let is_ram = self.bldr.ins().icmp_imm_u(IntCC::UnsignedLessThan, masked_address, 2 * 1024 * 1024);
-
+        let is_ram =
+            self.bldr
+                .ins()
+                .icmp_imm_u(IntCC::UnsignedLessThan, masked_address, 2 * 1024 * 1024);
 
         let then_block = self.bldr.create_block();
         let else_block = self.bldr.create_block();
         let merge_block = self.bldr.create_block();
         self.bldr.append_block_param(merge_block, ty);
 
-        self.bldr.ins().brif(is_ram, then_block, &[], else_block, &[]);
+        self.bldr
+            .ins()
+            .brif(is_ram, then_block, &[], else_block, &[]);
         self.bldr.switch_to_block(then_block);
         self.bldr.seal_block(then_block);
         let p = self
@@ -2613,10 +2672,7 @@ impl<'a> BlockBuilder<'a> {
             .ins()
             .iconst(types::I64, self.constants.ram as *mut u8 as usize as i64);
         let p = self.bldr.ins().iadd(p, masked_address);
-            let val = self
-                .bldr
-                .ins()
-                .load(ty, MachMemFlags::trusted(), p, 0);
+        let val = self.bldr.ins().load(ty, MachMemFlags::trusted(), p, 0);
 
         self.bldr.ins().jump(merge_block, &[BlockArg::Value(val)]);
 
@@ -2633,19 +2689,19 @@ impl<'a> BlockBuilder<'a> {
                 let res = self.bldr.ins().call(load_word, &[system, address]);
                 let res = self.bldr.inst_results(res)[0];
                 self.bldr.ins().jump(merge_block, &[BlockArg::Value(res)]);
-            },
+            }
             types::I16 => {
                 let load_half_word = self.get_load_half_word();
                 let res = self.bldr.ins().call(load_half_word, &[system, address]);
                 let res = self.bldr.inst_results(res)[0];
                 self.bldr.ins().jump(merge_block, &[BlockArg::Value(res)]);
-            },
+            }
             types::I8 => {
                 let load_byte = self.get_load_byte();
                 let res = self.bldr.ins().call(load_byte, &[system, address]);
                 let res = self.bldr.inst_results(res)[0];
                 self.bldr.ins().jump(merge_block, &[BlockArg::Value(res)]);
-            },
+            }
             _ => {
                 panic!("unsupported type: {}", ty);
             }

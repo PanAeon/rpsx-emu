@@ -18,6 +18,7 @@ pub struct Block {
     pub crc32: u32,
     pub length: u32,
 }
+unsafe impl Send for Block {}
 
 // we got RAM 2mb and bios 512kb.
 pub struct BlockCache {

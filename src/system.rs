@@ -1,5 +1,5 @@
 
-use std::thread::JoinHandle;
+use std::{sync::{Arc, Mutex}, thread::JoinHandle};
 
 use crossbeam::channel::{Receiver, Sender};
 
@@ -101,7 +101,7 @@ pub struct System {
     pub sio: Sio,
     pub mdec: Mdec,
     pub gpu: Gpu,
-    pub block_cache: BlockCache,
+    pub block_cache: Arc<Mutex<BlockCache>>,
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -121,7 +121,7 @@ impl System {
         scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu, block_cache: BlockCache) -> System {
     
         System { bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
-        gpu, block_cache}
+        gpu, block_cache: Arc::new(Mutex::new(block_cache))}
     }
     pub fn load<T:Addressable>(&mut self, addr: u32) -> T {
         let address = mask_region(addr);

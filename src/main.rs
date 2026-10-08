@@ -777,7 +777,9 @@ impl State {
         println!("exe size: {}", exe_size);
         self.cpu.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
-        self.cpu.system.block_cache.invalidate();
+
+        let mut bc = self.cpu.system.block_cache.lock().unwrap();
+        bc.invalidate();
         //  let dest = self
         //     .cpu.system.ram.data
         //     .bytes()
@@ -1062,31 +1064,49 @@ impl State {
             // let budget = self.cpu.system.scheduler.next_event_budget();
             // TODO:
             //if !pending_interrupt || (is_gte && !self.delay_slot) {
-            if self.cpu.check_for_pending_interrupts() {
-                self.cpu.external_interrupt();
-            }
+            // if self.cpu.check_for_pending_interrupts() {
+            //     self.cpu.external_interrupt();
+            // }
             if self.sideload_exe.is_some() && self.cpu.regs.pc == 0x8003_0000 {
                 // self.sideload_exe();
                 self.sideload_exe_dynarec();
+                self.interpreter.next_pc = self.cpu.regs.pc.wrapping_add(4);
             }
-            if self.cpu.regs.pc & 3 != 0 {
-                self.cpu.exception(crate::dynarec::Exception::LoadAddressError, Some(self.cpu.regs.pc));
-            }
+            // if self.cpu.regs.pc & 3 != 0 {
+            //     self.cpu.exception(crate::dynarec::Exception::LoadAddressError, Some(self.cpu.regs.pc));
+            // }
             let pc = self.cpu.pc();
 
-            let block_idx = if let Some(entry) = self.cpu.system.block_cache.get_entry(pc) {
-                if entry.dirty {
-                    panic!("recompile block");
-                    // recompile block...
-                }
-                entry.block_idx
-            } else {
-                let block = self.cpu.compile_block(pc);
-                let idx = self.cpu.system.block_cache.insert_block(pc, block);
-                idx
-                // compile new block...
-            };
-            let num_cycles = self.cpu.run_block(block_idx);
+            let bc = self.cpu.system.block_cache.lock().unwrap();
+            // let entry = bc.get_entry(pc);
+            drop(bc);
+
+            // let num_cycles = if let Some(entry) = entry {
+            //     self.cpu.run_block(entry.block_idx)
+            // } else {
+            //     self.cpu.schedule_compile_block(pc);
+            //     self.interpreter.run_block(&mut self.cpu.regs, &mut self.cpu.system, &mut self.cpu.gte)
+            // };
+            // let num_cycles =
+            //      self.interpreter.run_block(&mut self.cpu.regs, &mut self.cpu.system, &mut self.cpu.gte);
+            for _ in 0..20 {
+                self.interpreter.run_next_instruction(&mut self.cpu.regs, &mut self.cpu.system, &mut self.cpu.gte);
+            }
+            self.cpu.system.scheduler.advance(40); // 40???
+
+            // let block_idx = if let Some(entry) = self.cpu.system.block_cache.get_entry(pc) {
+            //     if entry.dirty {
+            //         panic!("recompile block");
+            //         // recompile block...
+            //     }
+            //     entry.block_idx
+            // } else {
+            //     let block = self.cpu.compile_block(pc);
+            //     let idx = self.cpu.system.block_cache.insert_block(pc, block);
+            //     idx
+            //     // compile new block...
+            // };
+            // let num_cycles = self.cpu.run_block(block_idx);
             // then run it...
 
             // let interpreter_pc = self.interpreter.pc;
@@ -1096,7 +1116,7 @@ impl State {
             //     // self.interpreter.check_for_tty_output();
             // }
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
-            self.cpu.system.scheduler.advance(2 * num_cycles); // 40???
+            // self.cpu.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();

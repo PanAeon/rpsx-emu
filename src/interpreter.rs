@@ -12,6 +12,7 @@ pub struct Interpreter {
 
     branch: bool,     // set by the current instruction if the branch occurred
     delay_slot: bool, // set if the current instruction executes in the delay slot
+    interrupt: bool,
 }
 
 impl Interpreter {
@@ -21,7 +22,22 @@ impl Interpreter {
             current_pc: 0xBFC00000,
             branch: false,
             delay_slot: false,
+            interrupt: false,
         }
+    }
+    pub fn run_block(&mut self, regs: &mut Registers, system: &mut System, gte: &mut Gte) -> u64 {
+        // self.next_pc = regs.pc.wrapping_add(4);
+        // self.branch = false;
+        // self.delay_slot = false;
+        self.interrupt = false;
+        let mut num_instr = 0;
+        while !self.branch && !self.interrupt {
+            self.run_next_instruction(regs, system, gte);
+            num_instr += 1;
+        }
+        self.run_next_instruction(regs, system, gte);
+        num_instr += 1;
+        num_instr
     }
     pub fn run_next_instruction(&mut self, regs: &mut Registers, system: &mut System, gte: &mut Gte) {
         if regs.pc & 3 != 0 {
@@ -674,6 +690,7 @@ impl Interpreter {
             regs.baddr = x;
         }
 
+        self.interrupt = true;
         regs.pc = handler;
         self.next_pc = handler.wrapping_add(4);
     }

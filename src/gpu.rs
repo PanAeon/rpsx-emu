@@ -6,7 +6,9 @@ use std::{
 
 use crate::renderer::{RendererMsg, RendererResponse, RenderingContext};
 use crate::system::{AccessWidth, Addressable};
+use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize)]
 pub struct Gpu {
     // Texture page base X coordinate (4 bits, 64 byte increment)
     page_base_x: u8,
@@ -56,15 +58,21 @@ pub struct Gpu {
 
     gp0_command: CommandBuffer,
     gp0_words_remaining: u32,
-    gp0_command_method: fn(&mut Gpu),
+    gp0_command_word: u8,
+    // gp0_command_method: fn(&mut Gpu),
     gp0_mode: Gp0Mode,
     even: bool,
     in_hblank: bool,
     in_vblank: bool,
     read: u32,
-    renderer_sender: Sender<RendererMsg>,
-    renderer_receiver: Receiver<RendererResponse>,
-    renderer_handle: JoinHandle<()>,
+    #[serde(skip)]
+    pub renderer_sender: Option<Sender<RendererMsg>>,
+    #[serde(skip)]
+    pub renderer_receiver: Option<Receiver<RendererResponse>>,
+    #[serde(skip)]
+    pub renderer_handle: Option<JoinHandle<()>>,
+    #[serde(with="serde_bytes")]
+    vram: Box<[u8]>
 }
 
 impl Gpu {
@@ -113,15 +121,17 @@ impl Gpu {
 
             gp0_command: CommandBuffer::new(),
             gp0_words_remaining: 0,
-            gp0_command_method: Gpu::gp0_nop,
+            gp0_command_word: 0,
+            // gp0_command_method: Gpu::gp0_nop,
             gp0_mode: Gp0Mode::Command,
             even: true,
             in_vblank: false,
             in_hblank: false,
             read: 0,
-            renderer_sender,
-            renderer_receiver,
-            renderer_handle,
+            renderer_sender: Some(renderer_sender),
+            renderer_receiver: Some(renderer_receiver),
+            renderer_handle: Some(renderer_handle),
+            vram: vec!(0; 2 * 512 * 1024).into_boxed_slice()
         }
     }
 
@@ -150,7 +160,24 @@ impl Gpu {
     pub fn gp0(&mut self, val: u32) {
         if self.gp0_words_remaining == 0 {
             let opcode = (val >> 24) & 0xff;
-            let (len, method): (u32, fn(&mut Gpu)) = match opcode {
+            let cmd = &GP0_COMMANDS[opcode as usize];
+
+            match opcode {
+                0x48 | 0x4C => {
+                    self.gp0_mode = Gp0Mode::Polyline(false);
+                }
+                0x4A | 0x4E => {
+                    self.gp0_mode = Gp0Mode::Polyline(false);
+                }
+                0x58 | 0x5C => {
+                    self.gp0_mode = Gp0Mode::Polyline(true);
+                }
+                0x5A | 0x5E => {
+                    self.gp0_mode = Gp0Mode::Polyline(true);
+                }
+                _ => {}
+            }
+            /*let (len, method): (u32, fn(&mut Gpu)) = match opcode {
                 0x00 => (1, Gpu::gp0_nop),
                 0x01 => (1, Gpu::gp0_clear_cache),
                 0x02 => (3, Gpu::gp0_fill_rect),
@@ -285,9 +312,9 @@ impl Gpu {
                         val, opcode
                     );
                 }
-            };
-            self.gp0_words_remaining = len;
-            self.gp0_command_method = method;
+            };*/
+            self.gp0_words_remaining = cmd.len as u32;
+            self.gp0_command_word = opcode as u8;
             self.gp0_command.clear();
         }
         self.gp0_words_remaining -= 1;
@@ -295,7 +322,7 @@ impl Gpu {
             Gp0Mode::Command => {
                 self.gp0_command.push_word(val);
                 if self.gp0_words_remaining == 0 {
-                    (self.gp0_command_method)(self);
+                    (GP0_COMMANDS[self.gp0_command_word as usize].handler)(self);
                 }
             }
             Gp0Mode::ImageLoad {
@@ -306,7 +333,7 @@ impl Gpu {
                 data.push(val);
                 // self.process_cpu_to_vram_copy(val, top_left, resolution, current_row, current_col);
                 if self.gp0_words_remaining == 0 {
-                    self.renderer_sender
+                    self.renderer_sender.as_mut().unwrap()
                         .send(RendererMsg::CpuToVramCopy {
                             top_left: *top_left,
                             size: *resolution,
@@ -334,14 +361,16 @@ impl Gpu {
                 self.gp0_command.push_word(val);
                 if *color {
                     if self.gp0_command.len == 4 {
-                        (self.gp0_command_method)(self);
+                        (GP0_COMMANDS[self.gp0_command_word as usize].handler)(self);
+                        // (self.gp0_command_method)(self);
                         self.gp0_command.buffer[0] = self.gp0_command[2];
                         self.gp0_command.buffer[1] = self.gp0_command[3];
                         self.gp0_command.len = self.gp0_command.len - 2;
                     }
                 } else {
                     if self.gp0_command.len == 3 {
-                        (self.gp0_command_method)(self);
+                        (GP0_COMMANDS[self.gp0_command_word as usize].handler)(self);
+                        // (self.gp0_command_method)(self);
                         self.gp0_command.buffer[1] = self.gp0_command[2];
                         self.gp0_command.len = self.gp0_command.len - 1;
                     }
@@ -382,18 +411,22 @@ impl Gpu {
         [u as u16, v as u16, pc as u16]
     }
     pub fn gp0_nop(&mut self) {}
+    pub fn gp0_unimplemented(&mut self) {
+        println!("WARN: gpu command unimplemented");
+    }
     pub fn gp0_clear_cache(&mut self) {}
     pub fn gp0_fill_rect(&mut self) {
         let color = Colour::from_gp0(self.gp0_command[0]);
         let v = Self::gp0_vertex(self.gp0_command[1]);
         let side = Self::gp0_vertex(self.gp0_command[2]);
 
-        self.renderer_sender
+        let ctx = self.rendering_ctx();
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::FillRect {
                 v,
                 side,
                 c: color,
-                ctx: self.rendering_ctx(),
+                ctx,
             })
             .expect("ok");
     }
@@ -402,7 +435,8 @@ impl Gpu {
         let v0 = Self::gp0_vertex(self.gp0_command[1]);
         let v1 = Self::gp0_vertex(self.gp0_command[2]);
 
-        self.renderer_sender
+        let ctx = self.rendering_ctx();
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::DrawLine {
                 v0,
                 v1,
@@ -410,7 +444,7 @@ impl Gpu {
                 c1: color,
                 shaded: false,
                 semi_transparent: SEMI_TRANS,
-                ctx: self.rendering_ctx(),
+                ctx,
             })
             .expect("ok");
         // self.draw_line::<SEMI_TRANS>(v0, v1, color);
@@ -421,7 +455,8 @@ impl Gpu {
         let color1 = Colour::from_gp0(self.gp0_command[2]);
         let v1 = Self::gp0_vertex(self.gp0_command[3]);
 
-        self.renderer_sender
+        let ctx = self.rendering_ctx();
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::DrawLine {
                 v0,
                 v1,
@@ -429,7 +464,7 @@ impl Gpu {
                 c1: color1,
                 shaded: true,
                 semi_transparent: SEMI_TRANS,
-                ctx: self.rendering_ctx(),
+                ctx,
             })
             .expect("ok");
         // self.draw_line_shaded::<SEMI_TRANS>(v0, v1, color0, color1);
@@ -439,7 +474,8 @@ impl Gpu {
         let color = Colour::from_gp0(self.gp0_command[0]);
         let v = Self::gp0_vertex(self.gp0_command[1]);
 
-        self.renderer_sender
+        let ctx = self.rendering_ctx();
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::DrawRectangle {
                 v,
                 side: Vertex { x: SIDE, y: SIDE },
@@ -450,7 +486,7 @@ impl Gpu {
                 _u: 0,
                 _v: 0,
                 textured: false,
-                ctx: self.rendering_ctx(),
+                ctx,
             })
             .expect("ok");
 
@@ -461,7 +497,8 @@ impl Gpu {
         let v = Self::gp0_vertex(self.gp0_command[1]);
         let side = Self::gp0_vertex(self.gp0_command[2]);
 
-        self.renderer_sender
+        let ctx = self.rendering_ctx();
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::DrawRectangle {
                 v,
                 side,
@@ -472,7 +509,7 @@ impl Gpu {
                 _v: 0,
                 semi_transparent: SEMI_TRANS,
                 textured: false,
-                ctx: self.rendering_ctx(),
+                ctx,
             })
             .expect("ok");
         // self.draw_rectangle::<SEMI_TRANS>(v, side, color);
@@ -483,8 +520,8 @@ impl Gpu {
         let color = Colour::from_gp0(self.gp0_command[0]);
         let v = Self::gp0_vertex(self.gp0_command[1]);
         let [_u, _v, clut] = Self::gp0_page_clut(self.gp0_command[2]);
-
-        self.renderer_sender
+        let ctx = self.rendering_ctx();
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::DrawRectangle {
                 v,
                 side: Vertex { x: SIDE, y: SIDE },
@@ -495,7 +532,7 @@ impl Gpu {
                 semi_transparent: SEMI_TRANS,
                 blend: BLEND,
                 textured: true,
-                ctx: self.rendering_ctx(),
+                ctx,
             })
             .expect("ok");
         // self.draw_rectangle_textured::<SEMI_TRANS, BLEND>(
@@ -513,7 +550,8 @@ impl Gpu {
         let [_u, _v, clut] = Self::gp0_page_clut(self.gp0_command[2]);
         let side = Self::gp0_vertex(self.gp0_command[3]);
 
-        self.renderer_sender
+        let ctx = self.rendering_ctx();
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::DrawRectangle {
                 v,
                 side,
@@ -524,7 +562,7 @@ impl Gpu {
                 semi_transparent: SEMI_TRANS,
                 blend: BLEND,
                 textured: true,
-                ctx: self.rendering_ctx(),
+                ctx,
             })
             .expect("ok");
         // self.draw_rectangle_textured::<SEMI_TRANS, BLEND>(v, side, color, clut, [_u, _v]);
@@ -539,7 +577,8 @@ impl Gpu {
 
         if QUAD {
             let v3 = Self::gp0_vertex(self.gp0_command[4]);
-            self.renderer_sender
+            let ctx = self.rendering_ctx();
+            self.renderer_sender.as_mut().unwrap()
                 .send(RendererMsg::DrawPolygon {
                     cs: [color; 4],
                     vs: [v0, v1, v2, v3],
@@ -551,11 +590,12 @@ impl Gpu {
                     clut: 0,
                     page: 0,
                     uvs: [[0; 2]; 4],
-                    ctx: self.rendering_ctx(),
+                    ctx,
                 })
                 .expect("ok");
         } else {
-            self.renderer_sender
+            let ctx = self.rendering_ctx();
+            self.renderer_sender.as_mut().unwrap()
                 .send(RendererMsg::DrawPolygon {
                     cs: [color; 4],
                     vs: [v0, v1, v2, v2],
@@ -567,7 +607,7 @@ impl Gpu {
                     uvs: [[0; 2]; 4],
                     is_triangle: true,
                     semi_transparent: SEMI_TRANS,
-                    ctx: self.rendering_ctx(),
+                    ctx,
                 })
                 .expect("ok");
         }
@@ -593,7 +633,8 @@ impl Gpu {
             let uv1 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u3, _v3]];
             // let mut vs1 = [v1, v2, v3];
             // let mut cs1 = [c1, c2, c3];
-            self.renderer_sender
+            let ctx = self.rendering_ctx();
+            self.renderer_sender.as_mut().unwrap()
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v3],
                     cs: [c0, c1, c2, c3],
@@ -605,7 +646,7 @@ impl Gpu {
                     semi_transparent: SEMI_TRANS,
                     blend: BLEND,
                     is_triangle: false,
-                    ctx: self.rendering_ctx(),
+                    ctx,
                 })
                 .expect("ok");
             // self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
@@ -613,7 +654,8 @@ impl Gpu {
             // );
         } else {
             let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
-            self.renderer_sender
+            let ctx = self.rendering_ctx();
+            self.renderer_sender.as_mut().unwrap()
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v2],
                     cs: [c0, c1, c2, c2],
@@ -625,7 +667,7 @@ impl Gpu {
                     semi_transparent: SEMI_TRANS,
                     blend: BLEND,
                     is_triangle: true,
-                    ctx: self.rendering_ctx(),
+                    ctx,
                 })
                 .expect("ok");
         }
@@ -647,7 +689,8 @@ impl Gpu {
             let v3 = Self::gp0_vertex(self.gp0_command[7]);
             let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[8]);
             let uv1 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u3, _v3]];
-            self.renderer_sender
+            let ctx = self.rendering_ctx();
+            self.renderer_sender.as_mut().unwrap()
                 .send(RendererMsg::DrawPolygon {
                     cs: [color; 4],
                     clut,
@@ -659,13 +702,14 @@ impl Gpu {
                     semi_transparent: SEMI_TRANS,
                     blend: BLEND,
                     is_triangle: false,
-                    ctx: self.rendering_ctx(),
+                    ctx,
                 })
                 .expect("ok");
             // self.draw_triangle_textured::<SEMI_TRANS, BLEND>(color, clut, page, &mut vs1, &mut uv1);
         } else {
             let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
-            self.renderer_sender
+            let ctx = self.rendering_ctx();
+            self.renderer_sender.as_mut().unwrap()
                 .send(RendererMsg::DrawPolygon {
                     cs: [color; 4],
                     clut,
@@ -677,7 +721,7 @@ impl Gpu {
                     semi_transparent: SEMI_TRANS,
                     blend: BLEND,
                     is_triangle: true,
-                    ctx: self.rendering_ctx(),
+                    ctx,
                 })
                 .expect("ok");
         }
@@ -694,7 +738,8 @@ impl Gpu {
         if QUAD {
             let c3 = Self::gp0_colour(self.gp0_command[6]);
             let v3 = Self::gp0_vertex(self.gp0_command[7]);
-            self.renderer_sender
+            let ctx = self.rendering_ctx();
+            self.renderer_sender.as_mut().unwrap()
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v3],
                     cs: [c0, c1, c2, c3],
@@ -706,12 +751,13 @@ impl Gpu {
                     textured: false,
                     semi_transparent: SEMI_TRANS,
                     is_triangle: false,
-                    ctx: self.rendering_ctx(),
+                    ctx,
                 })
                 .expect("ok");
             // self.draw_triangle_shaded::<SEMI_TRANS>(&mut [v1, v2, v3], &mut [c1, c2, c3]);
         } else {
-            self.renderer_sender
+            let ctx = self.rendering_ctx();
+            self.renderer_sender.as_mut().unwrap()
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v2],
                     cs: [c0, c1, c2, c2],
@@ -723,7 +769,7 @@ impl Gpu {
                     textured: false,
                     shaded: true,
                     is_triangle: true,
-                    ctx: self.rendering_ctx(),
+                    ctx,
                 })
                 .expect("ok");
         }
@@ -733,7 +779,7 @@ impl Gpu {
         let dst = Self::gp0_vertex(self.gp0_command[2]);
         let size = Self::gp0_vertex(self.gp0_command[3]);
 
-        self.renderer_sender
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::Vram2VramBlit { src, dst, size })
             .expect("ok");
     }
@@ -766,6 +812,36 @@ impl Gpu {
         };
     }
 
+    pub fn save_vram(&mut self) {
+        self.renderer_sender.as_mut().unwrap()
+            .send(RendererMsg::VramToCpuCopy {
+                top_left: (0, 0),
+                size: (1024 as u16, 512 as u16),
+            })
+            .expect("ok");
+
+        let msg = self.renderer_receiver.as_mut().unwrap().recv().expect("ok");
+        let RendererResponse::VramToCpuData { data } = msg else {
+            panic!("wrong response in sync code...");
+        };
+        let data: &[u8] = bytemuck::cast_slice(&data);
+        self.vram.copy_from_slice(data);
+        // self.vram = data.into_boxed_slice();
+    }
+
+    pub fn load_vram(&mut self)  {
+        let vram: &[u32] = bytemuck::cast_slice(&self.vram);
+        let mut data = vec![];
+        data.extend_from_slice(vram);
+        self.renderer_sender.as_mut().unwrap()
+            .send(RendererMsg::CpuToVramCopy {
+                top_left: (0, 0),
+                size: (1024, 512),
+                data: data,
+            })
+            .expect("ok");
+    }
+
     pub fn gp0_image_store(&mut self) {
         let pos = self.gp0_command[1];
         let res = self.gp0_command[2];
@@ -789,14 +865,14 @@ impl Gpu {
         let imgsize = (imgsize + 1) & !1;
         self.gp0_words_remaining = imgsize / 2;
 
-        self.renderer_sender
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::VramToCpuCopy {
                 top_left: (x, y),
                 size: (width as u16, height as u16),
             })
             .expect("ok");
 
-        let msg = self.renderer_receiver.recv().expect("ok");
+        let msg = self.renderer_receiver.as_mut().unwrap().recv().expect("ok");
         let RendererResponse::VramToCpuData { data } = msg else {
             panic!("wrong response in sync code...");
         };
@@ -835,7 +911,7 @@ impl Gpu {
         self.texture_window_y_offset = ((val >> 15) & 0x1f) as u8;
     }
     pub fn send_drawing_area_change(&mut self) {
-        self.renderer_sender
+        self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::DrawingAreaChange {
                 top_left: (self.drawing_area_left, self.drawing_area_top),
                 bottom_right: (self.drawing_area_right, self.drawing_area_bottom),
@@ -1144,11 +1220,12 @@ impl Gpu {
         //     println!("what is going on?");
         //     std::thread::sleep_ms(1000);
         // }
-        self.renderer_sender
+        let ctx = self.rendering_ctx();
+        self.renderer_sender.as_ref().unwrap()
             .send(RendererMsg::RenderFB {
                 framebuffer: framebuffer,
                 full_ram: display_vram,
-                ctx: self.rendering_ctx(),
+                ctx,
             })
             .expect("ok");
 
@@ -1164,7 +1241,7 @@ impl Gpu {
         //     },
         // };
 
-        let msg = self.renderer_receiver.recv().expect("ok");
+        let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
         match msg {
             RendererResponse::FBUpdated {
                 width,
@@ -1259,14 +1336,14 @@ const FIVE_BIT_TO_8BIT: [u8; 32] = {
     table
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum TextureDepth {
     T4Bit = 0,
     T8Bit = 1,
     T15Bit = 2,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 enum Field {
     // Top field (odd lines)
     Top = 1,
@@ -1274,7 +1351,7 @@ enum Field {
     Bottom = 2,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct HorizontalRes(u8, u8);
 
 impl HorizontalRes {
@@ -1301,7 +1378,7 @@ impl HorizontalRes {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub enum VerticalRes {
     Y240Lines = 0,
     // only for interlaced output
@@ -1317,7 +1394,7 @@ impl VerticalRes {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 enum VMode {
     // 480i60H
     Ntsc = 0,
@@ -1325,13 +1402,13 @@ enum VMode {
     Pal = 1,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum DisplayDepth {
     D15Bits = 0,
     D24Bits = 1,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum DmaDirection {
     Off = 0,
     Fifo = 1,
@@ -1339,6 +1416,7 @@ enum DmaDirection {
     VRamToCpu = 3,
 }
 
+#[derive(Serialize, Deserialize)]
 struct CommandBuffer {
     buffer: [u32; 12],
     len: u8,
@@ -1375,7 +1453,7 @@ impl ::std::ops::Index<usize> for CommandBuffer {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Serialize, Deserialize)]
 enum Gp0Mode {
     Command,
     ImageLoad {
@@ -1390,12 +1468,12 @@ enum Gp0Mode {
     Polyline(bool),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Vertex {
     pub x: i32,
     pub y: i32,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Colour {
     pub r: u8,
     pub g: u8,
@@ -1500,3 +1578,1582 @@ pub fn convert_5bit_to_8bit(color: u16) -> u8 {
     // (f64::from(color) * 255.0 / 31.0).round() as u8
     FIVE_BIT_TO_8BIT[color as usize]
 }
+
+// from rustation-ng
+pub struct Command {
+    /// Callback function to actually perform the command. If the command is a draw command it only
+    /// takes care of the timings and maintaining the façade, the drawing takes place in an other
+    /// thread.
+    pub handler: fn(&mut Gpu),
+    /// Actual length of the command, in number of FIFO words
+    pub len: u8,
+    /// This is the amount of overhead bytes accepted on the FIFO when this command is the next to
+    /// be executed (see `try_write_command` for more details). These values are taken from
+    /// mednafen, I'm not sure how they've been established. I assume it has something to do with
+    /// the amount of time taken by these instructions to process?
+    pub fifo_len: u8,
+    /// Marker for commands that aren't executed with normal PSX timings.
+    pub out_of_band: bool,
+}
+
+/// LUT for all GP0 commands (indexed by opcode, bits[31:24] of the first command word)
+pub static GP0_COMMANDS: [Command; 0x100] = [
+    // 0x00
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_clear_cache,
+        len: 1,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_fill_rect,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    // 0x10
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0x20
+    Command {
+        handler: Gpu::gp0_poly_mono::<TRI, OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_mono::<TRI, OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_mono::<TRI, SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_mono::<TRI, SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture::<TRI, OPAQUE, BLEND>,
+        len: 7,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture::<TRI, OPAQUE, RAW>,
+        len: 7,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture::<TRI, SEMI_TRANS, BLEND>,
+        len: 7,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture::<TRI, SEMI_TRANS, RAW>,
+        len: 7,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_mono::<QUAD, OPAQUE>,
+        len: 5,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_mono::<QUAD, OPAQUE>,
+        len: 5,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_mono::<QUAD, SEMI_TRANS>,
+        len: 5,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_mono::<QUAD, SEMI_TRANS>,
+        len: 5,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture::<QUAD, OPAQUE, BLEND>,
+        len: 9,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture::<QUAD, OPAQUE, RAW>,
+        len: 9,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture::<QUAD, SEMI_TRANS, BLEND>,
+        len: 9,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture::<QUAD, SEMI_TRANS, RAW>,
+        len: 9,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0x30
+    Command {
+        handler: Gpu::gp0_poly_shaded::<TRI, OPAQUE>,
+        len: 6,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_shaded::<TRI, OPAQUE>,
+        len: 6,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_shaded::<TRI, SEMI_TRANS>,
+        len: 6,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_shaded::<TRI, SEMI_TRANS>,
+        len: 6,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture_shaded::<TRI, OPAQUE, BLEND>,
+        len: 9,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture_shaded::<TRI, OPAQUE, RAW>,
+        len: 9,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture_shaded::<TRI, SEMI_TRANS, BLEND>,
+        len: 9,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture_shaded::<TRI, SEMI_TRANS, RAW>,
+        len: 9,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_shaded::<QUAD, OPAQUE>,
+        len: 8,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_shaded::<QUAD, OPAQUE>,
+        len: 8,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_shaded::<QUAD, SEMI_TRANS>,
+        len: 8,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_shaded::<QUAD, SEMI_TRANS>,
+        len: 8,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture_shaded::<QUAD, OPAQUE, BLEND>,
+        len: 12,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture_shaded::<QUAD, OPAQUE, RAW>,
+        len: 12,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture_shaded::<QUAD, SEMI_TRANS, BLEND>,
+        len: 12,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_poly_texture_shaded::<QUAD, SEMI_TRANS, RAW>,
+        len: 12,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0x40
+    Command {
+        handler: Gpu::gp0_line_mono::<OPAQUE>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<OPAQUE>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<OPAQUE>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<OPAQUE>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<OPAQUE>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<OPAQUE>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<OPAQUE>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<OPAQUE>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_mono::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0x50
+    Command {
+        handler: Gpu::gp0_line_shaded::<OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<OPAQUE>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_line_shaded::<SEMI_TRANS>,
+        len: 4,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0x60
+    Command {
+        handler: Gpu::gp0_rect_variable::<OPAQUE>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_variable::<OPAQUE>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_variable::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_variable::<SEMI_TRANS>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_variable::<OPAQUE, BLEND>,
+        len: 4,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_variable::<OPAQUE, RAW>,
+        len: 4,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_variable::<SEMI_TRANS, BLEND>,
+        len: 4,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_variable::<SEMI_TRANS, RAW>,
+        len: 4,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<1, OPAQUE>,
+        len: 2,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<1, OPAQUE>,
+        len: 2,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<1, SEMI_TRANS>,
+        len: 2,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<1, SEMI_TRANS>,
+        len: 2,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<1, OPAQUE, BLEND>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<1, OPAQUE, RAW>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<1, SEMI_TRANS, BLEND>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<1, SEMI_TRANS, RAW>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    // 0x70
+    Command {
+        handler: Gpu::gp0_rect_fixed::<8, OPAQUE>,
+        len: 2,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<8, OPAQUE>,
+        len: 2,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<8, SEMI_TRANS>,
+        len: 2,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<8, SEMI_TRANS>,
+        len: 2,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<8, OPAQUE, BLEND>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<8, OPAQUE, RAW>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<8, SEMI_TRANS, BLEND>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<8, SEMI_TRANS, RAW>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<16, OPAQUE>,
+        len: 2,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<16, OPAQUE>,
+        len: 2,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<16, SEMI_TRANS>,
+        len: 2,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_fixed::<16, SEMI_TRANS>,
+        len: 2,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+                // 0x7C => (3, ),
+                // 0x7D => (3, ),
+                // 0x7E => (3, ),
+                // 0x7F => (3, ),
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<16, OPAQUE, BLEND>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<16, OPAQUE, RAW>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<16, SEMI_TRANS, BLEND>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_rect_texture_fixed::<16, SEMI_TRANS, RAW>,
+        len: 3,
+        fifo_len: 3,
+        out_of_band: false,
+    },
+    // 0x80
+    Command {
+        handler: Gpu::gp0_vram_to_vram_blit,
+        len: 4,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0x90
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0xa0
+    Command {
+        handler: Gpu::gp0_image_load,
+        len: 3,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0xb0
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0xc0
+    Command {
+        handler: Gpu::gp0_image_store,
+        len: 3,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0xd0
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0xe0
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_draw_mode,
+        len: 1,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_texture_window,
+        len: 1,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_drawing_area_top_left,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_drawing_area_bottom_right,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_drawing_offset,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+    Command {
+        handler: Gpu::gp0_mask_bit_setting,
+        len: 1,
+        fifo_len: 2,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // 0xf0
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    Command {
+        handler: Gpu::gp0_unimplemented,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: false,
+    },
+    // Command 0xffff_ffff occurs in Xenogears (Japan) during the cutscene in the middle of the
+    // first fight against Ganador in the arena.
+    Command {
+        handler: Gpu::gp0_nop,
+        len: 1,
+        fifo_len: 1,
+        out_of_band: true,
+    },
+];

@@ -1,11 +1,13 @@
 use std::collections::VecDeque;
 
 use num_enum::FromPrimitive;
+use serde::{Deserialize, Serialize};
 
 use crate::system::Addressable;
 
 
 
+#[derive(Serialize, Deserialize)]
 pub struct Mdec {
     status: Status,
     control: Control,
@@ -14,8 +16,11 @@ pub struct Mdec {
     command: Option<Command>,
     output_fifo: VecDeque<u32>,
 
+    #[serde(with = "serde_arrays")]
     scale_table: [i16; 64],
+    #[serde(with = "serde_bytes")]
     luminance_table: [u8; 64],
+    #[serde(with = "serde_bytes")]
     chrominance_table: [u8; 64]
 
 
@@ -331,7 +336,7 @@ impl Mdec {
 }
 
 bitfield::bitfield! {
-    // #[derive(Default)]
+    #[derive(Serialize, Deserialize)]
     pub struct Status(u32);
     _, set_data_out_fifo_empty: 31;
     _, set_data_in_fifo_full: 30;
@@ -353,7 +358,7 @@ impl Default for Status {
 }
 
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct Control(u32);
     reset, _: 31;
     enable_data_in, _: 30;
@@ -362,6 +367,7 @@ bitfield::bitfield! {
 
 
 bitfield::bitfield! {
+    #[derive(Serialize, Deserialize)]
     pub struct CommandWord(u32);
     command, _: 31, 29;
     data_out, _: 28, 25;
@@ -374,12 +380,13 @@ bitfield::bitfield! {
 
 }
 
+#[derive(Serialize, Deserialize)]
 struct Command {
     command_type: CommandType,
     parameters: Vec<u32>
 }
 
-#[derive(Debug, Clone, Copy, FromPrimitive, PartialEq)]
+#[derive(Debug, Clone, Copy, FromPrimitive, PartialEq, Serialize, Deserialize)]
 #[repr(u32)]
 enum Depth {
     #[default]
@@ -389,7 +396,7 @@ enum Depth {
     Bit15 = 3,
 }
 
-#[derive(Debug, Clone, Copy, FromPrimitive, PartialEq)]
+#[derive(Debug, Clone, Copy, FromPrimitive, PartialEq, Serialize, Deserialize)]
 #[repr(u32)]
 enum Color {
     #[default]
@@ -397,7 +404,7 @@ enum Color {
     LuminanceAndColor = 1,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum CommandType {
     SetQuantTable(Color),
     SetScaleTable,

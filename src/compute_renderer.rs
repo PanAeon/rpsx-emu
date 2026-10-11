@@ -1544,7 +1544,7 @@ impl ComputeRenderer {
         });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.render_texture, // r16uint, so in half words, same as params
+                texture: &self.vram_texture, // r32uint
                 mip_level: 0,
                 origin: wgpu::Origin3d {
                     x: top_left.0 as u32,
@@ -1591,8 +1591,8 @@ impl ComputeRenderer {
 
         for y in 0..size.1 as usize {
             for x in (0..size.0 as usize).step_by(2) {
-                let low = vram_data[(y * 256 / 4) + x];
-                let high = vram_data[(y * 256 / 4) + x + 1];
+                let low = vram_data[(y * num_extents * 256 / 4) + x];
+                let high = vram_data[(y * num_extents * 256 / 4) + x + 1];
                 data.push((high << 16) | (low & 0xFFFF));
                 // let start = i * num_extents * 256 / 4;
                 // data.extend_from_slice(&vram_data[start..start + width_in_words]);
@@ -1600,6 +1600,7 @@ impl ComputeRenderer {
         }
         // println!("expected len: {}, actual: {}", imgsize / 2, data.len());
 
+        // self.cpu_to_vram_copy(top_left, size, &data);
         data
     }
 }

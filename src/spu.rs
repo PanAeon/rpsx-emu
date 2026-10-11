@@ -1,11 +1,12 @@
 use std::{cell::Cell, collections::VecDeque, ops::{Index, IndexMut, Range}};
+use serde::{Deserialize, Serialize};
 
 use num_enum::FromPrimitive;
 
 use crate::{cdrom::CDRom, system::{Addressable, System}};
 
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     struct SpuControl(u16);
     enabled, _: 15; // doesn't affect CD Audio
     unmuted, _: 14; // doesnt' affect CD Audio
@@ -21,7 +22,7 @@ bitfield::bitfield! {
 }
 
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     struct SpuStatus(u16);
     unused, _: 15,12;
     write_to_second_half_of_capture_buffers, set_write_to_second_half: 11;
@@ -34,7 +35,7 @@ bitfield::bitfield! {
 
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct NoiseGenerator {
     lfsr: u16,
     step: u8,
@@ -87,7 +88,7 @@ impl NoiseGenerator {
 // the base register defines the start address of the reverb buffer
 // (the end address is fixed, at 7FFFEh).
 // Writing a value to mBASE does additionally set the current buffer address to that value.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Reverb {
     // Reverb Work Area Start Address in Sound RAM
     output_volume_left: i16,
@@ -280,7 +281,7 @@ impl Reverb {
     }
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, Serialize, Deserialize)]
 pub struct Voice {
     volume_left: i16,
     volume_right: i16,
@@ -420,6 +421,7 @@ impl Voice {
 }
 
 // TODO: implement sweep volume
+#[derive(Serialize, Deserialize)]
 pub struct Spu {
     main_volume_left: i16,
     main_volume_right: i16,
@@ -966,6 +968,7 @@ impl Spu {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum DataTransferType {
     Fill,
     Normal,
@@ -1065,7 +1068,7 @@ pub fn decode_adpcm_block(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, Serialize, Deserialize)]
 #[repr(u8)]
 enum Direction {
     #[default]
@@ -1073,7 +1076,7 @@ enum Direction {
     Decreasing = 1,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, Serialize, Deserialize)]
 #[repr(u8)]
 enum Mode {
     #[default]
@@ -1083,7 +1086,7 @@ enum Mode {
 const ENVELOPE_COUNTER_MAX: u32 = 1 << (33 - 11);
 
 bitfield::bitfield! {
-    #[derive(Default, Copy, Clone)]
+    #[derive(Default, Copy, Clone, Serialize, Deserialize)]
     struct AdsrConfig(u32);
     u8, into Mode, sustain_mode, _: 31,31;
     u8, into Direction, sustain_direction, _:30,30;
@@ -1107,7 +1110,7 @@ bitfield::bitfield! {
     u8, sustain_level, _: 3,0;
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum AdsrPhase {
     #[default]
     Attack,
@@ -1116,7 +1119,7 @@ enum AdsrPhase {
     Release,
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, Serialize, Deserialize)]
 struct AdsrEnvelope {
     reg: AdsrConfig,
     phase: AdsrPhase,
@@ -1209,7 +1212,9 @@ impl AdsrEnvelope {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct SoundRam {
+    #[serde(with = "serde_bytes")]
     ram: Box<[u8]>,
     irq_enabled: bool,
     irq_address: usize,

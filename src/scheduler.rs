@@ -1,6 +1,7 @@
 use arrayvec::ArrayVec;
 
 use crate::cdrom::ResponseType;
+use serde::{Deserialize, Serialize};
 
 pub const LINE_DURATION: u64 = 2172;
 pub const HBLANK_DURATION: u64 = 390;
@@ -8,13 +9,13 @@ pub const SPU_INTERVAL: u64 = 668;
 pub const SAMPLES_PER_FRAME: u64 = 735;
 pub const CLOCKS_PER_FRAME: u64 = SAMPLES_PER_FRAME * SPU_INTERVAL;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct TimerInterrupt {
     pub which: usize,
     pub toggle: bool,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Event {
     VBlankStart,
     VBlankEnd,
@@ -27,13 +28,14 @@ pub enum Event {
     DsrOff,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Task {
     cycle: u64,
     event: Event,
     repeat: Option<u64>
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Scheduler {
     tasks: ArrayVec<Task, 32>,
     pub cycle: u64,

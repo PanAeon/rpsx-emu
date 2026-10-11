@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::{io::Read, ops::Div};
 use std::fs::File;
+use serde::{Deserialize, Serialize};
 
 use arrayvec::ArrayVec;
 
@@ -9,17 +10,19 @@ use crate::{system::{Addressable, System}, scheduler::Event};
 
 const SECTOR_SIZE: usize = 0x930;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrackType {
     Audio,
     Mode2352,
 }
 
+#[derive( PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackIndex {
     pub id: u8,
     pub lba: usize,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Track {
     pub id: u8,
     pub track_type: TrackType,
@@ -27,9 +30,11 @@ pub struct Track {
 
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Image {
     read_head: usize,
-    data: Box<[u8]>,
+    #[serde(skip)]
+    pub data: Box<[u8]>,
     tracks: Vec<Track>,
 }
 
@@ -143,6 +148,7 @@ impl Image {
 }
 
 
+#[derive(Serialize, Deserialize)]
 pub struct CDRom {
     status: Status,
     hsts: HSTS,
@@ -159,7 +165,7 @@ pub struct CDRom {
     // shell_open: bool,
     hinsts: HINTSTS,
     hcpctl: HCHPCTL,
-    disk: Option<Image>,
+    pub disk: Option<Image>,
     data_buffer: VecDeque<u8>,
     audio_muted: bool,
     l2l_volume: u8,
@@ -814,7 +820,7 @@ impl CDRom {
   // 6   DRQSTS   Data request          (R, 1=one or more RDDATA reads or WRDATA writes pending)
   // 7   BUSYSTS  Busy status           (R, 1=HC05 busy acknowledging command)
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct HSTS(u8);
     current_bank, set_current_bank: 1,0;
     _, set_adpcm_busy: 2;
@@ -826,7 +832,7 @@ bitfield::bitfield! {
 }
 
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct ADPCTL(u8);
     adpmute, _: 0;
     chngatv, _: 5;
@@ -839,7 +845,7 @@ bitfield::bitfield! {
   // 6   CLRPRM     Clear parameter FIFO               (0=no change, 1=clear)
   // 7   CHPRST     Reset decoder chip                 (0=no change, 1=reset)
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct HCLRCTL(u8);
     clrint, _: 2,0;
     clrbfempt, _: 3;
@@ -854,7 +860,7 @@ bitfield::bitfield! {
   // 4   ENBFWRDY Enable IRQ on BFWRDY
   // 5-7 -        Reserved (should be 0 when written, always 1 when read)
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct HINTMSK(u8);
     enint, _: 2,0;
     enbfempt, _: 3;
@@ -872,7 +878,7 @@ bitfield::bitfield! {
   // 1  Spindle Motor (0=Motor off, or in spin-up phase, 1=Motor on)
   // 0  Error         Invalid Command/parameters (followed by Error Byte)
 bitfield::bitfield! {
-    #[derive(Default, Clone, Copy)]
+    #[derive(Default, Clone, Copy, Serialize, Deserialize)]
     pub struct Status(u8);
     playing, set_play: 7;
     _, set_seek: 6;
@@ -891,7 +897,7 @@ impl Status {
 }
 
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct HINTSTS(u8);
     intsts, set_intsts: 2,0;
     bfempt, set_bfempt: 3;
@@ -899,7 +905,7 @@ bitfield::bitfield! {
 }
 
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum Speed {
     Normal = 0,
     Double = 1
@@ -915,7 +921,7 @@ impl From<u8> for Speed {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum SectorSize {
     DataOnly = 0,
     WholeSectorExceptSyncBytes = 1
@@ -953,7 +959,7 @@ impl Speed {
   // 0   CDDA        (0=Off, 1=Allow to Read CD-DA Sectors; ignore missing EDC)
 //
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct Mode(u8);
     impl Debug;
     into Speed, speed, _: 7,7;
@@ -967,7 +973,7 @@ bitfield::bitfield! {
 }
 
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct HCHPCTL(u8);
     smen, _: 5;
     bfwr, _: 6;
@@ -983,7 +989,7 @@ pub const AVG_2ND_RESP_SEEKL: u64 = 0x6E1CD;
 
 pub const AVG_RATE_INT1: u64 = 0x6E1CD;
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum ResponseType {
     INT3(ArrayVec<u8, 8>),
     INT2(ArrayVec<u8, 8>),
@@ -1002,7 +1008,7 @@ impl From<&ResponseType> for u8 {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct CommandResponse {
     pub responses: ArrayVec<(ResponseType,u64), 2>
 }

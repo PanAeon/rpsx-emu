@@ -2,11 +2,12 @@ use crate::{
     system::{Addressable, System},
     scheduler::{LINE_DURATION, TimerInterrupt},
 };
+use serde::{Deserialize, Serialize};
 
 // almost verbatim copy of
 // https://github.com/kaezrr/starpsx/blob/main/core/src/timers.rs
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SyncMode {
     FreeRun,
     Paused,
@@ -20,7 +21,7 @@ pub enum SyncMode {
     StartOnNextFrame,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ClockSource {
     Cpu,
     CpuDiv8,
@@ -29,7 +30,7 @@ pub enum ClockSource {
 }
 
 bitfield::bitfield! {
-    #[derive(Default, Clone, Copy)]
+    #[derive(Default, Clone, Copy, Serialize, Deserialize)]
     pub struct Mode(u32);
     sync_enabled, set_sync_enabled: 0;
     u8, sync_mode, _: 2,1;
@@ -70,7 +71,7 @@ bitfield::bitfield! {
 // 13-15 Unknown (seems to be always zero)
 // 16-31 Garbage (next opcode)
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Timer {
     counter: u32,
     mode: Mode,
@@ -111,6 +112,8 @@ impl Timer {
     }
 }
 
+
+#[derive(Serialize, Deserialize)]
 pub struct Timers {
     timers: [Timer; 3],
     in_hsync: bool,

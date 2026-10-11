@@ -1,8 +1,9 @@
 use crate::system::{AccessWidth, Addressable};
+use serde::{Deserialize, Serialize};
 
 
 bitfield::bitfield! {
-    #[derive(Default, Clone, Copy)]
+    #[derive(Default, Clone, Copy, Serialize, Deserialize)]
     pub struct InterruptStatus(u32);
     pub _, set_vblank: 0;
     pub _, set_gpu: 1;
@@ -31,7 +32,7 @@ bitfield::bitfield! {
   // 16-31 Garbage
 
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct InterruptController {
     pub status: InterruptStatus, // R - status, W - acknowledge
     mask: u32,

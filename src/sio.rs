@@ -2,9 +2,11 @@ use std::fs::File;
 use std::thread::current;
 
 use arrayvec::ArrayVec;
+use serde::{Deserialize, Serialize};
 
 use crate::system::{Addressable, System};
 
+#[derive(Serialize, Deserialize)]
 pub struct Sio {
     control: Control,
     boudrate_reload: u16,
@@ -255,7 +257,7 @@ impl Sio {
 // 14-15 Not used              (always zero)
 
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct Control(u16);
     impl Debug;
     tx_enable, _: 0;
@@ -273,7 +275,7 @@ bitfield::bitfield! {
 }
 
 bitfield::bitfield! {
-    #[derive(Default)]
+    #[derive(Default, Serialize, Deserialize)]
     pub struct Mode(u16);
     impl Debug;
     boudrate_reload_factor, _: 1,0;
@@ -297,6 +299,7 @@ bitfield::bitfield! {
 // 10    Unknown                (always zero)
 // 11-31 Baudrate Timer         (15-21 bit timer, decrementing at 33MHz)
 bitfield::bitfield! {
+    #[derive(Serialize, Deserialize)]
     pub struct Status(u32);
     impl Debug;
     tx_fifo_not_full, set_tx_fifo_not_full: 0;
@@ -319,13 +322,14 @@ impl Default for Status {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum State {
     None,
     GamepadComm,
     MemcardComm,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Gamepad {
     state: GamepadState,
     mode: GamepadMode,
@@ -398,6 +402,7 @@ impl Default for Gamepad {
 }
 const FRAME_SIZE: usize = 0x80;
 
+#[derive(Serialize, Deserialize)]
 pub struct Memcard {
     in_ack: bool,
     state: MemcardState,
@@ -407,6 +412,7 @@ pub struct Memcard {
     sector_number: u16,
     checksum: u8,
 
+    #[serde(with = "serde_bytes")]
     sector_buffer: [u8; 128],
     bytes_left: usize,
 
@@ -414,8 +420,10 @@ pub struct Memcard {
     directory_not_read: bool,
 
     is_dirty: bool,
+    #[serde(skip)]
     data: Box<[u8]>, // 0x20000
-    file: File,
+    #[serde(skip)]
+    file: Option<File>,
 }
 
 impl Memcard {
@@ -436,9 +444,15 @@ impl Memcard {
             end_response: EndResponse::Good,
             directory_not_read: true,
             is_dirty: false,
-            file,
+            file: Some(file),
             data,
         }
+    }
+
+    pub fn read_file_data(&mut self) {
+        let mut data =  vec![0_u8; 0x20000].into_boxed_slice();
+        // let filedata = std::fs::read(path).expect("can't read memcard");
+        self.data = data;
     }
 
     pub fn send_and_receive_byte(&mut self, data: u8) -> u8 {
@@ -563,7 +577,7 @@ impl Memcard {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum MemcardState {
     #[default]
     Init,
@@ -586,7 +600,7 @@ pub enum MemcardState {
     MemEnd,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub enum EndResponse {
     Good = 0x47,
@@ -594,7 +608,7 @@ pub enum EndResponse {
     BadSector = 0xFF,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum MemcardCommand {
     Read,
     Write,
@@ -675,7 +689,7 @@ impl MemcardCommand {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum GamepadState {
     #[default]
     Init,
@@ -719,7 +733,7 @@ pub enum Axis {
     LeftY,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum GamepadMode {
     #[default]
     Digital,

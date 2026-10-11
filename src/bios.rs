@@ -12,7 +12,7 @@ impl Bios {
     pub fn new(path: &Path) -> Result<Bios, Error> {
         let file = File::open(path)?;
         let mut data: Vec<u8> = Vec::new();
-        file.take(BIOS_SIZE).read_to_end(&mut data);
+        file.take(BIOS_SIZE).read_to_end(&mut data).expect("ok");
         if data.len() == BIOS_SIZE as usize {
             Ok(Bios { data })
         } else {

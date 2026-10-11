@@ -1,6 +1,8 @@
 use crate::{irq::InterruptController, system::System};
+use serde::{Deserialize, Serialize};
 
 
+#[derive(Serialize, Deserialize)]
 pub struct Dma {
     control: u32,
     irq_enable: bool,
@@ -90,7 +92,7 @@ impl Dma {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Channel {
     enable: bool,
     direction: Direction,
@@ -106,20 +108,20 @@ pub struct Channel {
     block_count: u16
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Direction {
     ToRam = 0,
     FromRam = 1
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub enum Sync {
     Manual = 0,
     Request = 1,
     LinkedList = 2,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub enum Step {
     Increment = 0,
     Decrement = 1

@@ -8,6 +8,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Read, Write};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::{iter, sync::Arc};
 use wgpu::util::DeviceExt;
@@ -28,9 +29,13 @@ use std::{borrow::Cow, collections::HashMap, hash::Hash, num::NonZeroU64};
 use vek::{Mat4, Vec2, Vec4};
 
 use crate::cdrom::CDRom;
+use crate::dynarec::Dynarec;
 use crate::gpu::DisplayDepth;
 use crate::sio::Sio;
 use crate::spu::Spu;
+use crate::save_state::save_state;
+use crate::save_state::load_state;
+use crate::system::System;
 
 mod audio;
 mod bios;
@@ -58,6 +63,7 @@ mod dynarec;
 mod block_cache;
 mod dummy_renderer;
 mod interpreter;
+mod save_state;
 
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
@@ -197,7 +203,7 @@ pub struct State {
     // dimensions: (u32, u32),
     framebuffer: Arc<Mutex<Vec<u32>>>,
     // image_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
-    cpu: dynarec::Dynarec,
+    system: Pin<Box<System>>,
     interpreter: interpreter::Interpreter,
     texture_size: wgpu::Extent3d,
     audio_sender: crossbeam::channel::Sender<[i16; 2]>,
@@ -541,10 +547,14 @@ impl State {
         };
         let gpu = gpu::Gpu::new(sender, receiver, handle);
         let block_cache = block_cache::BlockCache::new();
-        let system = system::System::new(
+        let cpu = dynarec::Dynarec::new();
+        let system = system::System::new(cpu,
             bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu, block_cache,
         );
-        let cpu = dynarec::Dynarec::new(system);
+        let mut system = Box::pin(system);
+
+        Dynarec::set_ptrs(&mut system);
+
 
         // interpreter
         // let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
@@ -627,7 +637,7 @@ impl State {
             // normal_blue_font,
             // small_font,
             // sounds
-            cpu,
+            system,
             interpreter,
             audio_stream,
             audio_sender,
@@ -775,9 +785,9 @@ impl State {
         // let exe_size = (exe_size_2kb);
         // let exe_size = 1013760 - 2048;
         println!("exe size: {}", exe_size);
-        self.cpu.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
+        self.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
-        self.cpu.system.block_cache.invalidate();
+        self.system.block_cache.invalidate();
         //  let dest = self
         //     .cpu.system.ram.data
         //     .bytes()
@@ -790,12 +800,12 @@ impl State {
         //
         // dest.copy_from_slice(src);
 
-        self.cpu.regs.regs[28] = initial_r28;
+        self.system.cpu.regs.regs[28] = initial_r28;
         if initial_sp != 0 {
-            self.cpu.regs.regs[29] = initial_sp;
-            self.cpu.regs.regs[30] = initial_sp;
+            self.system.cpu.regs.regs[29] = initial_sp;
+            self.system.cpu.regs.regs[30] = initial_sp;
         }
-        self.cpu.regs.pc = initial_pc;
+        self.system.cpu.regs.pc = initial_pc;
     }
 
     /*fn sideload_exe(&mut self) {
@@ -972,15 +982,15 @@ impl State {
             return;
         }
         loop {
-            if let Some(event) = self.cpu.system.scheduler.get_next_event() {
+            if let Some(event) = self.system.scheduler.get_next_event() {
                 match event {
                     scheduler::Event::SpuTick => {
-                        Spu::clock(&mut self.cpu.system);
+                        Spu::clock(&mut self.system);
                         // self.cpu.system.spu.clock();
                         // let spu = &mut self.cpu.system.spu;
                         // let cdrom = &mut self.cpu.system.cdrom;
                         // let sample = self.cpu.system.spu.mix(cdrom);
-                        let sample = Spu::mix(&mut self.cpu.system);
+                        let sample = Spu::mix(&mut self.system);
                         self.audio_sender
                             .send(sample)
                             .expect("can't send audio sample");
@@ -1014,22 +1024,21 @@ impl State {
                     scheduler::Event::VBlankStart => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ProduceFB(self.framebuffer.clone(), self.display_vram)).expect("ok");
                         let (w, h, sx, sy, depth) = self
-                            .cpu
                             .system
                             .gpu
                             .render_fb(self.framebuffer.clone(), self.display_vram);
                         self.update_vertex_buffer_if_needed(w, h, sx, sy, depth, false);
                         // if self.cpu.system.gpu.interrupt == false {
-                        self.cpu.system.irqctl.status.set_vblank(true);
+                        self.system.irqctl.status.set_vblank(true);
                         // }
-                        timers::Timers::enter_vsync(&mut self.cpu.system);
+                        timers::Timers::enter_vsync(&mut self.system);
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
-                        self.cpu.system.gpu.enter_vsync();
+                        self.system.gpu.enter_vsync();
                     }
                     scheduler::Event::VBlankEnd => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
-                        self.cpu.system.gpu.exit_vsync();
-                        timers::Timers::exit_vsync(&mut self.cpu.system);
+                        self.system.gpu.exit_vsync();
+                        timers::Timers::exit_vsync(&mut self.system);
                         // let (w, h) = self.cpu.system.gpu_ctrl_receiver.recv().expect("ok");
                         // self.update_vertex_buffer_if_needed(w, h, false);
                         if self.audio_sender.len() > 5*735 { // 2.5 * 735
@@ -1038,22 +1047,22 @@ impl State {
                     }
                     scheduler::Event::HBlankStart => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterHSync).expect("ok");
-                        self.cpu.system.gpu.enter_hsync();
-                        timers::Timers::enter_hsync(&mut self.cpu.system);
+                        self.system.gpu.enter_hsync();
+                        timers::Timers::enter_hsync(&mut self.system);
                     }
                     scheduler::Event::HBlankEnd => {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
-                        self.cpu.system.gpu.exit_hsync();
-                        timers::Timers::exit_hsync(&mut self.cpu.system);
+                        self.system.gpu.exit_hsync();
+                        timers::Timers::exit_hsync(&mut self.system);
                     }
                     scheduler::Event::CDRomResultIrq(resp) => {
-                        cdrom::CDRom::process_response(&mut self.cpu.system, resp);
+                        cdrom::CDRom::process_response(&mut self.system, resp);
                     }
                     scheduler::Event::Timer(i) => {
-                        timers::Timers::process_interrupt(&mut self.cpu.system, i)
+                        timers::Timers::process_interrupt(&mut self.system, i)
                     }
-                    scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.cpu.system),
-                    scheduler::Event::DsrOff => self.cpu.system.sio.turn_dsr_off(),
+                    scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.system),
+                    scheduler::Event::DsrOff => self.system.sio.turn_dsr_off(),
                 }
             }
             // self.update_interpreter();
@@ -1062,31 +1071,36 @@ impl State {
             // let budget = self.cpu.system.scheduler.next_event_budget();
             // TODO:
             //if !pending_interrupt || (is_gte && !self.delay_slot) {
-            if self.cpu.check_for_pending_interrupts() {
-                self.cpu.external_interrupt();
+            if Dynarec::check_for_pending_interrupts(&mut self.system) {
+                self.system.cpu.external_interrupt();
             }
-            if self.sideload_exe.is_some() && self.cpu.regs.pc == 0x8003_0000 {
+            if self.sideload_exe.is_some() && self.system.cpu.regs.pc == 0x8003_0000 {
                 // self.sideload_exe();
                 self.sideload_exe_dynarec();
             }
-            if self.cpu.regs.pc & 3 != 0 {
-                self.cpu.exception(crate::dynarec::Exception::LoadAddressError, Some(self.cpu.regs.pc));
+            if self.system.cpu.regs.pc & 3 != 0 {
+                let baddr = self.system.cpu.regs.pc;
+                self.system.cpu.exception(crate::dynarec::Exception::LoadAddressError, Some(baddr));
             }
-            let pc = self.cpu.pc();
+            let pc = self.system.cpu.pc();
 
-            let block_idx = if let Some(entry) = self.cpu.system.block_cache.get_entry(pc) {
+            let block_idx = if let Some(entry) = self.system.block_cache.get_entry(pc) {
                 if entry.dirty {
-                    panic!("recompile block");
-                    // recompile block...
+                    if !Dynarec::is_block_valid(&mut self.system, entry.block_idx) {
+                        // recompile block...
+                        let block = Dynarec::compile_block(&mut self.system, pc);
+                        self.system.block_cache.insert_block_at(entry.block_idx, pc, block);
+                    } else {
+                        self.system.block_cache.get_entry_mut(pc).dirty = false;                   }
                 }
                 entry.block_idx
             } else {
-                let block = self.cpu.compile_block(pc);
-                let idx = self.cpu.system.block_cache.insert_block(pc, block);
+                let block = Dynarec::compile_block(&mut self.system, pc);
+                let idx = self.system.block_cache.insert_block(pc, block);
                 idx
                 // compile new block...
             };
-            let num_cycles = self.cpu.run_block(block_idx);
+            let num_cycles = Dynarec::run_block(&mut self.system, block_idx);
             // then run it...
 
             // let interpreter_pc = self.interpreter.pc;
@@ -1096,7 +1110,7 @@ impl State {
             //     // self.interpreter.check_for_tty_output();
             // }
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
-            self.cpu.system.scheduler.advance(2 * num_cycles); // 40???
+            self.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -1343,6 +1357,14 @@ impl State {
         match (code, key_state.is_pressed()) {
             (KeyCode::Space, false) => self.paused = !self.paused,
             (KeyCode::KeyV, false) => self.display_vram = !self.display_vram,
+            (KeyCode::Digit1, false) => {
+                save_state(1, &mut self.system);
+
+            },
+            (KeyCode::Enter, false) => {
+                load_state(1, &mut self.system);
+
+            },
             // (KeyCode::ArrowRight, true) => self.game_state.camera_pos.0 += 33.0,
             // (KeyCode::ArrowLeft, true) => if self.game_state.camera_pos.0 >= 33.0 {self.game_state.camera_pos.0 -= 33.0 },
             // (KeyCode::ArrowUp, true) => if self.game_state.camera_pos.1 >= 33.0  {self.game_state.camera_pos.1 -= 33.0},
@@ -1390,7 +1412,7 @@ impl State {
         }
     }
     pub fn update_gamepad(&mut self) {
-        let mut prev_buttons = self.cpu.system.sio.gamepad1.digital_switches;
+        let mut prev_buttons = self.system.sio.gamepad1.digital_switches;
         while let Some(Event {
             id, event, time, ..
         }) = self.gilrs.next_event()
@@ -1482,16 +1504,16 @@ impl State {
             }
         }
         // println!("0x{:X}", prev_buttons);
-        self.cpu.system.sio.gamepad1.set_buttons(prev_buttons);
+        self.system.sio.gamepad1.set_buttons(prev_buttons);
     }
 }
 const REGISTER_NAMES : [&str;32] = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
   "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
   "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"];
 
-fn check_mem(cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) -> bool {
-    cpu.system.ram.data[..] == interpreter.system.ram.data[..]
-}
+// fn check_mem(cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) -> bool {
+//     cpu.system.ram.data[..] == interpreter.system.ram.data[..]
+// }
 fn check_dynarec(pc: u32, interpreter_pc: u32, cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) {
     let mut is_ok = true;
     // if !check_mem(cpu, interpreter) {

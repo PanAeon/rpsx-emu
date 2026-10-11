@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::block_cache::{self, CacheEntry};
 use crate::system::{
-    load_byte, load_half_word, load_word, store_byte, store_half_word, store_word,
+    load_byte, load_half_word, load_word, mask_region, store_byte, store_half_word, store_word,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
 
@@ -29,6 +31,7 @@ const REG_LOAD_REG: u32 = 39;
 const REG_LOAD_VAL: u32 = 40;
 
 #[repr(C)]
+#[derive(Serialize, Deserialize)]
 pub struct Registers {
     pub regs: [u32; 32],
     pub hi: u32,
@@ -46,7 +49,7 @@ pub struct Registers {
 }
 pub struct Constants {
     regs: *mut u8,
-    system: *mut System,
+    system: u64,
     gte: *mut Gte,
     store_word: FuncId,
     load_word: FuncId,
@@ -60,8 +63,8 @@ pub struct Constants {
     gte_control: FuncId,
     gte_set_data: FuncId,
     gte_set_control: FuncId,
-    ram: *mut [u8],
-    cache: *mut [CacheEntry],
+    ram: u64,
+    cache: u64,
 }
 
 #[derive(Default)]
@@ -70,8 +73,8 @@ pub struct Debug {
     i: u32,
 }
 
+// #[derive(serde::Serialize)]
 pub struct Dynarec {
-    pub system: Pin<Box<System>>,
     pub regs: Pin<Box<Registers>>,
     pub gte: Pin<Box<Gte>>,
     /// The function builder context, which is reused across multiple
@@ -92,11 +95,11 @@ pub struct Dynarec {
 
     constants: Constants,
 
-    debug: Debug,
+
 }
 
 impl Dynarec {
-    pub fn new(system: System) -> Dynarec {
+    pub fn new() -> Dynarec {
         let mut regs = [0xdeadbeef; 32];
         regs[0] = 0;
         let regs = Registers {
@@ -249,27 +252,24 @@ impl Dynarec {
 
         let mut regs = Box::pin(regs);
         let regs_ptr = unsafe { std::mem::transmute(regs.as_mut()) };
-        let mut system = Box::pin(system);
-        let system_ptr: *mut System = &mut *system;
         let mut gte = Box::pin(Gte::new());
         let gte_ptr: *mut Gte = &mut *gte;
-        let ram_ptr: *mut [u8] = &mut *system.ram.data;
-        let cache_ptr: *mut [CacheEntry] = &mut *system.block_cache.ram;
+        // let system_ptr: *mut System = &mut *system;
+        // let ram_ptr: *mut [u8] = &mut *system.ram.data;
+        // let cache_ptr: *mut [CacheEntry] = &mut *system.block_cache.ram;
         // let system_ptr = unsafe { std::mem::transmute(&*system) };
         Dynarec {
-            system,
             regs,
             gte,
             builder_context: FunctionBuilderContext::new(),
             ctx: module.make_context(),
             data_description: DataDescription::new(),
             module,
-            debug: Default::default(),
             constants: Constants {
                 regs: regs_ptr,
-                system: system_ptr,
-                ram: ram_ptr,
-                cache: cache_ptr,
+                system: 0,
+                ram: 0,
+                cache: 0,
                 gte: gte_ptr,
                 store_word,
                 store_half_word,
@@ -287,26 +287,36 @@ impl Dynarec {
         }
     }
 
+    pub fn set_ptrs(system: &mut System) {
+        let system_ptr: u64 = system as *const System as u64;
+        let ram_ptr: u64 = system.ram.data.as_ptr() as u64;
+        let cache_ptr: u64 = system.block_cache.ram.as_ptr() as u64;
+
+        system.cpu.constants.system = system_ptr;
+        system.cpu.constants.ram = ram_ptr;
+        system.cpu.constants.cache = cache_ptr;
+    }
+
     pub fn pc(&self) -> u32 {
         self.regs.pc
     }
 
-    pub fn run_block(&mut self, idx: u32) -> u64 {
+    pub fn run_block(system: &mut System, idx: u32) -> u64 {
         // self.debug_print();
-        let block = self.system.block_cache.get_block(idx);
+        let block = system.block_cache.get_block(idx);
         let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
         jit_fn() as u64
     }
 
-    pub fn check_for_pending_interrupts(&mut self) -> bool {
-        if self.system.irqctl.pending() {
-            self.regs.cause |= 1 << 10;
+    pub fn check_for_pending_interrupts(system: &mut System) -> bool {
+        if system.irqctl.pending() {
+            system.cpu.regs.cause |= 1 << 10;
         } else {
-            self.regs.cause &= !(1 << 10);
+            system.cpu.regs.cause &= !(1 << 10);
         }
         // mask bits 8..15
-        let pending = (self.regs.cause & self.regs.sr) & 0x700; //0xFF00;
-        pending != 0 && (self.regs.sr & 1 != 0)
+        let pending = (system.cpu.regs.cause & system.cpu.regs.sr) & 0x700; //0xFF00;
+        pending != 0 && (system.cpu.regs.sr & 1 != 0)
     }
 
     pub fn external_interrupt(&mut self) {
@@ -343,45 +353,45 @@ impl Dynarec {
         self.regs.pc = handler;
     }
 
-    pub fn debug_print(&mut self) {
-        if !self.debug.hit_breakpoint {
-            if self.regs.pc == 0xBFC02EA0 {
-                self.debug.hit_breakpoint = true;
-            }
-        }
-        if self.debug.hit_breakpoint {
-            if self.debug.i < 40 {
-                println!("CPU pc: 0x{:X}", self.regs.pc);
-                self.debug.i += 1;
-            } else {
-                println!("CPU pc: 0x{:X}", self.regs.pc);
-                panic!("done");
-            }
-        }
-        // println!("CPU pc: 0x{:X}", self.regs.pc);
-        // for (i, x) in self.regs.regs.iter().enumerate() {
-        //     println!("regs[{:02}]: 0x{:X}", i, x);
-        // }
-        // println!();
-    }
+    // pub fn debug_print(&mut self) {
+    //     if !self.debug.hit_breakpoint {
+    //         if self.regs.pc == 0xBFC02EA0 {
+    //             self.debug.hit_breakpoint = true;
+    //         }
+    //     }
+    //     if self.debug.hit_breakpoint {
+    //         if self.debug.i < 40 {
+    //             println!("CPU pc: 0x{:X}", self.regs.pc);
+    //             self.debug.i += 1;
+    //         } else {
+    //             println!("CPU pc: 0x{:X}", self.regs.pc);
+    //             panic!("done");
+    //         }
+    //     }
+    //     // println!("CPU pc: 0x{:X}", self.regs.pc);
+    //     // for (i, x) in self.regs.regs.iter().enumerate() {
+    //     //     println!("regs[{:02}]: 0x{:X}", i, x);
+    //     // }
+    //     // println!();
+    // }
 
-    pub fn compile_block(&mut self, addr: u32) -> block_cache::Block {
+    pub fn compile_block(system: &mut System, addr: u32) -> block_cache::Block {
         // woot?
         // if addr == 0x80000080 {
         //     panic!("at exception handler");
         // }
         let mut buff = [Instruction(0); 256];
         // I guess first parse the block
-        let xs = self.parse_block(addr, &mut buff);
+        let xs = Self::parse_block(system, addr, &mut buff);
 
-        self.ctx
+        system.cpu.ctx
             .func
             .signature
             .returns
             .push(AbiParam::new(types::I32));
 
         // Create the builder to build a function.
-        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+        let mut builder = FunctionBuilder::new(&mut system.cpu.ctx.func, &mut system.cpu.builder_context);
 
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
@@ -399,9 +409,9 @@ impl Dynarec {
         let mut bldr = BlockBuilder {
             bldr: builder,
             vars: HashMap::new(),
-            module: &mut self.module,
+            module: &mut system.cpu.module,
             delayed_load: None,
-            constants: &self.constants,
+            constants: &system.cpu.constants,
             store_word: None,
             store_half_word: None,
             store_byte: None,
@@ -459,10 +469,10 @@ impl Dynarec {
         });
 
         let flags = settings::Flags::new(settings::builder());
-        match verify_function(&self.ctx.func, &flags) {
+        match verify_function(&system.cpu.ctx.func, &flags) {
             Ok(()) => {}
             Err(x) => {
-                println!("{}", self.ctx.func.display());
+                println!("{}", system.cpu.ctx.func.display());
                 panic!("{}", x);
             }
         };
@@ -471,9 +481,9 @@ impl Dynarec {
             println!("last command is not jump");
         }
         //
-        let id = self
+        let id = system.cpu
             .module
-            .declare_anonymous_function(&self.ctx.func.signature)
+            .declare_anonymous_function(&system.cpu.ctx.func.signature)
             // .declare_function(&name, Linkage::Export, &self.ctx.func.signature)
             .expect("ok");
 
@@ -482,43 +492,57 @@ impl Dynarec {
         // cannot finish relocations until all functions to be called are
         // defined. For this toy demo for now, we'll just finalize the
         // function below.
-        self.module.define_function(id, &mut self.ctx).expect("OK");
+        system.cpu.module.define_function(id, &mut system.cpu.ctx).expect("OK");
 
         // Now that compilation is finished, we can clear out the context state.
-        self.module.clear_context(&mut self.ctx);
+        system.cpu.module.clear_context(&mut system.cpu.ctx);
 
         // Finalize the functions which we just defined, which resolves any
         // outstanding relocations (patching in addresses, now that they're
         // available).
-        self.module.finalize_definitions().unwrap();
+        system.cpu.module.finalize_definitions().unwrap();
 
         // We can now retrieve a pointer to the machine code.
-        let code = self.module.get_finalized_function(id);
+        let code = system.cpu.module.get_finalized_function(id);
+
+        // let mut mem = Vec::with_capacity(xs.len() * 4);
+        // mem.extend_from_slice(&xs.iter().flat_map(|x| x.0.to_le_bytes()).collect());
+        let mem = xs.iter().flat_map(|x| x.0.to_le_bytes()).collect();
 
         block_cache::Block {
             ptr: code,
-            crc32: 0,
+            // crc32: 0,
             length: xs.len() as u32,
+            mem,
+            addr
         }
+    }
+    pub fn is_block_valid(system: &System, block_idx: u32) -> bool {
+        let block = system.block_cache.get_block(block_idx);
+        // for now check ram only
+        // let ram_idx = block.
+        let addr = mask_region(block.addr) as usize; // offset should be somewhere in ram, I hope
+        let current = &system.ram.data[addr..addr + block.mem.len()];
+        &block.mem == current
     }
 
     pub fn parse_block<'a, 'b>(
-        &'a mut self,
+        system: &'a mut System,
         addr: u32,
         buff: &'b mut [Instruction],
     ) -> &'b [Instruction] {
         let mut len = 255;
         for i in 0..255 {
-            buff[i] = Instruction(self.system.load::<u32>(addr + i as u32 * 4));
+            buff[i] = Instruction(system.load::<u32>(addr + i as u32 * 4));
             if buff[i].is_unconditional_jump() {
-                buff[i + 1] = Instruction(self.system.load::<u32>(addr + (i + 1) as u32 * 4));
+                buff[i + 1] = Instruction(system.load::<u32>(addr + (i + 1) as u32 * 4));
                 // what to do with syscall? break?
                 len = i + 2;
                 break;
             }
         }
         if len == 255 && buff[254].is_conditional_jump() {
-            buff[255] = Instruction(self.system.load::<u32>(addr + (255) as u32 * 4));
+            buff[255] = Instruction(system.load::<u32>(addr + (255) as u32 * 4));
             len = 256;
         }
         &buff[0..len]
@@ -528,6 +552,18 @@ impl Dynarec {
     //     // self.module.declare_data(name, linkage, writable, tls)
     //     // self.data_description.define(contents);
     // }
+}
+
+impl Serialize for Dynarec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer {
+        let mut s = serializer.serialize_struct("Dynarec", 2)?;
+        s.serialize_field("regs", &*self.regs)?;
+        s.serialize_field("gte", &*self.gte)?;
+        // self.regs.serialize(serializer)
+        s.end()
+    }
 }
 
 struct BlockBuilder<'a> {

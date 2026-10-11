@@ -1,6 +1,7 @@
 use std::pin::Pin;
 
 use crate::system::{Addressable, System};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 
 pub struct Ram {
@@ -18,6 +19,7 @@ impl Ram {
     pub fn load<T:Addressable>(&self, address: u32) -> T {
         let width = T::width() as usize;
         let addr = address as usize;
+        let addr = addr & 0x1f_ffff;
         let mut buffer = [0;4];
         buffer[..width].copy_from_slice(&self.data[addr..addr+width]);
         T::from_u32(u32::from_le_bytes(buffer))
@@ -27,9 +29,29 @@ impl Ram {
         let ram = &mut system.ram;
         let width = T::width() as usize;
         let addr = address as usize;
+        let addr = addr & 0x1f_ffff;
         let bytes = value.as_u32().to_le_bytes();
 
         ram.data[addr..addr+width].copy_from_slice(&bytes[..width]);
         system.block_cache.invalidate_ram(address, width);
+    }
+}
+
+impl Serialize for Ram {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer {
+        let bytes = serde_bytes::Bytes::new(&self.data);
+        bytes.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Ram {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de> {
+        let bytes = serde_bytes::ByteBuf::deserialize(deserializer)?;
+        let data = bytes.into_boxed_slice();
+        Ok(Ram { data: Box::into_pin(data) })
     }
 }

@@ -3,7 +3,7 @@
 
 type CycleCount = usize;
 
-// #[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct Gte {
     /// Screen offset X: signed 16.16
     ofx: i32,

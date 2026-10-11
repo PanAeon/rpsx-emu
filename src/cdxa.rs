@@ -1,9 +1,10 @@
 use arrayvec::ArrayVec;
 use num_enum::FromPrimitive;
+use serde::{Deserialize, Serialize};
 
 use crate::spu::signed4bit;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct AdpcmHistory {
     old: i16,
     older: i16,
@@ -141,6 +142,7 @@ pub enum BitsPerSample {
     Reserved = 2,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct HighResResampler {
     ringbuf: [i16; 32],
     p: usize,
@@ -192,6 +194,7 @@ impl Resampler for HighResResampler {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct LowResResampler {
     ringbuf: [i16; 32],
     p: usize,

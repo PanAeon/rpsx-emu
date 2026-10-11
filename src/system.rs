@@ -3,7 +3,9 @@ use std::thread::JoinHandle;
 
 use crossbeam::channel::{Receiver, Sender};
 
-use crate::{bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, gpu::Gpu, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::{bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, dynarec::Dynarec, gpu::Gpu, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
 
 pub mod map {
     pub struct Range(u32, u32);
@@ -23,7 +25,7 @@ pub mod map {
     pub const MEM_CTRL: Range = Range(0x1f801000, 36);
     pub const RAM_SIZE: Range = Range(0x1f801060, 4);
     pub const CACHE_CONTROL: Range = Range(0xfffe0130, 4);
-    pub const RAM: Range = Range(0x0000_0000, 2 * 1024 * 1024);// why 8mb?
+    pub const RAM: Range = Range(0x0000_0000, 8 * 1024 * 1024);// ram is mirrored 4 times..
     pub const SCRATCHPAD: Range = Range(0x1f80_0000, 1024);
     pub const SPU: Range = Range(0x1f801c00, 640);
     pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
@@ -87,12 +89,14 @@ impl Addressable for u32 {
     }
 }
 
+#[derive(Serialize)]
 pub struct System {
+    #[serde(skip)]
     bios: Bios,
     pub ram: Ram,
-    scratchpad: Scratchpad,
+    pub scratchpad: Scratchpad,
     pub dma: Dma,
-    // pub gpu: Gpu,
+    pub cpu: Dynarec,
     pub spu: Spu,
     pub irqctl: InterruptController,
     pub scheduler: Scheduler,
@@ -101,6 +105,7 @@ pub struct System {
     pub sio: Sio,
     pub mdec: Mdec,
     pub gpu: Gpu,
+    #[serde(skip)]
     pub block_cache: BlockCache,
 }
 
@@ -117,10 +122,10 @@ pub fn mask_region(addr: u32) -> u32 {
 }
 
 impl System {
-    pub fn new(bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, spu: Spu, irqctl: InterruptController,
+    pub fn new(cpu: Dynarec, bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, spu: Spu, irqctl: InterruptController,
         scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu, block_cache: BlockCache) -> System {
     
-        System { bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
+        System { cpu, bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
         gpu, block_cache}
     }
     pub fn load<T:Addressable>(&mut self, addr: u32) -> T {

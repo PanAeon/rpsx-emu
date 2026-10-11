@@ -15,8 +15,10 @@ const _: () = assert!(core::mem::size_of::<CacheEntry>() == 8);
 
 pub struct Block {
     pub ptr: *const u8,
-    pub crc32: u32,
+    pub addr: u32,
+    // pub crc32: u32,
     pub length: u32,
+    pub mem: Vec<u8>
 }
 
 // we got RAM 2mb and bios 512kb.
@@ -67,6 +69,21 @@ impl BlockCache {
         panic!("unhandled load{:?} address: {:08x}", 4, address)
     }
 
+    pub fn insert_block_at(&mut self, idx: u32, addr: u32, block: Block) {
+        let block_len = block.length;
+        self.blocks[idx as usize] = block;
+
+        let entry = self.get_entry_mut(addr);
+        entry.block_idx = idx as u32;
+        entry.has_block = true;
+        entry.protected = true;
+        entry.dirty = false;
+        for i in 1..block_len {
+            let entry = self.get_entry_mut(addr + (i * 4) as u32);
+            entry.protected = true;
+            // entry.dirty = false;
+        }
+    }
     pub fn insert_block(&mut self, addr: u32, block: Block) -> u32 {
         let idx = self.blocks.len();
         let block_len = block.length;
@@ -80,7 +97,7 @@ impl BlockCache {
         for i in 1..block_len {
             let entry = self.get_entry_mut(addr + (i * 4) as u32);
             entry.protected = true;
-            entry.dirty = false;
+            // entry.dirty = false;
         }
 
 
@@ -104,9 +121,11 @@ impl BlockCache {
                 start -= 1;
             }
             for i in start..=idx {
-                 self.ram[i].protected = false;
-                 self.ram[i].has_block = false;
+                 self.ram[i].dirty = true;
+                 // self.ram[i].protected = false;
+                 // self.ram[i].has_block = false;
             }
+            self.ram[idx].protected = false;
             // for i in 0..self.ram.len() {
             //     self.ram[i].protected = false;
             //     self.ram[i].has_block = false;
@@ -128,8 +147,8 @@ impl BlockCache {
     }
     pub fn invalidate(&mut self) {
             for i in 0..self.ram.len() {
-                self.ram[i].protected = false;
-                self.ram[i].has_block = false;
+                self.ram[i].dirty = true;
+                // self.ram[i].has_block = false;
             }
     }
 }

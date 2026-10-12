@@ -56,7 +56,9 @@ pub fn load_state(idx: u32, system: &mut System) {
     system.timers = timers;
     let cddata = system.cdrom.disk.take().unwrap();
     system.cdrom = cdrom;
-    system.cdrom.disk.as_mut().unwrap().data = cddata.data;
+    system.cdrom.disk.as_mut().unwrap().file = cddata.file;
+    system.cdrom.disk.as_mut().unwrap().cache = cddata.cache;
+    // system.cdrom.disk.as_mut().unwrap().data = cddata.data;
     system.sio = sio;
     system.sio.memcard1.read_file_data(); // TODO: actually read it...
     system.sio.memcard2.read_file_data();

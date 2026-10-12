@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use arrayvec::ArrayVec;
 
+use crate::cd_cache::CdCache;
 use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
 use crate::{system::{Addressable, System}, scheduler::Event};
 
@@ -33,9 +34,13 @@ pub struct Track {
 #[derive(Serialize, Deserialize)]
 pub struct Image {
     read_head: usize,
-    #[serde(skip)]
-    pub data: Box<[u8]>,
+    // #[serde(skip)]
+    // pub data: Box<[u8]>,
     tracks: Vec<Track>,
+    #[serde(skip)]
+    pub file: Option<File>,
+    #[serde(skip)]
+    pub cache: Option<CdCache>
 }
 
 impl Image {
@@ -48,20 +53,22 @@ impl Image {
         // let path = "/foo/psx/Mortal Kombat Trilogy (USA) (v1.1) (Track 01).bin";
         // let path = "/foo/psx/Final Fantasy VII (USA) (Disc 1).bin";
         // let path = "/foo/psx/Mega Man X4 (USA).bin";
-        let mut file = match File::open(path) {
+        let file = match File::open(path) {
             Ok(f) => f,
             Err(_) => panic!("can't read file")
         };
-        let mut data: Vec<u8> = vec![0u8; 2 * 75 * SECTOR_SIZE];
+        // let mut data: Vec<u8> = vec![0u8; 2 * 75 * SECTOR_SIZE];
         // let mut data: Vec<u8> = vec![];
-        match file.read_to_end(&mut data) {
-            Ok(_) => {},
-            Err(_) => panic!("file read error")
-        };
+        // match file.read_to_end(&mut data) {
+        //     Ok(_) => {},
+        //     Err(_) => panic!("file read error")
+        // };
         // file.read_to_end(&mut data);
         Self {
             read_head: 0,
-            data: data.into_boxed_slice(),
+            file: Some(file.try_clone().unwrap()),
+            cache: Some(CdCache::new(file)),
+            // data: data.into_boxed_slice(),
             tracks: vec![Track {
                 id: 0,
                 track_type: TrackType::Mode2352,
@@ -78,7 +85,12 @@ impl Image {
     pub fn advance_sector(&mut self) -> Vec<u8> {
         let start = self.read_head;
         self.read_head += SECTOR_SIZE;
-        self.data[start..self.read_head].to_vec()
+        if start < 2 * 75 * SECTOR_SIZE {
+            vec!(0x0;SECTOR_SIZE)
+        } else {
+            self.cache.as_mut().unwrap().read_sector(start - 2 * 75 * SECTOR_SIZE).to_vec()
+            // self.data[start..self.read_head].to_vec()
+        }
     }
 
     pub fn reset_read_head(&mut self) {
@@ -104,7 +116,9 @@ impl Image {
     }
 
     pub fn last_track_end(&self) -> (u8, u8, u8) {
-        self.mm_ss_ff(self.data.len())
+        let length = self.file.as_ref().unwrap().metadata().unwrap().len();
+        self.mm_ss_ff(length as usize)
+        // self.mm_ss_ff(self.data.len())
     }
 
     pub fn mm_ss_ff(&self, read_head: usize) -> (u8, u8, u8) {

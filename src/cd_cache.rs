@@ -3,13 +3,13 @@ use std::{fs::File, io::{Read, Seek}, num::NonZero, sync::{Arc, Condvar, Mutex},
 // My take on https://github.com/simias/rustation-ng/blob/main/src/psx/cd/disc/cache.rs
 
 
-pub struct Cache {
+pub struct CdCache {
     reader: Arc<(Mutex<Reader>, Condvar)>,
     handle: thread::JoinHandle<()>,
     file: File
 }
 
-impl Cache {
+impl CdCache {
     pub fn new(file: File) -> Self {
         let reader = Arc::new((Mutex::new(Reader::new()), Condvar::new()));
 
@@ -20,7 +20,7 @@ impl Cache {
             run_prefetcher(thread_file, thread_reader);
         });
 
-        Cache {
+        CdCache {
             reader,
             handle,
             file
@@ -47,7 +47,7 @@ impl Cache {
     }
 }
 
-impl Drop for Cache {
+impl Drop for CdCache {
     fn drop(&mut self) {
         let  (reader, cond) = &*self.reader;
         let mut reader = reader.lock().unwrap();

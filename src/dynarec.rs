@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 
-use serde::ser::SerializeStruct;
-use serde::{Deserialize, Serialize, Serializer};
 use crate::block_cache::{self};
 use crate::system::{
-    load_byte, load_half_word, load_word, mask_region, store_byte, store_half_word, store_word,
+    load_byte, load_half_word, load_word, load_word_generic, mask_region, store_byte,
+    store_half_word, store_word, store_word_generic,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use cranelift::codegen::{ir::BlockArg, isa::CallConv};
 use cranelift::prelude::*;
@@ -53,6 +54,8 @@ pub struct Constants {
     gte: *mut Gte,
     store_word: FuncId,
     load_word: FuncId,
+    store_word_generic: FuncId,
+    load_word_generic: FuncId,
     store_half_word: FuncId,
     store_byte: FuncId,
     load_half_word: FuncId,
@@ -65,8 +68,9 @@ pub struct Constants {
     gte_set_control: FuncId,
     ram: u64,
     cache: u64,
+    scratchpad: u64,
+    bios: u64,
 }
-
 
 // #[derive(serde::Serialize)]
 pub struct Dynarec {
@@ -90,8 +94,6 @@ pub struct Dynarec {
     module: JITModule,
 
     constants: Constants,
-
-
 }
 
 impl Dynarec {
@@ -137,6 +139,8 @@ impl Dynarec {
         builder.symbol("gte_control", gte_control as *const u8);
         builder.symbol("gte_set_data", gte_set_data as *const u8);
         builder.symbol("gte_set_control", gte_set_control as *const u8);
+        builder.symbol("store_word_generic", store_word_generic as *const u8);
+        builder.symbol("load_word_generic", load_word_generic as *const u8);
 
         let mut module = JITModule::new(builder);
 
@@ -148,6 +152,17 @@ impl Dynarec {
         sig_external.call_conv = module.target_config().default_call_conv;
         let store_word = module
             .declare_function("store_word", Linkage::Import, &sig_external)
+            .unwrap();
+
+        let mut sig_external = module.make_signature();
+        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.call_conv = module.target_config().default_call_conv;
+        let store_word_generic = module
+            .declare_function("store_word_generic", Linkage::Import, &sig_external)
             .unwrap();
 
         let mut sig_external = module.make_signature();
@@ -175,6 +190,17 @@ impl Dynarec {
         sig_external.call_conv = module.target_config().default_call_conv;
         let load_word = module
             .declare_function("load_word", Linkage::Import, &sig_external)
+            .unwrap();
+
+        let mut sig_external = module.make_signature();
+        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.returns.push(AbiParam::new(types::I32));
+        sig_external.call_conv = module.target_config().default_call_conv;
+        let load_word_generic = module
+            .declare_function("load_word_generic", Linkage::Import, &sig_external)
             .unwrap();
 
         let mut sig_external = module.make_signature();
@@ -268,9 +294,11 @@ impl Dynarec {
                 cache: 0,
                 gte: gte_ptr,
                 store_word,
+                store_word_generic,
                 store_half_word,
                 store_byte,
                 load_word,
+                load_word_generic,
                 load_half_word,
                 load_byte,
                 print_,
@@ -279,6 +307,8 @@ impl Dynarec {
                 gte_control,
                 gte_set_data,
                 gte_set_control,
+                scratchpad: 0,
+                bios: 0,
             },
         }
     }
@@ -287,10 +317,14 @@ impl Dynarec {
         let system_ptr: u64 = system as *const System as u64;
         let ram_ptr: u64 = system.ram.data.as_ptr() as u64;
         let cache_ptr: u64 = system.block_cache.ram.as_ptr() as u64;
+        let scratchpad_ptr: u64 = system.scratchpad.data.as_ptr() as u64;
+        let bios_ptr: u64 = system.bios.data.as_ptr() as u64;
 
         system.cpu.constants.system = system_ptr;
         system.cpu.constants.ram = ram_ptr;
         system.cpu.constants.cache = cache_ptr;
+        system.cpu.constants.bios = bios_ptr;
+        system.cpu.constants.scratchpad = scratchpad_ptr;
     }
 
     pub fn pc(&self) -> u32 {
@@ -371,7 +405,7 @@ impl Dynarec {
     //     // println!();
     // }
 
-    pub fn compile_block(system: &mut System, addr: u32) -> block_cache::Block {
+    pub fn compile_block(system: &mut System, addr: u32, id: u32) -> block_cache::Block {
         // woot?
         // if addr == 0x80000080 {
         //     panic!("at exception handler");
@@ -380,14 +414,23 @@ impl Dynarec {
         // I guess first parse the block
         let xs = Self::parse_block(system, addr, &mut buff);
 
-        system.cpu.ctx
+        let mem_access = if (id as usize) < system.block_cache.blocks.len() {
+            system.block_cache.blocks[id as usize].mem_access
+        } else {
+            [0; 256]
+        };
+
+        system
+            .cpu
+            .ctx
             .func
             .signature
             .returns
             .push(AbiParam::new(types::I32));
 
         // Create the builder to build a function.
-        let mut builder = FunctionBuilder::new(&mut system.cpu.ctx.func, &mut system.cpu.builder_context);
+        let mut builder =
+            FunctionBuilder::new(&mut system.cpu.ctx.func, &mut system.cpu.builder_context);
 
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
@@ -409,9 +452,11 @@ impl Dynarec {
             delayed_load: None,
             constants: &system.cpu.constants,
             store_word: None,
+            store_word_generic: None,
             store_half_word: None,
             store_byte: None,
             load_word: None,
+            load_word_generic: None,
             load_half_word: None,
             load_byte: None,
             print_: None,
@@ -425,13 +470,13 @@ impl Dynarec {
             next_instr: None,
             delay_slot: false,
             regs: HashSet::new(),
-            // entry_block,
-            // start_block,
+            id,
+            mem_access, // entry_block,
+                        // start_block,
         };
 
-
         for i in 0..xs.len() {
-           bldr.get_registers(xs[i]);
+            bldr.get_registers(xs[i]);
         }
 
         bldr.compile_entry_block();
@@ -477,7 +522,8 @@ impl Dynarec {
             println!("last command is not jump");
         }
         //
-        let id = system.cpu
+        let id = system
+            .cpu
             .module
             .declare_anonymous_function(&system.cpu.ctx.func.signature)
             // .declare_function(&name, Linkage::Export, &self.ctx.func.signature)
@@ -488,7 +534,11 @@ impl Dynarec {
         // cannot finish relocations until all functions to be called are
         // defined. For this toy demo for now, we'll just finalize the
         // function below.
-        system.cpu.module.define_function(id, &mut system.cpu.ctx).expect("OK");
+        system
+            .cpu
+            .module
+            .define_function(id, &mut system.cpu.ctx)
+            .expect("OK");
 
         // Now that compilation is finished, we can clear out the context state.
         system.cpu.module.clear_context(&mut system.cpu.ctx);
@@ -510,7 +560,9 @@ impl Dynarec {
             // crc32: 0,
             length: xs.len() as u32,
             mem,
-            addr
+            addr,
+            needs_mem_recomp: false,
+            mem_access: mem_access,
         }
     }
     pub fn is_block_valid(system: &System, block_idx: u32) -> bool {
@@ -553,7 +605,8 @@ impl Dynarec {
 impl Serialize for Dynarec {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer {
+        S: Serializer,
+    {
         let mut s = serializer.serialize_struct("Dynarec", 2)?;
         s.serialize_field("regs", &*self.regs)?;
         s.serialize_field("gte", &*self.gte)?;
@@ -574,7 +627,9 @@ struct BlockBuilder<'a> {
     next_instr: Option<Instruction>,
     delay_slot: bool,
     store_word: Option<FuncRef>,
+    store_word_generic: Option<FuncRef>,
     load_word: Option<FuncRef>,
+    load_word_generic: Option<FuncRef>,
     store_half_word: Option<FuncRef>,
     store_byte: Option<FuncRef>,
     load_half_word: Option<FuncRef>,
@@ -585,8 +640,9 @@ struct BlockBuilder<'a> {
     gte_control: Option<FuncRef>,
     gte_set_data: Option<FuncRef>,
     gte_set_control: Option<FuncRef>,
-    // entry_block: Block,
-    // start_block: Block,
+    id: u32,
+    mem_access: [u8; 256], // entry_block: Block,
+                           // start_block: Block,
 }
 
 impl<'a> BlockBuilder<'a> {
@@ -1106,6 +1162,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     fn compile_instr_in_delay_slot(&mut self, instr: Instruction) {
+        self.i += 1;
         self.delay_slot = true;
         self.compile_instr(instr);
         self.push_delay_load_to_regs();
@@ -1114,6 +1171,7 @@ impl<'a> BlockBuilder<'a> {
         // self.compile_delayed_load();
         // }
         self.delay_slot = false;
+        self.i -= 1;
     }
 
     fn inject_print_tty_output(&mut self) {
@@ -1265,17 +1323,21 @@ impl<'a> BlockBuilder<'a> {
                 .ins()
                 .iconst(types::I64, self.constants.regs as usize as i64);
             let delayed_load_reg = self.get_reg_read(REG_LOAD_REG);
-            let reg = self
-                .bldr
-                .ins()
-                .load(types::I32, MachMemFlags::trusted(), regs_address, REG_LOAD_REG as i32 * 4);
+            let reg = self.bldr.ins().load(
+                types::I32,
+                MachMemFlags::trusted(),
+                regs_address,
+                REG_LOAD_REG as i32 * 4,
+            );
             self.bldr.def_var(delayed_load_reg, reg);
             // let reg = self.bldr.use_var(delayed_load_reg);
             let delayed_load_val = self.get_reg_read(REG_LOAD_VAL);
-            let delayed_load = self
-                .bldr
-                .ins()
-                .load(types::I32, MachMemFlags::trusted(), regs_address, REG_LOAD_VAL as i32 * 4);
+            let delayed_load = self.bldr.ins().load(
+                types::I32,
+                MachMemFlags::trusted(),
+                regs_address,
+                REG_LOAD_VAL as i32 * 4,
+            );
             self.bldr.def_var(delayed_load_val, delayed_load);
             // let delayed_load = self.bldr.use_var(delayed_load_val);
             let zero = self.bldr.ins().iconst(types::I32, 0);
@@ -2593,18 +2655,17 @@ impl<'a> BlockBuilder<'a> {
         self.compile_delayed_load_chain(instr.rt(), v);
     }
 
-// const REGION_MASK: [u32; 8] = [
-//     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KUSEG: 2048MB,
-//     0x7fffffff, // KSEG0: 512MB,
-//     0x1fffffff, // KSEG1: 512MB,
-//     0xffffffff, 0xffffffff, // KSEG2: 1024MB, cache cotnrol hw registers
-// ];
-// pub fn mask_region(addr: u32) -> u32 {
-//     let index = (addr >> 29) as usize;
-//     addr & REGION_MASK[index]
-// }
-    // now make polymorphic...
-    fn compile_load(&mut self, ty: Type, address: Value) -> Value {
+    // const REGION_MASK: [u32; 8] = [
+    //     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KUSEG: 2048MB,
+    //     0x7fffffff, // KSEG0: 512MB,
+    //     0x1fffffff, // KSEG1: 512MB,
+    //     0xffffffff, 0xffffffff, // KSEG2: 1024MB, cache cotnrol hw registers
+    // ];
+    // pub fn mask_region(addr: u32) -> u32 {
+    //     let index = (addr >> 29) as usize;
+    //     addr & REGION_MASK[index]
+    // }
+    /*fn compile_load(&mut self, ty: Type, address: Value) -> Value {
         //self.bldr.func.dfg.value_type(my_value);
         // self.bldr.func.
         let index = self.bldr.ins().sshr_imm_u(address, 29);
@@ -2686,6 +2747,202 @@ impl<'a> BlockBuilder<'a> {
         self.bldr.switch_to_block(merge_block);
         self.bldr.seal_block(merge_block);
         self.bldr.block_params(merge_block)[0]
+    }*/
+
+    fn compile_mask_addr(&mut self, address: Value) -> Value {
+        let index = self.bldr.ins().sshr_imm_u(address, 29);
+        let kuseg_test = self.bldr.ins().iconst(types::I32, 0b100);
+        let is_kuseg = self.bldr.ins().band_not(kuseg_test, index);
+        let is_kseg2 = self.bldr.ins().band_imm_u(index, 0b010);
+        let is_kseg1 = self.bldr.ins().band_imm_u(index, 0b001);
+
+
+
+        let kseg0_mask = self.bldr.ins().iconst(types::I32, 0x7fffffff);
+        let kseg1_mask = self.bldr.ins().iconst(types::I32, 0x1fffffff);
+        let other_mask = self.bldr.ins().select(is_kseg1, kseg1_mask, kseg0_mask);
+
+        let kuseg_mask = self.bldr.ins().iconst(types::I32, 0xffffffff);
+        let not_kuseg_mask = self.bldr.ins().select(is_kseg2, kuseg_mask, other_mask);
+
+        let mask = self.bldr.ins().select(is_kuseg, kuseg_mask, not_kuseg_mask);
+
+        let masked_address = self.bldr.ins().band(address, mask);
+        self.bldr.ins().uextend(types::I64, masked_address)
+
+    }
+    fn compile_load(&mut self, ty: Type, address: Value) -> Value {
+        // if self.id == 740 {
+        //     println!("recompiling block 740");
+        //     println!("idx: {}; access pattern: {}", self.i, self.mem_access[self.i as usize]);
+        // }
+        match self.mem_access[self.i as usize] {
+            0 => {
+                // generic
+                let system = self
+                    .bldr
+                    .ins()
+                    .iconst(types::I64, self.constants.system as i64);
+                let block_id = self.bldr.ins().iconst(types::I32, self.id as i64);
+                let instr_idx = self.bldr.ins().iconst(types::I32, self.i as i64);
+                match ty {
+                    types::I32 => {
+                        // let load_word = self.get_load_word();
+                        // let res = self.bldr.ins().call(load_word, &[system, address]);
+                        // self.bldr.inst_results(res)[0]
+                        let load_word = self.get_load_word_generic();
+                        let res = self
+                            .bldr
+                            .ins()
+                            .call(load_word, &[system, address, block_id, instr_idx]);
+                        self.bldr.inst_results(res)[0]
+                    }
+                    types::I16 => {
+                        let load_half_word = self.get_load_half_word();
+                        let res = self.bldr.ins().call(load_half_word, &[system, address]);
+                        self.bldr.inst_results(res)[0]
+                    }
+                    types::I8 => {
+                        let load_byte = self.get_load_byte();
+                        let res = self.bldr.ins().call(load_byte, &[system, address]);
+                        self.bldr.inst_results(res)[0]
+                        // self.bldr.ins().jump(merge_block, &[BlockArg::Value(res)]);
+                    }
+                    _ => {
+                        panic!("unsupported type: {}", ty);
+                    }
+                }
+            }
+            1 => {
+                // ram
+                let masked_address = self.compile_mask_addr(address);
+                // ram is mirrored x4
+                let masked_address = self.bldr.ins().band_imm_u(masked_address , 0x1f_ffff);
+
+                let p = self
+                    .bldr
+                    .ins()
+                    .iconst(types::I64, self.constants.ram as *mut u8 as usize as i64);
+                let p = self.bldr.ins().iadd(p, masked_address);
+                self
+                        .bldr
+                        .ins()
+                        .load(ty, MachMemFlags::trusted(), p, 0)
+
+            }
+            2 => {
+                // scratchpad
+                let masked_address = self.compile_mask_addr(address);
+                let scratchpad_offset = self.bldr.ins().iconst(types::I64, 0x1f80_0000);
+                let masked_address = self.bldr.ins().isub(masked_address, scratchpad_offset);
+                let p = self
+                    .bldr
+                    .ins()
+                    .iconst(types::I64, self.constants.scratchpad as *mut u8 as usize as i64);
+                let p = self.bldr.ins().iadd(p, masked_address);
+                self
+                        .bldr
+                        .ins()
+                        .load(ty, MachMemFlags::trusted(), p, 0)
+            }
+            3 => {
+                // bios
+                let masked_address = self.compile_mask_addr(address);
+                let bios_offset = self.bldr.ins().iconst(types::I64, 0x1fc00000);
+                let masked_address = self.bldr.ins().isub(masked_address, bios_offset);
+                let p = self
+                    .bldr
+                    .ins()
+                    .iconst(types::I64, self.constants.bios as *mut u8 as usize as i64);
+                let p = self.bldr.ins().iadd(p, masked_address);
+                self
+                        .bldr
+                        .ins()
+                        .load(ty, MachMemFlags::trusted(), p, 0)
+            }
+            _ => {
+                // io
+                let system = self
+                    .bldr
+                    .ins()
+                    .iconst(types::I64, self.constants.system as i64);
+                match ty {
+                    types::I32 => {
+                        // let load_word = self.get_load_word();
+                        // let res = self.bldr.ins().call(load_word, &[system, address]);
+                        // self.bldr.inst_results(res)[0]
+                        let load_word = self.get_load_word();
+                        let res = self
+                            .bldr
+                            .ins()
+                            .call(load_word, &[system, address]);
+                        self.bldr.inst_results(res)[0]
+                    }
+                    types::I16 => {
+                        let load_half_word = self.get_load_half_word();
+                        let res = self.bldr.ins().call(load_half_word, &[system, address]);
+                        self.bldr.inst_results(res)[0]
+                    }
+                    types::I8 => {
+                        let load_byte = self.get_load_byte();
+                        let res = self.bldr.ins().call(load_byte, &[system, address]);
+                        self.bldr.inst_results(res)[0]
+                        // self.bldr.ins().jump(merge_block, &[BlockArg::Value(res)]);
+                    }
+                    _ => {
+                        panic!("unsupported type: {}", ty);
+                    }
+                }
+            }
+        }
+        //self.bldr.func.dfg.value_type(my_value);
+        // self.bldr.func.
+        // let index = self.bldr.ins().sshr_imm_u(address, 29);
+        // let kuseg_test = self.bldr.ins().iconst(types::I32, 0b100);
+        // let is_kuseg = self.bldr.ins().band_not(kuseg_test, index);
+        // let is_kseg2 = self.bldr.ins().band_imm_u(index, 0b010);
+        // let is_kseg1 = self.bldr.ins().band_imm_u(index, 0b001);
+        //
+        //
+        //
+        // let kseg0_mask = self.bldr.ins().iconst(types::I32, 0x7fffffff);
+        // let kseg1_mask = self.bldr.ins().iconst(types::I32, 0x1fffffff);
+        // let other_mask = self.bldr.ins().select(is_kseg1, kseg1_mask, kseg0_mask);
+        //
+        // let kuseg_mask = self.bldr.ins().iconst(types::I32, 0xffffffff);
+        // let not_kuseg_mask = self.bldr.ins().select(is_kseg2, kuseg_mask, other_mask);
+        //
+        // let mask = self.bldr.ins().select(is_kuseg, kuseg_mask, not_kuseg_mask);
+        //
+        // let masked_address = self.bldr.ins().band(address, mask);
+        // let masked_address = self.bldr.ins().uextend(types::I64, masked_address);
+        //
+        // // now check if we in ram:
+        // // pub const RAM: Range = Range(0x0000_0000, 2 * 1024 * 1024);
+        // let is_ram = self.bldr.ins().icmp_imm_u(IntCC::UnsignedLessThan, masked_address, 2 * 1024 * 1024);
+
+        // let then_block = self.bldr.create_block();
+        // let else_block = self.bldr.create_block();
+        // let merge_block = self.bldr.create_block();
+        // self.bldr.append_block_param(merge_block, ty);
+        //
+        // self.bldr.ins().brif(is_ram, then_block, &[], else_block, &[]);
+        // self.bldr.switch_to_block(then_block);
+        // self.bldr.seal_block(then_block);
+        // let p = self
+        //     .bldr
+        //     .ins()
+        //     .iconst(types::I64, self.constants.ram as *mut u8 as usize as i64);
+        // let p = self.bldr.ins().iadd(p, masked_address);
+        //     let val = self
+        //         .bldr
+        //         .ins()
+        //         .load(ty, MachMemFlags::trusted(), p, 0);
+        //
+        // self.bldr.ins().jump(merge_block, &[BlockArg::Value(val)]);
+
+        // self.bldr.switch_to_block(else_block);
+        // self.bldr.seal_block(else_block);
     }
 
     fn compile_lw(&mut self, instr: Instruction) {
@@ -3294,6 +3551,19 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
+    pub fn get_store_word_generic(&mut self) -> FuncRef {
+        match self.store_word_generic {
+            Some(f) => f,
+            None => {
+                let store_word_generic = self
+                    .module
+                    .declare_func_in_func(self.constants.store_word_generic, &mut self.bldr.func);
+                self.store_word_generic = Some(store_word_generic);
+                store_word_generic
+            }
+        }
+    }
+
     pub fn get_store_half_word(&mut self) -> FuncRef {
         match self.store_half_word {
             Some(f) => f,
@@ -3328,6 +3598,19 @@ impl<'a> BlockBuilder<'a> {
                     .module
                     .declare_func_in_func(self.constants.load_word, &mut self.bldr.func);
                 self.load_word = Some(f);
+                f
+            }
+        }
+    }
+
+    pub fn get_load_word_generic(&mut self) -> FuncRef {
+        match self.load_word_generic {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.load_word_generic, &mut self.bldr.func);
+                self.load_word_generic = Some(f);
                 f
             }
         }

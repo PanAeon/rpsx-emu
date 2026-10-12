@@ -1,10 +1,10 @@
-use std::{fs::File, io::{Error, Read}, path::Path};
+use std::{fs::File, io::{Error, Read}, path::Path, pin::Pin};
 
 use crate::system::Addressable;
 
 
 pub struct Bios {
-    pub data: Vec<u8>
+    pub data: Pin<Box<[u8]>>
 }
 
 const BIOS_SIZE: u64 = 512 * 1024;
@@ -14,7 +14,7 @@ impl Bios {
         let mut data: Vec<u8> = Vec::new();
         file.take(BIOS_SIZE).read_to_end(&mut data).expect("ok");
         if data.len() == BIOS_SIZE as usize {
-            Ok(Bios { data })
+            Ok(Bios { data: Box::into_pin(data.into_boxed_slice()) })
         } else {
             Err(Error::new(std::io::ErrorKind::InvalidInput, "Invalid BIOS size."))
 

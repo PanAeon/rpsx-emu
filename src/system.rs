@@ -90,7 +90,7 @@ impl Addressable for u32 {
 #[derive(Serialize)]
 pub struct System {
     #[serde(skip)]
-    bios: Bios,
+    pub bios: Bios,
     pub ram: Ram,
     pub scratchpad: Scratchpad,
     pub dma: Dma,
@@ -488,5 +488,29 @@ pub extern "C" fn load_half_word(system_ptr: *mut System, addr: u32) -> u16 {
 
 pub extern "C" fn load_byte(system_ptr: *mut System, addr: u32) -> u8 {
     let system = unsafe { system_ptr.as_mut().expect("ok") };
+    System::load(system, addr)
+}
+
+pub extern "C" fn store_word_generic(system_ptr: *mut System, addr: u32, val: u32, block_id: u32, offset: u32) {
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+
+    System::store(system, addr, val);
+}
+
+pub extern "C" fn load_word_generic(system_ptr: *mut System, addr: u32, block_id: u32, offset: u32) -> u32 {
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+
+    let address = mask_region(addr);
+    system.block_cache.blocks[block_id as usize].needs_mem_recomp = true;
+    if let Some(_) = map::RAM.contains(address) {
+        system.block_cache.blocks[block_id as usize].mem_access[offset as usize] = 1;
+    } else if let Some(_) = map::SCRATCHPAD.contains(address) {
+        system.block_cache.blocks[block_id as usize].mem_access[offset as usize] = 2;
+    } else if let Some(_) = map::BIOS.contains(address) {
+        system.block_cache.blocks[block_id as usize].mem_access[offset as usize] = 3;
+    } else {
+        system.block_cache.blocks[block_id as usize].mem_access[offset as usize] = 4;
+    }
+
     System::load(system, addr)
 }

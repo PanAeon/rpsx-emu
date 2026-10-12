@@ -48,7 +48,7 @@ pub fn load_state(idx: u32, system: &mut System) {
     system.cpu.regs.set(cpu.regs);
     system.cpu.gte.set(cpu.gte);
     system.block_cache.invalidate();
-    system.scratchpad = scratchpad;
+    system.scratchpad.data.copy_from_slice(&scratchpad);
     system.dma = dma;
     system.spu = spu;
     system.irqctl = irqctl;
@@ -90,7 +90,8 @@ pub struct CpuState {
 pub struct SystemState {
     #[serde(with = "serde_bytes")]
     pub ram: Box<[u8]>,
-    pub scratchpad: Scratchpad,
+    #[serde(with = "serde_bytes")]
+    pub scratchpad: Box<[u8]>,
     pub dma: Dma,
     pub cpu: CpuState,
     pub spu: Spu,

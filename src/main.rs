@@ -1088,18 +1088,26 @@ impl State {
                 if entry.dirty {
                     if !Dynarec::is_block_valid(&mut self.system, entry.block_idx) {
                         // recompile block...
-                        let block = Dynarec::compile_block(&mut self.system, pc);
+                        self.system.block_cache.blocks[entry.block_idx as usize].mem_access = [0;256];
+                        let block = Dynarec::compile_block(&mut self.system, pc, entry.block_idx);
                         self.system.block_cache.insert_block_at(entry.block_idx, pc, block);
                     } else {
                         self.system.block_cache.get_entry_mut(pc).dirty = false;                   }
                 }
+                if self.system.block_cache.blocks[entry.block_idx as usize].needs_mem_recomp {
+                    let block = Dynarec::compile_block(&mut self.system, pc, entry.block_idx);
+                    self.system.block_cache.insert_block_at(entry.block_idx, pc, block);
+                    // println!(">> recompiling block id: {}", entry.block_idx);
+                }
                 entry.block_idx
             } else {
-                let block = Dynarec::compile_block(&mut self.system, pc);
+                let block_idx = self.system.block_cache.blocks.len() as u32;
+                let block = Dynarec::compile_block(&mut self.system, pc, block_idx);
                 let idx = self.system.block_cache.insert_block(pc, block);
                 idx
                 // compile new block...
             };
+            
             let num_cycles = Dynarec::run_block(&mut self.system, block_idx);
             // then run it...
 
@@ -1355,7 +1363,13 @@ impl State {
         repeat: bool,
     ) {
         match (code, key_state.is_pressed()) {
-            (KeyCode::Space, false) => self.paused = !self.paused,
+            (KeyCode::Space, false) => {
+                println!("------------------------------");
+                println!("Total blocks: {}", self.system.block_cache.blocks.len());
+                let to_recompile = self.system.block_cache.blocks.iter().filter(|x|x.needs_mem_recomp).count();
+                println!("To recompile: {}", to_recompile);
+                println!("------------------------------");
+            },
             (KeyCode::KeyV, false) => self.display_vram = !self.display_vram,
             (KeyCode::Digit1, false) => {
                 save_state(1, &mut self.system);

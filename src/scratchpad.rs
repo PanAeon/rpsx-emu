@@ -1,17 +1,17 @@
+use std::pin::Pin;
+
 use crate::system::Addressable;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 
-#[derive(Serialize, Deserialize)]
 pub struct Scratchpad {
-    #[serde(with = "serde_bytes")]
-    pub data: Vec<u8>
+    pub data: Pin<Box<[u8]>>
 }
 
 impl Scratchpad {
     pub fn new() -> Scratchpad {
-        let data = vec![0xca; 1 * 1024];
-        Scratchpad { data }
+        let data = vec![0xca; 1 * 1024].into_boxed_slice();
+        Scratchpad { data: Box::into_pin(data) }
     }
 
 
@@ -31,3 +31,22 @@ impl Scratchpad {
         self.data[addr..addr+width].copy_from_slice(&bytes[..width]);
     }
 }
+
+impl Serialize for Scratchpad {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer {
+        let bytes = serde_bytes::Bytes::new(&self.data);
+        bytes.serialize(serializer)
+    }
+}
+
+// impl<'de> Deserialize<'de> for Scratchpad {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: Deserializer<'de> {
+//         let bytes = serde_bytes::ByteBuf::deserialize(deserializer)?;
+//         let data = bytes.into_boxed_slice();
+//         Ok(Ram { data: Box::into_pin(data) })
+//     }
+// }

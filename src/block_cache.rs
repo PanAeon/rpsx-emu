@@ -18,7 +18,9 @@ pub struct Block {
     pub addr: u32,
     // pub crc32: u32,
     pub length: u32,
-    pub mem: Vec<u8>
+    pub mem: Vec<u8>,
+    pub needs_mem_recomp: bool,
+    pub mem_access: [u8;256]
 }
 
 // we got RAM 2mb and bios 512kb.

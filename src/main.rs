@@ -64,6 +64,7 @@ mod block_cache;
 mod dummy_renderer;
 mod interpreter;
 mod save_state;
+mod cd_cache;
 
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
@@ -585,11 +586,12 @@ impl State {
 
 
 
-        let core_ids = core_affinity::get_core_ids().unwrap();
-        let res = core_affinity::set_for_current(core_ids[0]);
-        if res {
-            println!("main thread pinned to 0");
-        }
+        // I trust you, linux scheduler
+        // let core_ids = core_affinity::get_core_ids().unwrap();
+        // let res = core_affinity::set_for_current(core_ids[0]);
+        // if res {
+        //     println!("main thread pinned to 0");
+        // }
 
         let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
         // let file = File::create("output.pcm")?;
@@ -1460,34 +1462,34 @@ impl State {
                 },
                 gilrs::EventType::ButtonReleased(button, _) => match button {
                     gilrs::Button::South => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Cross as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Cross as usize);
                     } // Cross
                     gilrs::Button::East => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Circle as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Circle as usize);
                     } // Circle
                     gilrs::Button::North => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Triangle as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Triangle as usize);
                     } // Triangle
                     gilrs::Button::West => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Square as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Square as usize);
                     } // Square
                     gilrs::Button::Select => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Select as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Select as usize);
                     }
                     gilrs::Button::Start => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Start as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Start as usize);
                     }
                     gilrs::Button::DPadUp => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Up as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Up as usize);
                     }
                     gilrs::Button::DPadDown => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Down as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Down as usize);
                     }
                     gilrs::Button::DPadLeft => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Left as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Left as usize);
                     }
                     gilrs::Button::DPadRight => {
-                        prev_buttons |= (0x1 << (crate::sio::Button::Right as usize));
+                        prev_buttons |= 0x1 << (crate::sio::Button::Right as usize);
                     }
                     gilrs::Button::LeftTrigger => {
                         prev_buttons |= 0x1 << (crate::sio::Button::L1 as usize);

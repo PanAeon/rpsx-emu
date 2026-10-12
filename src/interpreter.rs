@@ -14,6 +14,7 @@ pub struct Interpreter {
     delay_slot: bool, // set if the current instruction executes in the delay slot
 }
 
+#[allow(dead_code)]
 impl Interpreter {
     pub fn new() -> Interpreter {
         Interpreter {

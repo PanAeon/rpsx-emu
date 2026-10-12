@@ -1,4 +1,4 @@
-use crate::{irq::InterruptController, system::System};
+use crate::{system::System};
 use serde::{Deserialize, Serialize};
 
 

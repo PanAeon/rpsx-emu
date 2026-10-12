@@ -132,6 +132,7 @@ pub enum SampleRate {
 }
 
 #[derive(FromPrimitive, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 #[repr(u8)]
 pub enum BitsPerSample {
     #[default]

@@ -319,11 +319,11 @@ impl ComputeRenderer {
                 frame_num: 0,
                 results: None,
             };
-            let core_ids = core_affinity::get_core_ids().unwrap();
-            let res = core_affinity::set_for_current(core_ids[1]);
-            if res {
-                println!("renderer thread pinned to 1");
-            }
+            // let core_ids = core_affinity::get_core_ids().unwrap();
+            // let res = core_affinity::set_for_current(core_ids[1]);
+            // if res {
+            //     println!("renderer thread pinned to 1");
+            // }
             loop {
                 let mut msg = match receiver.recv() {
                     Ok(msg) => msg,

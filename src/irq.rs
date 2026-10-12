@@ -1,4 +1,4 @@
-use crate::system::{AccessWidth, Addressable};
+use crate::system::{Addressable};
 use serde::{Deserialize, Serialize};
 
 

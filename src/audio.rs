@@ -1,4 +1,3 @@
-use std::time::Duration;
 
 use cpal::{StreamConfig, traits::{DeviceTrait, HostTrait}};
 use crossbeam::channel::Sender;
@@ -30,7 +29,7 @@ pub fn build_audio_stream() -> anyhow::Result<(cpal::Stream, Sender<AudioSample>
                 // println!("data len: {}", data.len());
                 if catch_up {
                     catch_up = false;
-                    std::thread::sleep(std::time::Duration::from_millis(60*16));
+                    std::thread::sleep(std::time::Duration::from_millis(120*16));
                 }
                 for d in data.as_chunks_mut::<2>().0 {
                     match cons.try_recv() {

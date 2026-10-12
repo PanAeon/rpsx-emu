@@ -31,6 +31,7 @@ serde = { version = "*", features = ["derive"] }
 serde_bytes = "*"
 serde_arrays = "*"
 flexbuffers = "*"
+lru = "*"
 
 [dependencies.image]
 version = "0.25"

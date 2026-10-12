@@ -323,9 +323,9 @@ impl CDRom {
         CommandResponse::new().int5([0x11, 0x40], AVG_1ST_RESP_GENERIC)
     }
 
-    pub fn invalid(&mut self) -> CommandResponse {
-        error_response(&self.status, 0x40, "invalid cmd")
-    }
+    // pub fn invalid(&mut self) -> CommandResponse {
+    //     error_response(&self.status, 0x40, "invalid cmd")
+    // }
 
     pub fn cmd_nop(&mut self) -> CommandResponse { // nop, clears tray open bit, response: INT3: status
         if !self.parameters.is_empty() {
@@ -705,7 +705,7 @@ impl CDRom {
         let channel = sector[0x11];
         let submode = sector[0x12];
         let is_realtime_audio = (submode & 0x44) == 0x44;
-        let is_form2 = submode & (1 << 5) != 0;
+        // let is_form2 = submode & (1 << 5) != 0;
         let mode = &self.mode;
 
         if sector_mode == 2 {

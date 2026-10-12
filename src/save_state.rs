@@ -71,7 +71,6 @@ pub fn load_state(idx: u32, system: &mut System) {
     system.gpu.send_drawing_area_change();
     system.gpu.load_vram();
 
-    // FIXME: GTE
 
     // TODO: patch sio....
 
@@ -82,7 +81,7 @@ pub fn load_state(idx: u32, system: &mut System) {
 
 
 #[derive(Deserialize)]
-struct CpuState {
+pub struct CpuState {
     regs: Registers,
     gte: Gte
 }

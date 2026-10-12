@@ -110,7 +110,7 @@ impl BlockCache {
         &self.blocks[idx as usize]
     }
 
-    pub fn invalidate_ram(&mut self, offset: u32, width: usize) {
+    pub fn invalidate_ram(&mut self, offset: u32) {
         let idx = (offset / 4) as usize;
         let entry =  self.ram[idx];
         if entry.protected {

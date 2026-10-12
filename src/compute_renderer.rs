@@ -1,18 +1,16 @@
 use std::{
     borrow::Cow,
-    cmp::{self, max, min},
-    num::{NonZeroU32, NonZeroU64},
+    cmp::{self, min},
     sync::Mutex,
     thread::{self, JoinHandle},
 };
 use wgpu_profiler::*;
 
-use bytemuck::Zeroable;
 use crossbeam::channel::{Receiver, Sender};
-use wgpu::{VERTEX_ALIGNMENT, util::DeviceExt};
+use wgpu::{util::DeviceExt};
 
 use crate::{
-    gpu::{Colour, DisplayDepth, HorizontalRes, TextureDepth, Vertex, VerticalRes},
+    gpu::{Colour, DisplayDepth, TextureDepth, Vertex },
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
 
@@ -68,10 +66,7 @@ bitfield::bitfield! {
 
 fn create_draw_pipeline(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    display_format: wgpu::TextureFormat,
 ) -> (
-    wgpu::ComputePipeline,
     wgpu::ComputePipeline,
     wgpu::ComputePipeline,
     wgpu::Texture,
@@ -223,17 +218,17 @@ fn create_draw_pipeline(
         ],
     });
 
-    let bins_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("merge pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader_module,
-        entry_point: Some("bin"),
-        compilation_options: Default::default(), // constants, which is cool...
-        cache: None,
-    });
+    // let bins_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    //     label: Some("merge pipeline"),
+    //     layout: Some(&pipeline_layout),
+    //     module: &shader_module,
+    //     entry_point: Some("bin"),
+    //     compilation_options: Default::default(), // constants, which is cool...
+    //     cache: None,
+    // });
 
     let fill_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("clear pipeline"),
+        label: Some("fill pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader_module,
         entry_point: Some("quick_fill"),
@@ -243,7 +238,6 @@ fn create_draw_pipeline(
 
     (
         pipeline,
-        bins_pipeline,
         fill_pipeline,
         vram_texture,
         vertex_buffer,
@@ -257,7 +251,7 @@ pub struct ComputeRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     draw_pipeline: wgpu::ComputePipeline,
-    bins_pipeline: wgpu::ComputePipeline,
+    // bins_pipeline: wgpu::ComputePipeline,
     fill_pipeline: wgpu::ComputePipeline,
     render_texture: wgpu::Texture,
     vram_texture: wgpu::Texture,
@@ -281,7 +275,7 @@ impl ComputeRenderer {
     pub fn create(
         device: wgpu::Device,
         queue: wgpu::Queue,
-        display_format: wgpu::TextureFormat,
+        _display_format: wgpu::TextureFormat,
         render_texture: wgpu::Texture,
     ) -> (
         Sender<RendererMsg>,
@@ -293,14 +287,13 @@ impl ComputeRenderer {
 
         let (
             draw_pipeline,
-            bins_pipeline,
             fill_pipeline,
             vram_texture,
             vertex_buffer,
             uniforms_buffer,
             bins_buffer,
             compute_bind_group,
-        ) = create_draw_pipeline(&device, &queue, display_format);
+        ) = create_draw_pipeline(&device);
         // let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default()).unwrap();
@@ -310,7 +303,6 @@ impl ComputeRenderer {
                 device,
                 queue,
                 draw_pipeline,
-                bins_pipeline,
                 fill_pipeline,
                 render_texture,
                 vram_texture,
@@ -397,7 +389,7 @@ impl ComputeRenderer {
                             ctx,
                         );
                     }
-                    RendererMsg::FillRect { v, side, c, ctx } => renderer.fill_rect(*v, *side, *c),
+                    RendererMsg::FillRect { v, side, c, ctx :_} => renderer.fill_rect(*v, *side, *c),
                     RendererMsg::Vram2VramBlit { src, dst, size } => {
                         renderer.vram2vram_blit(*src, *dst, *size)
                     }
@@ -446,7 +438,7 @@ impl ComputeRenderer {
         (to_renderer_sender, gpu_receiver, handle)
     }
 
-    pub fn get_triangle_bounds(&self, vs: &[Vert]) -> (i16, i16, i16, i16) {
+    fn get_triangle_bounds(&self, vs: &[Vert]) -> (i16, i16, i16, i16) {
         let min_x = cmp::min(
             vs[0].position[0],
             cmp::min(vs[1].position[0], vs[2].position[0]),
@@ -490,7 +482,7 @@ impl ComputeRenderer {
                     let min_y = (min_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
                     let max_y = (max_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
 
-                    let start_bin_x = min(127, (min_x as u16 / width_bin_x));
+                    let start_bin_x = min(127, min_x as u16 / width_bin_x);
                     let end_bin_x = min(127, (max_x as u16) / width_bin_x);
                     let start_bin_y = min(63, (min_y as u16) / width_bin_y);
                     let end_bin_y = min(63, (max_y as u16) / width_bin_y);
@@ -524,7 +516,7 @@ impl ComputeRenderer {
                     let min_y = (min_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
                     let max_y = (max_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
 
-                    let start_bin_x = min(127, (min_x as u16 / width_bin_x));
+                    let start_bin_x = min(127, min_x as u16 / width_bin_x);
                     let end_bin_x = min(127, (max_x as u16) / width_bin_x);
                     let start_bin_y = min(63, (min_y as u16) / width_bin_y);
                     let end_bin_y = min(63, (max_y as u16) / width_bin_y);
@@ -635,7 +627,7 @@ impl ComputeRenderer {
                 wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
                                                // | wgpu::ErrorFilter::OutOfMemory,
             );
-            let idx = self.queue.submit(vec![
+            let _ = self.queue.submit(vec![
                 // clear_encoder.finish(),
                 // bin_encoder.finish(),
                 render_encoder.finish(),
@@ -716,10 +708,10 @@ impl ComputeRenderer {
         &mut self,
         mut v0: Vertex,
         mut v1: Vertex,
-        c0: Colour,
-        c1: Colour,
-        semi_trans: bool,
-        shaded: bool,
+        _c0: Colour,
+        _c1: Colour,
+        _semi_trans: bool,
+        _shaded: bool,
         ctx: &RenderingContext,
     ) {
         v0.x += ctx.drawing_x_offset as i32;
@@ -727,7 +719,7 @@ impl ComputeRenderer {
         v1.x += ctx.drawing_x_offset as i32;
         v1.y += ctx.drawing_y_offset as i32;
 
-        let Some((x0, y0, x1, y1)) = self.clip_rect(v0.x, v0.y, v1.x, v1.y, ctx) else {
+        let Some(_) = self.clip_rect(v0.x, v0.y, v1.x, v1.y, ctx) else {
             return;
         };
     }
@@ -806,7 +798,7 @@ impl ComputeRenderer {
         let min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
         let max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
-        let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
+        let Some(_) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
         else {
             return;
         };
@@ -832,7 +824,7 @@ impl ComputeRenderer {
         flags.set_force_set_mask_bit(ctx.force_set_mask_bit);
         flags.set_preserve_masked_pixels(ctx.preserve_masked_pixels);
 
-        let v0 = (Vert {
+        let v0 = Vert {
             position: [vs[0].x as i16, vs[0].y as i16],
             color: [colors[0].r, colors[0].g, colors[0].b],
             texture_depth,
@@ -843,8 +835,8 @@ impl ComputeRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
-        let v1 = (Vert {
+        };
+        let v1 = Vert {
             position: [vs[1].x as i16, vs[1].y as i16],
             color: [colors[1].r, colors[1].g, colors[1].b],
             texture_depth,
@@ -855,8 +847,8 @@ impl ComputeRenderer {
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
             // _pad: 0,
-        });
-        let v2 = (Vert {
+        };
+        let v2 = Vert {
             position: [vs[2].x as i16, vs[2].y as i16],
             color: [colors[2].r, colors[2].g, colors[2].b],
             texture_depth,
@@ -867,7 +859,7 @@ impl ComputeRenderer {
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
             // _pad: 0,
-        });
+        };
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         self.vertices.push(v0);
         self.vertices.push(v1);
@@ -890,7 +882,7 @@ impl ComputeRenderer {
         v.y += ctx.drawing_y_offset as i32;
         // let side = Vertex {x: 127, y: 127};
 
-        let Some((min_x, min_y, max_x, max_y)) =
+        let Some(_) =
             self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
         else {
             return;
@@ -974,7 +966,7 @@ impl ComputeRenderer {
 */
         
 
-        let v0 = (Vert {
+        let v0 = Vert {
             position: [v.x as i16, v.y as i16],
             uv,
             color: [color.r, color.g, color.b],
@@ -985,8 +977,8 @@ impl ComputeRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
-        let v1 = (Vert {
+        };
+        let v1 = Vert {
             position: [v.x as i16, v.y as i16 + side.y as i16],
             uv: [uv[0], (uv[1] + tex_size_y)],
             color: [color.r, color.g, color.b],
@@ -996,8 +988,8 @@ impl ComputeRenderer {
             texpage_base,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
-        let v2 = (Vert {
+        };
+        let v2 = Vert {
             position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
             uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
             color: [color.r, color.g, color.b],
@@ -1008,9 +1000,9 @@ impl ComputeRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
+        };
 
-        let v3 = (Vert {
+        let v3 = Vert {
             position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
             uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
             color: [color.r, color.g, color.b],
@@ -1021,8 +1013,8 @@ impl ComputeRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
-        let v4 = (Vert {
+        };
+        let v4 = Vert {
             position: [v.x as i16 + side.x as i16, v.y as i16],
             uv: [(uv[0] + tex_size_x), uv[1]],
             color: [color.r, color.g, color.b],
@@ -1033,8 +1025,8 @@ impl ComputeRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
-        let v5 = (Vert {
+        };
+        let v5 = Vert {
             position: [v.x as i16, v.y as i16],
             uv: [uv[0], uv[1]],
             color: [color.r, color.g, color.b],
@@ -1045,7 +1037,7 @@ impl ComputeRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-        });
+        };
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
         self.ensure_vertex_room(3);
@@ -1122,7 +1114,7 @@ impl ComputeRenderer {
             },
         );
 
-        let idx = self.queue.submit(vec![encoder.finish()]);
+        let _ = self.queue.submit(vec![encoder.finish()]);
     }
 
     pub fn sync_vram(&mut self) {
@@ -1161,7 +1153,7 @@ impl ComputeRenderer {
             },
         );
 
-        let idx = self.queue.submit(vec![encoder.finish()]);
+        let _ = self.queue.submit(vec![encoder.finish()]);
     }
 
     // pub fn wait_for_render_to_finish(&mut self) {
@@ -1174,6 +1166,7 @@ impl ComputeRenderer {
     //     self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
     // }
 
+    #[allow(dead_code)]
     pub fn print_profiling_results(&self) {
         print!("\x1B[2J\x1B[1;1H"); // Clear terminal and put cursor to first row first column
         println!("Welcome to wgpu_profiler demo!");
@@ -1190,9 +1183,9 @@ impl ComputeRenderer {
                     let ys: Vec<f64> = xs
                         .iter()
                         .map(|x| {
-                            ((x.time.clone().unwrap().end - x.time.clone().unwrap().start)
+                            (x.time.clone().unwrap().end - x.time.clone().unwrap().start)
                                 * 1000.0
-                                * 1000.0)
+                                * 1000.0
                         })
                         .collect(); // TODO: think smth better
                     let min = ys.iter().min_by(|a, b| a.total_cmp(b)).unwrap();
@@ -1237,7 +1230,7 @@ impl ComputeRenderer {
         let Some(res) = res else {
             return;
         };
-        let mut results: Vec<_> = res.iter().filter(|x| x.time.is_some()).collect();
+        let results: Vec<_> = res.iter().filter(|x| x.time.is_some()).collect();
         if results.len() > 0 {
             self.results = Some(res);
         }
@@ -1276,7 +1269,7 @@ impl ComputeRenderer {
         if full_ram {
             (1024, 512, 0, 0, ctx.display_depth)
         } else {
-            let (sx, sy, width, height, interlaced) = (
+            let (sx, sy, width, height, _interlaced) = (
                 ctx.display_vram_x_start as usize,
                 ctx.display_vram_y_start as usize,
                 ctx.hres.into_pixels(),
@@ -1424,7 +1417,7 @@ impl ComputeRenderer {
         // }
 
         // self.profiler.resolve_queries(&mut clear_encoder);
-        let idx = self.queue.submit(vec![fill_encoder.finish()]);
+        let _ = self.queue.submit(vec![fill_encoder.finish()]);
 
         // TODO: do we need sync here?
         // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
@@ -1440,7 +1433,7 @@ impl ComputeRenderer {
         unaligned_data: &Vec<u32>,
     ) {
         let unaligned_data: &[u16] = bytemuck::cast_slice(&unaligned_data[0..]);
-        let mut cols = size.0 as usize;
+        let cols = size.0 as usize;
         let rows = size.1 as usize;
         self.flush();
         let mut encoder = self
@@ -1454,11 +1447,11 @@ impl ComputeRenderer {
         //     println!("data len: {}, cols: {}, rows: {}", unaligned_data.len(), cols, rows);
         //     panic!("oops");
         // }
-        let mut num_extents = (cols / 64) + 1;
+        let num_extents = (cols / 64) + 1;
         let mut data: Vec<u32> = vec![];
         {
             // let ppadding = cols & 1;
-            let padding_words = (64 - (cols) % 64);
+            let padding_words = 64 - (cols) % 64;
             let zeroes = vec![0; padding_words];
             // let mut i: usize = 0;
             for i in 0..rows {
@@ -1506,7 +1499,7 @@ impl ComputeRenderer {
             },
         );
 
-        let idx = self.queue.submit(vec![encoder.finish()]);
+        let _ = self.queue.submit(vec![encoder.finish()]);
 
         // TODO: do we need sync here?
         // self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None }).expect("ok");
@@ -1606,8 +1599,8 @@ impl ComputeRenderer {
 }
 
 fn ensure_vertex_order(v0: Vert, v1: Vert, v2: Vert) -> (Vert, Vert, Vert) {
-    let cross_product_z = ((v2.position[0] - v0.position[0]) * (v1.position[1] - v0.position[1])
-        - (v1.position[0] - v0.position[0]) * (v2.position[1] - v0.position[1]));
+    let cross_product_z = (v2.position[0] - v0.position[0]) * (v1.position[1] - v0.position[1])
+        - (v1.position[0] - v0.position[0]) * (v2.position[1] - v0.position[1]);
 
     // let cross_product_z =
     //     (v1.position[0] as i32 - v0.position[0] as i32) * (v2.position[1] as i32 - v0.position[1] as i32) - (v1.position[1] as i32 - v0.position[1] as i32) * (v2.position[0] as i32 - v0.position[0] as i32);

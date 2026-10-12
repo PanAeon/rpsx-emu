@@ -89,6 +89,7 @@ impl Gte {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_overclock(&mut self, overclock: bool) {
         self.overclock = overclock;
     }

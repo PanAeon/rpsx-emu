@@ -20,13 +20,17 @@ gilrs = "*"
 cpal = { version = "*", features = ["pipewire"]}
 crossbeam = "*"
 num_enum = "*"
-arrayvec = "*"
+arrayvec = { version = "*", features = ["serde"]}
 core_affinity = "0.8"
 cranelift = "*"
 cranelift-module = "*"
 cranelift-jit = "*"
 cranelift-native = "*"
 target-lexicon = "*"
+serde = { version = "*", features = ["derive"] }
+serde_bytes = "*"
+serde_arrays = "*"
+flexbuffers = "*"
 
 [dependencies.image]
 version = "0.25"

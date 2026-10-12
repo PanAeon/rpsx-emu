@@ -1,9 +1,7 @@
 
-use std::thread::JoinHandle;
 
-use crossbeam::channel::{Receiver, Sender};
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{ Serialize};
 
 use crate::{bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, dynarec::Dynarec, gpu::Gpu, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
 
@@ -110,11 +108,10 @@ pub struct System {
 }
 
 const REGION_MASK: [u32; 8] = [
-    // KUSEG: 2048MB,
-    0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KSEG0: 512MB,
-    0x7fffffff, // KSEG1: 512MB,
-    0x1fffffff, // KSEG2: 1024MB,
-    0xffffffff, 0xffffffff,
+    0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KUSEG: 2048MB,
+    0x7fffffff, // KSEG0: 512MB,
+    0x1fffffff, // KSEG1: 512MB,
+    0xffffffff, 0xffffffff,// KSEG2: 1024MB,
 ];
 pub fn mask_region(addr: u32) -> u32 {
     let index = (addr >> 29) as usize;
@@ -175,10 +172,10 @@ impl System {
         if let Some(offset) = map::MDEC.contains(address) {
             return self.mdec.load(offset);
         }
-        if let Some(offset) = map::EXPANSION_1.contains(address) {
+        if let Some(_) = map::EXPANSION_1.contains(address) {
             return T::from_u32(!0);
         }
-        if let Some(offset) = map::EXPANSION_2.contains(address) {
+        if let Some(_) = map::EXPANSION_2.contains(address) {
             return T::from_u32(!0);
         }
         if let Some(offset) = map::MEM_CTRL.contains(address) {
@@ -265,11 +262,11 @@ impl System {
         if let Some(offset) = map::IRQ_CONTROL.contains(address) {
             return self.irqctl.store(offset, value);
         }
-        if let Some(offset) = map::EXPANSION_1.contains(address) {
+        if let Some(_) = map::EXPANSION_1.contains(address) {
             println!("Unhandled write to expansion_1 register {:x}", addr);
             return ;
         }
-        if let Some(offset) = map::EXPANSION_2.contains(address) {
+        if let Some(_) = map::EXPANSION_2.contains(address) {
             println!("Unhandled write to expansion_2 register {:x}", addr);
             return;
         }

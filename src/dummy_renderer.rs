@@ -13,9 +13,11 @@ use crate::{
 
 
 
+#[allow(dead_code)]
 pub struct DummyRenderer {
 }
 
+#[allow(dead_code)]
 impl DummyRenderer {
     pub fn create(
     ) -> (
@@ -23,7 +25,7 @@ impl DummyRenderer {
         Receiver<RendererResponse>,
         JoinHandle<()>,
     ) {
-        let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(1024);
+        let (_to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(1024);
         let (to_renderer_sender, receiver) = crossbeam::channel::bounded(1024);
 
 

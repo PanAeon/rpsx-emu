@@ -79,6 +79,7 @@ impl Instruction {
     }
 }
 
+#[allow(dead_code)]
 pub enum Exception {
     ExternalInterrupt,
     LoadAddressError(u32),
@@ -127,6 +128,7 @@ pub struct Cpu {
     gte: Gte,
 }
 
+#[allow(dead_code)]
 impl Cpu {
     pub fn new(system: System) -> Cpu {
         let mut regs = [0xdeadbeef; 32];

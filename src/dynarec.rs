@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 
 use serde::ser::SerializeStruct;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use crate::block_cache::{self, CacheEntry};
+use serde::{Deserialize, Serialize, Serializer};
+use crate::block_cache::{self};
 use crate::system::{
     load_byte, load_half_word, load_word, mask_region, store_byte, store_half_word, store_word,
 };
@@ -15,7 +15,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 // use cranelift::codegen::
 // use cranelift_codegen::ir::types::*;
-use cranelift::codegen::ir::{BlockCall, FuncRef, MachMemFlags, ValueListPool};
+use cranelift::codegen::ir::{BlockCall, FuncRef, MachMemFlags};
 use cranelift::codegen::verifier::verify_function;
 
 use target_lexicon::PointerWidth;
@@ -67,11 +67,6 @@ pub struct Constants {
     cache: u64,
 }
 
-#[derive(Default)]
-pub struct Debug {
-    hit_breakpoint: bool,
-    i: u32,
-}
 
 // #[derive(serde::Serialize)]
 pub struct Dynarec {
@@ -87,6 +82,7 @@ pub struct Dynarec {
     ctx: codegen::Context,
 
     /// The data description, which is to data objects what `ctx` is to functions.
+    #[allow(dead_code)]
     data_description: DataDescription,
 
     /// The module, with the jit backend, which manages the JIT'd

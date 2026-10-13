@@ -24,13 +24,13 @@ impl Interpreter {
             delay_slot: false,
         }
     }
-    pub fn run_next_instruction(&mut self, regs: &mut Registers, system: &mut System, gte: &mut Gte) {
-        if regs.pc & 3 != 0 {
-            return self.exception(Exception::LoadAddressError(regs.pc), regs);
+    pub fn run_next_instruction(&mut self, system: &mut System) {
+        if system.cpu.regs.pc & 3 != 0 {
+            return self.exception(Exception::LoadAddressError(system.cpu.regs.pc), &mut system.cpu.regs);
         }
-        let instr = Instruction(self.load::<u32>(regs.pc, system));
-        self.current_pc = regs.pc;
-        regs.pc = self.next_pc;
+        let instr = Instruction(self.load::<u32>(system.cpu.regs.pc, system));
+        self.current_pc = system.cpu.regs.pc;
+        system.cpu.regs.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
         // let (reg, val) = self.load;
         // self.set_reg(reg, val, regs);
@@ -39,31 +39,30 @@ impl Interpreter {
         self.branch = false;
 
         let is_gte = (instr.0 & 0xFE00_0000) == 0x4A00_0000;
-        let pending_interrupt = self.check_for_pending_interrupts(regs, system);
+        let pending_interrupt = self.check_for_pending_interrupts(system);
 
         if !pending_interrupt || (is_gte && !self.delay_slot) {
-            self.decode_and_execute(instr, regs, system, gte);
+            self.decode_and_execute(instr, system);
         }
 
         if pending_interrupt {
-            self.exception(Exception::ExternalInterrupt, regs);
+            self.exception(Exception::ExternalInterrupt, &mut system.cpu.regs);
         }
         // self.regs = self.out_regs;
     }
 
     pub fn check_for_pending_interrupts(
         &mut self,
-        regs: &mut Registers,
         system: &mut System,
     ) -> bool {
         if system.irqctl.pending() {
-            regs.cause |= 1 << 10;
+            system.cpu.regs.cause |= 1 << 10;
         } else {
-            regs.cause &= !(1 << 10);
+            system.cpu.regs.cause &= !(1 << 10);
         }
         // mask bits 8..15
-        let pending = (regs.cause & regs.sr) & 0x700; //0xFF00;
-        pending != 0 && (regs.sr & 1 != 0)
+        let pending = (system.cpu.regs.cause & system.cpu.regs.sr) & 0x700; //0xFF00;
+        pending != 0 && (system.cpu.regs.sr & 1 != 0)
     }
 
     pub fn check_for_tty_output(&self, regs: &mut Registers) {
@@ -82,10 +81,9 @@ impl Interpreter {
         &mut self,
         address: u32,
         value: T,
-        regs: &mut Registers,
         system: &mut System,
     ) {
-        if regs.sr & 0x10000 != 0 {
+        if system.cpu.regs.sr & 0x10000 != 0 {
             // println!("Ignoring store while cache is isolated");
             return;
         }
@@ -103,83 +101,81 @@ impl Interpreter {
     pub fn decode_and_execute(
         &mut self,
         instr: Instruction,
-        regs: &mut Registers,
         system: &mut System,
-        gte: &mut Gte,
     ) {
         match instr.opcode() {
             0x00 => match instr.secondary_opcode() {
-                0x00 => self.op_sll(instr, regs),
-                0x02 => self.op_srl(instr, regs),
-                0x03 => self.op_sra(instr, regs),
-                0x04 => self.op_sllv(instr, regs),
-                0x06 => self.op_srlv(instr, regs),
-                0x07 => self.op_srav(instr, regs),
-                0x08 => self.op_jr(instr, regs),
-                0x09 => self.op_jalr(instr, regs),
-                0x0C => self.op_syscall(instr, regs),
-                0x0D => self.op_break(instr, regs),
-                0x10 => self.op_mfhi(instr, regs),
-                0x11 => self.op_mthi(instr, regs),
-                0x12 => self.op_mflo(instr, regs),
-                0x13 => self.op_mtlo(instr, regs),
-                0x18 => self.op_mult(instr, regs),
-                0x19 => self.op_multu(instr, regs),
-                0x1A => self.op_div(instr, regs),
-                0x1B => self.op_divu(instr, regs),
-                0x20 => self.op_add(instr, regs),
-                0x21 => self.op_addu(instr, regs),
-                0x22 => self.op_sub(instr, regs),
-                0x23 => self.op_subu(instr, regs),
-                0x24 => self.op_and(instr, regs),
-                0x25 => self.op_or(instr, regs),
-                0x26 => self.op_xor(instr, regs),
-                0x27 => self.op_nor(instr, regs),
-                0x2A => self.op_slt(instr, regs),
-                0x2B => self.op_sltu(instr, regs),
-                _ => self.op_illegal(instr, regs), // TODO: bltz/bgez undocumented dupes
+                0x00 => self.op_sll(instr, &mut system.cpu.regs),
+                0x02 => self.op_srl(instr, &mut system.cpu.regs),
+                0x03 => self.op_sra(instr, &mut system.cpu.regs),
+                0x04 => self.op_sllv(instr, &mut system.cpu.regs),
+                0x06 => self.op_srlv(instr, &mut system.cpu.regs),
+                0x07 => self.op_srav(instr, &mut system.cpu.regs),
+                0x08 => self.op_jr(instr, &mut system.cpu.regs),
+                0x09 => self.op_jalr(instr, &mut system.cpu.regs),
+                0x0C => self.op_syscall(instr, &mut system.cpu.regs),
+                0x0D => self.op_break(instr, &mut system.cpu.regs),
+                0x10 => self.op_mfhi(instr, &mut system.cpu.regs),
+                0x11 => self.op_mthi(instr, &mut system.cpu.regs),
+                0x12 => self.op_mflo(instr, &mut system.cpu.regs),
+                0x13 => self.op_mtlo(instr, &mut system.cpu.regs),
+                0x18 => self.op_mult(instr, &mut system.cpu.regs),
+                0x19 => self.op_multu(instr, &mut system.cpu.regs),
+                0x1A => self.op_div(instr, &mut system.cpu.regs),
+                0x1B => self.op_divu(instr, &mut system.cpu.regs),
+                0x20 => self.op_add(instr, &mut system.cpu.regs),
+                0x21 => self.op_addu(instr, &mut system.cpu.regs),
+                0x22 => self.op_sub(instr, &mut system.cpu.regs),
+                0x23 => self.op_subu(instr, &mut system.cpu.regs),
+                0x24 => self.op_and(instr, &mut system.cpu.regs),
+                0x25 => self.op_or(instr, &mut system.cpu.regs),
+                0x26 => self.op_xor(instr, &mut system.cpu.regs),
+                0x27 => self.op_nor(instr, &mut system.cpu.regs),
+                0x2A => self.op_slt(instr, &mut system.cpu.regs),
+                0x2B => self.op_sltu(instr, &mut system.cpu.regs),
+                _ => self.op_illegal(instr, &mut system.cpu.regs), // TODO: bltz/bgez undocumented dupes
             },
-            0x01 => self.op_bxx(instr, regs),
-            0x02 => self.op_j(instr, regs),
-            0x03 => self.op_jal(instr, regs),
-            0x04 => self.op_beq(instr, regs),
-            0x05 => self.op_bne(instr, regs),
-            0x06 => self.op_blez(instr, regs),
-            0x07 => self.op_bgtz(instr, regs),
-            0x08 => self.op_addi(instr, regs),
-            0x09 => self.op_addiu(instr, regs),
-            0x0A => self.op_slti(instr, regs),
-            0x0B => self.op_sltiu(instr, regs),
-            0x0C => self.op_andi(instr, regs),
-            0x0D => self.op_ori(instr, regs),
-            0x0E => self.op_xori(instr, regs),
-            0x0F => self.op_lui(instr, regs),
-            0x10 => self.op_cop0(instr, regs),
-            0x11 => self.op_cop1(instr, regs),
-            0x12 => self.op_cop2(instr, regs, gte),
-            0x13 => self.op_cop3(instr, regs),
-            0x20 => self.op_lb(instr, regs, system),
-            0x21 => self.op_lh(instr, regs, system),
-            0x22 => self.op_lwl(instr, regs, system),
-            0x23 => self.op_lw(instr, regs, system),
-            0x24 => self.op_lbu(instr, regs, system),
-            0x25 => self.op_lhu(instr, regs, system),
-            0x26 => self.op_lwr(instr, regs, system),
-            0x28 => self.op_sb(instr, regs, system),
-            0x29 => self.op_sh(instr, regs, system),
-            0x2a => self.op_swl(instr, regs, system),
-            0x2b => self.op_sw(instr, regs, system),
-            0x2e => self.op_swr(instr, regs, system),
-            0x30 => self.op_lwc0(instr, regs),
-            0x31 => self.op_lwc1(instr, regs),
-            0x32 => self.op_lwc2(instr, regs, system, gte),
-            0x33 => self.op_lwc3(instr, regs),
-            0x38 => self.op_swc0(instr, regs),
-            0x39 => self.op_swc1(instr, regs),
-            0x3A => self.op_swc2(instr, regs, system, gte),
-            0x3B => self.op_swc3(instr, regs),
+            0x01 => self.op_bxx(instr, &mut system.cpu.regs),
+            0x02 => self.op_j(instr, &mut system.cpu.regs),
+            0x03 => self.op_jal(instr, &mut system.cpu.regs),
+            0x04 => self.op_beq(instr, &mut system.cpu.regs),
+            0x05 => self.op_bne(instr, &mut system.cpu.regs),
+            0x06 => self.op_blez(instr, &mut system.cpu.regs),
+            0x07 => self.op_bgtz(instr, &mut system.cpu.regs),
+            0x08 => self.op_addi(instr, &mut system.cpu.regs),
+            0x09 => self.op_addiu(instr, &mut system.cpu.regs),
+            0x0A => self.op_slti(instr, &mut system.cpu.regs),
+            0x0B => self.op_sltiu(instr, &mut system.cpu.regs),
+            0x0C => self.op_andi(instr, &mut system.cpu.regs),
+            0x0D => self.op_ori(instr, &mut system.cpu.regs),
+            0x0E => self.op_xori(instr, &mut system.cpu.regs),
+            0x0F => self.op_lui(instr, &mut system.cpu.regs),
+            0x10 => self.op_cop0(instr, &mut system.cpu.regs),
+            0x11 => self.op_cop1(instr, &mut system.cpu.regs),
+            0x12 => self.op_cop2(instr, system),
+            0x13 => self.op_cop3(instr, &mut system.cpu.regs),
+            0x20 => self.op_lb(instr, system),
+            0x21 => self.op_lh(instr, system),
+            0x22 => self.op_lwl(instr, system),
+            0x23 => self.op_lw(instr, system),
+            0x24 => self.op_lbu(instr, system),
+            0x25 => self.op_lhu(instr, system),
+            0x26 => self.op_lwr(instr, system),
+            0x28 => self.op_sb(instr, system),
+            0x29 => self.op_sh(instr, system),
+            0x2a => self.op_swl(instr, system),
+            0x2b => self.op_sw(instr, system),
+            0x2e => self.op_swr(instr, system),
+            0x30 => self.op_lwc0(instr, &mut system.cpu.regs),
+            0x31 => self.op_lwc1(instr, &mut system.cpu.regs),
+            0x32 => self.op_lwc2(instr, system),
+            0x33 => self.op_lwc3(instr, &mut system.cpu.regs),
+            0x38 => self.op_swc0(instr, &mut system.cpu.regs),
+            0x39 => self.op_swc1(instr, &mut system.cpu.regs),
+            0x3A => self.op_swc2(instr, system ),
+            0x3B => self.op_swc3(instr, &mut system.cpu.regs),
             // _ => panic!("Unhandled instruction: {:08X}, opcode: {:02X}", instr, instr.opcode())
-            _ => self.op_illegal(instr, regs),
+            _ => self.op_illegal(instr, &mut system.cpu.regs),
         }
     }
 
@@ -246,68 +242,68 @@ impl Interpreter {
         self.delayed_load(regs);
         self.set_reg(instr.rd(), v, regs);
     }
-    pub fn op_sw(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
-        let v = self.reg(instr.rt(), regs);
+    pub fn op_sw(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
+        let v = self.reg(instr.rt(), &mut system.cpu.regs);
         if addr % 4 != 0 {
-            self.delayed_load(regs);
-            return self.exception(Exception::StoreAddressError(addr), regs);
+            self.delayed_load(&mut system.cpu.regs);
+            return self.exception(Exception::StoreAddressError(addr), &mut system.cpu.regs);
         }
-        self.delayed_load(regs);
-        self.store::<u32>(addr, v, regs, system);
+        self.delayed_load(&mut system.cpu.regs);
+        self.store::<u32>(addr, v,  system);
     }
-    pub fn op_sh(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
-        let v = self.reg(instr.rt(), regs);
-        self.delayed_load(regs);
+    pub fn op_sh(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
+        let v = self.reg(instr.rt(), &mut system.cpu.regs);
+        self.delayed_load(&mut system.cpu.regs);
         if addr % 2 != 0 {
-            return self.exception(Exception::StoreAddressError(addr), regs);
+            return self.exception(Exception::StoreAddressError(addr), &mut system.cpu.regs);
         }
-        self.store::<u16>(addr, v as u16, regs, system);
+        self.store::<u16>(addr, v as u16,  system);
     }
-    pub fn op_sb(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
-        let v = self.reg(instr.rt(), regs);
-        self.delayed_load(regs);
-        self.store::<u8>(addr, v as u8, regs, system);
+    pub fn op_sb(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
+        let v = self.reg(instr.rt(), &mut system.cpu.regs);
+        self.delayed_load(&mut system.cpu.regs);
+        self.store::<u8>(addr, v as u8, system);
     }
-    pub fn op_lh(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
+    pub fn op_lh(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
         if addr % 2 != 0 {
-            self.delayed_load(regs);
-            return self.exception(Exception::LoadAddressError(addr), regs);
+            self.delayed_load(&mut system.cpu.regs);
+            return self.exception(Exception::LoadAddressError(addr), &mut system.cpu.regs);
         }
         let v = (self.load::<u16>(addr, system) as u16) as i16;
-        self.delayed_load_chain(instr.rt(), v as u32, regs);
+        self.delayed_load_chain(instr.rt(), v as u32, &mut system.cpu.regs);
     }
-    pub fn op_lhu(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
+    pub fn op_lhu(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
         if addr % 2 != 0 {
-            self.delayed_load(regs);
-            return self.exception(Exception::LoadAddressError(addr), regs);
+            self.delayed_load(&mut system.cpu.regs);
+            return self.exception(Exception::LoadAddressError(addr), &mut system.cpu.regs);
         }
         let v = self.load::<u16>(addr, system);
-        self.delayed_load_chain(instr.rt(), v as u32, regs);
+        self.delayed_load_chain(instr.rt(), v as u32, &mut system.cpu.regs);
     }
-    pub fn op_lw(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
+    pub fn op_lw(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
         if addr % 4 != 0 {
-            self.delayed_load(regs);
-            return self.exception(Exception::LoadAddressError(addr), regs);
+            self.delayed_load(&mut system.cpu.regs);
+            return self.exception(Exception::LoadAddressError(addr), &mut system.cpu.regs);
         }
         let v = self.load::<u32>(addr, system);
-        self.delayed_load_chain(instr.rt(), v, regs);
+        self.delayed_load_chain(instr.rt(), v, &mut system.cpu.regs);
     }
     // load word left
-    pub fn op_lwl(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
-        let mut cur_v = regs.regs[instr.rt() as usize];
+    pub fn op_lwl(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
+        let mut cur_v =  system.cpu.regs.regs[instr.rt() as usize];
         let aligned_addr = addr & !3;
         let aligned_word = self.load::<u32>(aligned_addr, system);
 
         // This instruction bypasses the load delay restriction: this instruction will merge the new
         // contents with the value currently being loaded if need be.
-        let (pending_reg, pending_value) = regs.load;
+        let (pending_reg, pending_value) = system.cpu.regs.load;
         if pending_reg == instr.rt() {
             cur_v = pending_value;
         }
@@ -319,11 +315,11 @@ impl Interpreter {
             3 => (cur_v & 0x00000000) | (aligned_word),
             _ => unreachable!(),
         };
-        self.delayed_load_chain(instr.rt(), v, regs);
+        self.delayed_load_chain(instr.rt(), v, &mut system.cpu.regs);
     }
-    pub fn op_swl(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
-        let v = self.reg(instr.rt(), regs);
+    pub fn op_swl(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
+        let v = self.reg(instr.rt(), &mut system.cpu.regs);
         let aligned_addr = addr & !3;
         let cur_mem = self.load::<u32>(aligned_addr, system);
 
@@ -334,16 +330,16 @@ impl Interpreter {
             3 => (cur_mem & 0x00000000) | (v),
             _ => unreachable!(),
         };
-        self.delayed_load(regs);
-        self.store::<u32>(aligned_addr, mem, regs, system);
+        self.delayed_load(&mut system.cpu.regs);
+        self.store::<u32>(aligned_addr, mem,  system);
     }
-    pub fn op_swr(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
+    pub fn op_swr(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
         // if self.sr & 0x10000 != 0 {
         //     println!("Cache is isolated, ignoring read to {:08x}", addr);
         //     return;
         // }
-        let v = self.reg(instr.rt(), regs);
+        let v = self.reg(instr.rt(), &mut system.cpu.regs);
         let aligned_addr = addr & !3;
         let cur_mem = self.load::<u32>(aligned_addr, system);
 
@@ -354,18 +350,18 @@ impl Interpreter {
             3 => (cur_mem & 0x00ffffff) | (v << 24),
             _ => unreachable!(),
         };
-        self.delayed_load(regs);
-        self.store::<u32>(aligned_addr, mem, regs, system);
+        self.delayed_load(&mut system.cpu.regs);
+        self.store::<u32>(aligned_addr, mem,  system);
     }
-    pub fn op_lwr(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
-        let mut cur_v = regs.regs[instr.rt() as usize];
+    pub fn op_lwr(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
+        let mut cur_v = system.cpu.regs.regs[instr.rt() as usize];
         let aligned_addr = addr & !3;
         let aligned_word = self.load::<u32>(aligned_addr, system);
 
-        let (pending_reg, pending_value) = regs.load;
-        if pending_reg == instr.rt() {
-            cur_v = pending_value;
+        let (pending_reg, pending_value) = &mut system.cpu.regs.load;
+        if *pending_reg == instr.rt() {
+            cur_v = *pending_value;
         }
 
         let v = match addr & 3 {
@@ -375,19 +371,19 @@ impl Interpreter {
             3 => (cur_v & 0xffffff00) | (aligned_word >> 24),
             _ => unreachable!(),
         };
-        self.delayed_load_chain(instr.rt(), v, regs);
+        self.delayed_load_chain(instr.rt(), v, &mut system.cpu.regs);
     }
-    pub fn op_lb(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
+    pub fn op_lb(&mut self, instr: Instruction,  system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
         let v = (self.load::<u8>(addr, system) as u8) as i8;
         // self.load = (instr.rt(), v as u32);
         // self.delayed_load(regs);
-        self.delayed_load_chain(instr.rt(), v as u32, regs);
+        self.delayed_load_chain(instr.rt(), v as u32, &mut system.cpu.regs);
     }
-    pub fn op_lbu(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System) {
-        let addr = self.reg(instr.rs(), regs).wrapping_add(instr.imm_se());
+    pub fn op_lbu(&mut self, instr: Instruction, system: &mut System) {
+        let addr = self.reg(instr.rs(), &mut system.cpu.regs).wrapping_add(instr.imm_se());
         let v = self.load::<u8>(addr, system);
-        self.delayed_load_chain(instr.rt(), v as u32, regs);
+        self.delayed_load_chain(instr.rt(), v as u32, &mut system.cpu.regs);
     }
     pub fn op_sll(&mut self, instr: Instruction, regs: &mut Registers) {
         let i = instr.imm5();
@@ -580,23 +576,31 @@ impl Interpreter {
     pub fn op_bne(&mut self, instr: Instruction, regs: &mut Registers) {
         if self.reg(instr.rs(), regs) != self.reg(instr.rt(), regs) {
             self.branch(instr.imm_se(), regs);
+        } else {
+            self.delayed_load(regs);
         }
     }
     pub fn op_bgtz(&mut self, instr: Instruction, regs: &mut Registers) {
         let v = self.reg(instr.rs(), regs) as i32;
         if v > 0 {
             self.branch(instr.imm_se(), regs);
+        } else {
+            self.delayed_load(regs);
         }
     }
     pub fn op_blez(&mut self, instr: Instruction, regs: &mut Registers) {
         let v = self.reg(instr.rs(), regs) as i32;
         if v <= 0 {
             self.branch(instr.imm_se(), regs);
+        } else {
+            self.delayed_load(regs);
         }
     }
     pub fn op_beq(&mut self, instr: Instruction, regs: &mut Registers) {
         if self.reg(instr.rs(), regs) == self.reg(instr.rt(), regs) {
             self.branch(instr.imm_se(), regs);
+        } else {
+          self.delayed_load(regs);
         }
     }
     // BGEZ, BLTZ, BGEZAL, BLTZAL
@@ -697,20 +701,20 @@ impl Interpreter {
         self.exception(Exception::CoprocessorError, regs);
     }
     // load word to coprocessor 2
-    pub fn op_lwc2(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System, gte: &mut Gte) {
+    pub fn op_lwc2(&mut self, instr: Instruction,  system: &mut System) {
         let i = instr.imm_se();
         let cop_r = instr.rt() as u8;
         let s = instr.rs();
 
-        let addr = self.reg(s, regs).wrapping_add(i);
+        let addr = self.reg(s, &mut system.cpu.regs).wrapping_add(i);
 
-        self.delayed_load(regs);
+        self.delayed_load(&mut system.cpu.regs);
 
         if addr.is_multiple_of(4) {
             let v = self.load::<u32>(addr, system);
-            gte.set_data(cop_r, v);
+            system.cpu.gte.set_data(cop_r, v);
         } else {
-            self.exception(Exception::LoadAddressError(addr), regs);
+            self.exception(Exception::LoadAddressError(addr), &mut system.cpu.regs);
         }
     }
     pub fn op_lwc3(&mut self, _: Instruction, regs: &mut Registers) {
@@ -727,19 +731,19 @@ impl Interpreter {
         self.exception(Exception::CoprocessorError, regs);
     }
     // store word from coprocessor 2
-    pub fn op_swc2(&mut self, instr: Instruction, regs: &mut Registers, system: &mut System, gte: &mut Gte) {
+    pub fn op_swc2(&mut self, instr: Instruction, system: &mut System) {
         let i = instr.imm_se();
         let cop_r = instr.rt() as u8;
         let s = instr.rs();
 
-        let addr = self.reg(s, regs).wrapping_add(i);
-        let v = gte.data(cop_r);
-        self.delayed_load(regs);
+        let addr = self.reg(s, &mut system.cpu.regs).wrapping_add(i);
+        let v = system.cpu.gte.data(cop_r);
+        self.delayed_load(&mut system.cpu.regs);
 
         if addr.is_multiple_of(4) {
-            self.store::<u32>(addr, v, regs, system);
+            self.store::<u32>(addr, v,  system);
         } else {
-            self.exception(Exception::LoadAddressError(addr), regs);
+            self.exception(Exception::LoadAddressError(addr), &mut system.cpu.regs);
         }
     }
     pub fn op_swc3(&mut self, _: Instruction, regs: &mut Registers) {
@@ -763,19 +767,19 @@ impl Interpreter {
         self.delayed_load(regs);
         self.exception(Exception::CoprocessorError, regs);
     }
-    pub fn op_cop2(&mut self, instr: Instruction, regs: &mut Registers, gte: &mut Gte) {
+    pub fn op_cop2(&mut self, instr: Instruction, system: &mut System) {
         let cop_opcode = instr.cop_opcode();
 
         if cop_opcode & 0x10 != 0 {
             // GTE command
-            self.delayed_load(regs);
-            gte.command(instr.0);
+            self.delayed_load(&mut system.cpu.regs);
+            system.cpu.gte.command(instr.0);
         } else {
             match cop_opcode {
-                0b00000 => self.op_mfc2(instr, regs, gte),
-                0b00010 => self.op_cfc2(instr, regs, gte),
-                0b00100 => self.op_mtc2(instr, regs, gte),
-                0b00110 => self.op_ctc2(instr, regs, gte),
+                0b00000 => self.op_mfc2(instr, system),
+                0b00010 => self.op_cfc2(instr, system),
+                0b00100 => self.op_mtc2(instr, system),
+                0b00110 => self.op_ctc2(instr, system),
                 _ => panic!(
                     "Unhandled cop2 instruction:  {:02X} ({:b})",
                     instr.cop_opcode(),
@@ -788,7 +792,9 @@ impl Interpreter {
         self.exception(Exception::CoprocessorError, regs);
     }
     // move from coprocessor 2 data register
-    pub fn op_mfc2(&mut self, instr: Instruction, regs: &mut Registers, gte: &mut Gte) {
+    pub fn op_mfc2(&mut self, instr: Instruction, system: &mut System) {
+        let regs = &mut system.cpu.regs;
+        let gte = &mut system.cpu.gte;
         let cpu_r = instr.rt();
         let cop_r = instr.rd() as u8;
 
@@ -797,12 +803,16 @@ impl Interpreter {
         self.delayed_load_chain(cpu_r, v, regs);
     }
     // move from coprocessor 2 control register
-    pub fn op_cfc2(&mut self, instr: Instruction, regs: &mut Registers, gte: &mut Gte) {
+    pub fn op_cfc2(&mut self, instr: Instruction, system: &mut System) {
+        let regs = &mut system.cpu.regs;
+        let gte = &mut system.cpu.gte;
         let v = gte.control(instr.rd() as u8);
         self.delayed_load_chain(instr.rt(), v, regs);
     }
     // move to coprocessor 2 data register
-    pub fn op_mtc2(&mut self, instr: Instruction, regs: &mut Registers, gte: &mut Gte) {
+    pub fn op_mtc2(&mut self, instr: Instruction, system: &mut System) {
+        let regs = &mut system.cpu.regs;
+        let gte = &mut system.cpu.gte;
         let cpu_r = instr.rt();
         let cop_r = instr.rd();
 
@@ -813,7 +823,9 @@ impl Interpreter {
         gte.set_data(cop_r as u8, v);
     }
     // move to coprocessor 2 control register
-    pub fn op_ctc2(&mut self, instr: Instruction, regs: &mut Registers, gte: &mut Gte) {
+    pub fn op_ctc2(&mut self, instr: Instruction, system: &mut System) {
+        let regs = &mut system.cpu.regs;
+        let gte = &mut system.cpu.gte;
         let cpu_r = instr.rt();
         let cop_r = instr.rd();
 
@@ -863,7 +875,7 @@ impl Interpreter {
         if instr.0 & 0x3f != 0b010000 {
             panic!("Invalid cop0 instruction {:x}", instr.0);
         }
-        // self.delayed_load(regs);
+        self.delayed_load(regs);
         let mode = regs.sr & 0x3f;
         regs.sr &= !0xf;
         regs.sr |= mode >> 2;

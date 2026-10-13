@@ -160,7 +160,7 @@ impl Cpu {
         self.current_pc = self.pc;
         self.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
-        // let (reg, val) = self.load;
+        // let (reg, val) = self.load; // aha!
         // self.set_reg(reg, val);
         // self.load = (0, 0);
         self.delay_slot = self.branch;
@@ -409,11 +409,10 @@ impl Cpu {
     pub fn op_sw(&mut self, instr: Instruction) {
         let addr = self.reg(instr.rs()).wrapping_add(instr.imm_se());
         let v = self.reg(instr.rt());
+        self.delayed_load();
         if addr % 4 != 0 {
-            self.delayed_load();
             return self.exception(Exception::StoreAddressError(addr));
         }
-        self.delayed_load();
         self.store::<u32>(addr, v);
     }
     pub fn op_sh(&mut self, instr: Instruction) {
@@ -743,23 +742,31 @@ impl Cpu {
     pub fn op_bne(&mut self, instr: Instruction) {
         if self.reg(instr.rs()) != self.reg(instr.rt()) {
             self.branch(instr.imm_se());
+        } else {
+           self.delayed_load();
         }
     }
     pub fn op_bgtz(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()) as i32;
         if v > 0 {
             self.branch(instr.imm_se());
+        } else {
+           self.delayed_load();
         }
     }
     pub fn op_blez(&mut self, instr: Instruction) {
         let v = self.reg(instr.rs()) as i32;
         if v <= 0 {
             self.branch(instr.imm_se());
+        } else {
+           self.delayed_load();
         }
     }
     pub fn op_beq(&mut self, instr: Instruction) {
         if self.reg(instr.rs()) == self.reg(instr.rt()) {
             self.branch(instr.imm_se());
+        } else {
+           self.delayed_load();
         }
     }
     // BGEZ, BLTZ, BGEZAL, BLTZAL
@@ -1028,7 +1035,7 @@ impl Cpu {
         if instr.0 & 0x3f != 0b010000 {
             panic!("Invalid cop0 instruction {:x}", instr.0);
         }
-        // self.delayed_load();
+        self.delayed_load();
         let mode = self.sr & 0x3f;
         self.sr &= !0xf;
         self.sr |= mode >> 2;

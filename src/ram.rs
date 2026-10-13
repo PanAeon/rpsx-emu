@@ -33,7 +33,7 @@ impl Ram {
         let bytes = value.as_u32().to_le_bytes();
 
         ram.data[addr..addr+width].copy_from_slice(&bytes[..width]);
-        system.block_cache.lock().unwrap().invalidate_ram(address);
+        system.block_cache.lock().unwrap().invalidate_ram(addr as u32);
     }
 }
 

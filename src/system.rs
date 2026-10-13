@@ -409,6 +409,9 @@ impl System {
                         Port::MdecOut => {
                             self.mdec.load(0)
                         },
+                        Port::Spu => {
+                            self.spu.ram_read::<4>()
+                        }
                         _ => panic!("Unhandled DMA source port {}", port as u8)
                     };
                     Ram::store::<u32>(self, cur_addr, src_word);

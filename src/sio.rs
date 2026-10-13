@@ -50,6 +50,7 @@ impl Sio {
                 T::from_u32(self.status.0)
             }
             0xA => T::from_u32(self.control.0 as u32),
+            0xE => T::from_u32(self.boudrate_reload as u32), // baud rate
             _ => panic!("Unhandled sio load{:?} offset: {:08x}", T::width(), offset),
         }
     }

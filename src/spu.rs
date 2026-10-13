@@ -966,6 +966,20 @@ impl Spu {
 
         self.current_address += WIDTH;
     }
+
+    pub fn ram_read<const WIDTH: usize>(&mut self) -> u32 {
+        let address = self.current_address & 0x7FFFF;
+        let mut buffer = [0;4];
+        buffer[..WIDTH].copy_from_slice(&self.memory[address..address+WIDTH]);
+        // let bytes = value.to_le_bytes();
+        // for i in 0..WIDTH {
+        //     self.memory[address + i] = bytes[i];
+        // }
+
+        self.current_address += WIDTH;
+        u32::from_le_bytes(buffer)
+
+    }
 }
 
 #[derive(Serialize, Deserialize)]

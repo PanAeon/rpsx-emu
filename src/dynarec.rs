@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
+use crossbeam::channel::Sender;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
-use crate::block_cache::{self};
+use crate::block_cache::{self, BlockCache};
 use crate::system::{
     load_byte, load_half_word, load_word, mask_region, store_byte, store_half_word, store_word,
 };
@@ -48,9 +51,9 @@ pub struct Registers {
                           //delay_slot:bool, // set if the current instruction executes in the delay slot
 }
 pub struct Constants {
-    regs: *mut u8,
+    regs: u64,
     system: u64,
-    gte: *mut Gte,
+    gte: u64,
     store_word: FuncId,
     load_word: FuncId,
     store_half_word: FuncId,
@@ -72,6 +75,220 @@ pub struct Constants {
 pub struct Dynarec {
     pub regs: Pin<Box<Registers>>,
     pub gte: Pin<Box<Gte>>,
+    pub sender: Option<Sender<CompileMsg>>,
+    pub handle: Option<JoinHandle<()>>
+
+
+}
+
+impl Dynarec {
+    pub fn new() -> Dynarec {
+        let mut regs = [0xdeadbeef; 32];
+        regs[0] = 0;
+        let regs = Registers {
+            regs,
+            hi: 0xdeadbeef,
+            lo: 0xdeadbeef,
+            pc: 0xBFC00000,
+            // next_pc: 0xBFC00004,
+            // current_pc: 0xBFC00000,
+            sr: 0,
+            cause: 0,
+            epc: 0,
+            baddr: 0,
+            // out_regs: regs,
+            load: (0, 0),
+            // branch: false,
+            // delay_slot: false,
+        };
+
+
+
+        let regs = Box::pin(regs);
+        let gte = Box::pin(Gte::new());
+        Dynarec {
+            regs,
+            gte,
+            sender: None,
+            handle: None
+        }
+    }
+
+    pub fn create_compiler(system: &mut System) {
+        let (sender, handle) = create_compiler_thread(system);
+        system.cpu.sender = Some(sender);
+        system.cpu.handle = Some(handle);
+    }
+
+
+    pub fn pc(&self) -> u32 {
+        self.regs.pc
+    }
+
+    pub fn run_block(system: &mut System, idx: u32) -> u64 {
+        // self.debug_print();
+        let bc = system.block_cache.lock().unwrap();
+        let block = bc.get_block(idx);
+        let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
+        drop(bc);
+        jit_fn() as u64
+    }
+
+    pub fn schedule_compile_block(system: &mut System, addr: u32, idx: Option<u32>) {
+        let mut buff = [Instruction(0); 256];
+        let xs = Self::parse_block(system, addr, &mut buff);
+        system.cpu.sender.as_mut().unwrap().send(CompileMsg { pc: addr, block: xs.to_vec(), idx }).expect("ok");
+    }  
+
+    pub fn check_for_pending_interrupts(system: &mut System) -> bool {
+        if system.irqctl.pending() {
+            system.cpu.regs.cause |= 1 << 10;
+        } else {
+            system.cpu.regs.cause &= !(1 << 10);
+        }
+        // mask bits 8..15
+        let pending = (system.cpu.regs.cause & system.cpu.regs.sr) & 0x700; //0xFF00;
+        pending != 0 && (system.cpu.regs.sr & 1 != 0)
+    }
+
+    pub fn external_interrupt(&mut self) {
+        self.exception(Exception::ExternalInterrupt, None);
+    }
+
+    pub fn exception(&mut self, cause: Exception, baddr: Option<u32>) {
+        let mode = self.regs.sr & 0x3f;
+        self.regs.sr &= !0x3f;
+        self.regs.sr |= (mode << 2) & 0x3f;
+
+        self.regs.cause &= !0x7c;
+        self.regs.cause |= (cause.code() as u32) << 2; // woot?
+
+        // if self.regs.delay_slot { // this what happend?
+        //     self.regs.epc = self.regs.current_pc.wrapping_sub(4);
+        //     self.regs.cause |= 1 << 31;
+        // } else {
+        self.regs.epc = self.regs.pc;
+        self.regs.cause &= !(1 << 31);
+        // }
+
+        // exception handler address depends on the BEV bit
+        let handler: u32 = if self.regs.sr & (1 << 22) != 0 {
+            0xbfc00180
+        } else {
+            0x80000080
+        };
+
+        if let Exception::LoadAddressError | Exception::StoreAddressError = cause {
+            self.regs.baddr = baddr.unwrap();
+        }
+
+        self.regs.pc = handler;
+    }
+
+    pub fn is_block_valid(system: &System, block_idx: u32) -> bool {
+        let bc = system.block_cache.lock().unwrap();
+        let block = bc.get_block(block_idx);
+        // for now check ram only
+        // let ram_idx = block.
+        let addr = mask_region(block.addr) as usize; // offset should be somewhere in ram, I hope
+        let current = &system.ram.data[addr..addr + block.mem.len()];
+        &block.mem == current
+    }
+
+    pub fn parse_block<'a, 'b>(
+        system: &'a mut System,
+        addr: u32,
+        buff: &'b mut [Instruction],
+    ) -> &'b [Instruction] {
+        let mut len = 255;
+        for i in 0..255 {
+            buff[i] = Instruction(system.load::<u32>(addr + i as u32 * 4));
+            if buff[i].is_unconditional_jump() {
+                buff[i + 1] = Instruction(system.load::<u32>(addr + (i + 1) as u32 * 4));
+                // what to do with syscall? break?
+                len = i + 2;
+                break;
+            }
+        }
+        if len == 255 && buff[254].is_conditional_jump() {
+            buff[255] = Instruction(system.load::<u32>(addr + (255) as u32 * 4));
+            len = 256;
+        }
+        &buff[0..len]
+    }
+
+    // pub fn create_data(&mut self) {
+    //     // self.module.declare_data(name, linkage, writable, tls)
+    //     // self.data_description.define(contents);
+    // }
+}
+
+impl Serialize for Dynarec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer {
+        let mut s = serializer.serialize_struct("Dynarec", 2)?;
+        s.serialize_field("regs", &*self.regs)?;
+        s.serialize_field("gte", &*self.gte)?;
+        // self.regs.serialize(serializer)
+        s.end()
+    }
+}
+
+struct CompileMsg {
+    pc: u32,
+    idx: Option<u32>,
+    block: Vec<Instruction>,
+}
+
+fn create_compiler_thread(
+    system: &mut System
+) -> (Sender<CompileMsg>, JoinHandle<()>) {
+    let (sender, receiver) = crossbeam::channel::bounded(32096);
+    let block_cache = system.block_cache.clone();
+    let regs_ptr: u64 = &mut *system.cpu.regs as *mut Registers as u64;
+    // let regs_ptr: u64 = unsafe { std::mem::transmute(system.cpu.regs.as_mut()) } as u64;
+    let system_ptr: u64 = &mut *system as *mut System as u64;
+    let gte_ptr: u64 = &mut *system.cpu.gte as *mut Gte as u64; 
+    let ram_ptr: u64 = system.ram.data.as_ptr() as *mut u8 as u64;
+    let bc = system.block_cache.lock().unwrap();
+    let cache_ptr: u64 = bc.ram.as_ptr() as *mut u8 as u64;
+    drop(bc);
+    let handle = std::thread::spawn(move || {
+        let mut compiler = Compiler::new(regs_ptr, system_ptr, gte_ptr, ram_ptr, cache_ptr);
+        let core_ids = core_affinity::get_core_ids().unwrap();
+        let res = core_affinity::set_for_current(core_ids[2]);
+        if res {
+            println!("compiler thread pinned to 2");
+        }
+        loop {
+            let msg = match receiver.recv() {
+                Ok(msg) => msg,
+                Err(_) => return,
+            };
+            let CompileMsg { pc, block, idx} = msg;
+
+            // check that block is not compiled already...
+            let bc = block_cache.lock().expect("ok");
+            if bc.get_entry(pc).is_some() {
+                continue;
+            }
+            drop(bc);
+            let block = compiler.compile_block(pc, block);
+            let mut bc = block_cache.lock().expect("ok");
+            // FIXME: hmm, need to check that block is still valid?
+            if let Some(idx) = idx {
+                bc.insert_block_at(idx, pc, block );
+            } else {
+                bc.insert_block(pc, block);
+            }
+        }
+    });
+
+    (sender, handle)
+}
+
+struct Compiler {
     /// The function builder context, which is reused across multiple
     /// FunctionBuilder instances.
     builder_context: FunctionBuilderContext,
@@ -90,12 +307,11 @@ pub struct Dynarec {
     module: JITModule,
 
     constants: Constants,
-
-
 }
 
-impl Dynarec {
-    pub fn new() -> Dynarec {
+impl Compiler {
+
+    pub fn new(regs_ptr: u64, system_ptr: u64, gte_ptr: u64, ram_ptr: u64, cache_ptr: u64) -> Compiler {
         let mut regs = [0xdeadbeef; 32];
         regs[0] = 0;
         let regs = Registers {
@@ -246,26 +462,27 @@ impl Dynarec {
             .declare_function("gte_set_control", Linkage::Import, &sig_external)
             .unwrap();
 
-        let mut regs = Box::pin(regs);
-        let regs_ptr = unsafe { std::mem::transmute(regs.as_mut()) };
-        let mut gte = Box::pin(Gte::new());
-        let gte_ptr: *mut Gte = &mut *gte;
+        // let mut regs = Box::pin(regs);
+        // let regs_ptr = unsafe { std::mem::transmute(regs.as_mut()) };
+        // let mut gte = Box::pin(Gte::new());
+        // let gte_ptr: *mut Gte = &mut *gte;
         // let system_ptr: *mut System = &mut *system;
         // let ram_ptr: *mut [u8] = &mut *system.ram.data;
         // let cache_ptr: *mut [CacheEntry] = &mut *system.block_cache.ram;
         // let system_ptr = unsafe { std::mem::transmute(&*system) };
-        Dynarec {
-            regs,
-            gte,
+        // let system_ptr: u64 = system as *const System as u64;
+        // let ram_ptr: u64 = system.ram.data.as_ptr() as u64;
+        // let cache_ptr: u64 = system.block_cache.lock().unwrap().ram.as_ptr() as u64;
+        Compiler {
             builder_context: FunctionBuilderContext::new(),
             ctx: module.make_context(),
             data_description: DataDescription::new(),
             module,
             constants: Constants {
                 regs: regs_ptr,
-                system: 0,
-                ram: 0,
-                cache: 0,
+                system: system_ptr,
+                ram: ram_ptr,
+                cache: cache_ptr,
                 gte: gte_ptr,
                 store_word,
                 store_half_word,
@@ -283,111 +500,26 @@ impl Dynarec {
         }
     }
 
-    pub fn set_ptrs(system: &mut System) {
-        let system_ptr: u64 = system as *const System as u64;
-        let ram_ptr: u64 = system.ram.data.as_ptr() as u64;
-        let cache_ptr: u64 = system.block_cache.ram.as_ptr() as u64;
 
-        system.cpu.constants.system = system_ptr;
-        system.cpu.constants.ram = ram_ptr;
-        system.cpu.constants.cache = cache_ptr;
-    }
+    
 
-    pub fn pc(&self) -> u32 {
-        self.regs.pc
-    }
-
-    pub fn run_block(system: &mut System, idx: u32) -> u64 {
-        // self.debug_print();
-        let block = system.block_cache.get_block(idx);
-        let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
-        jit_fn() as u64
-    }
-
-    pub fn check_for_pending_interrupts(system: &mut System) -> bool {
-        if system.irqctl.pending() {
-            system.cpu.regs.cause |= 1 << 10;
-        } else {
-            system.cpu.regs.cause &= !(1 << 10);
-        }
-        // mask bits 8..15
-        let pending = (system.cpu.regs.cause & system.cpu.regs.sr) & 0x700; //0xFF00;
-        pending != 0 && (system.cpu.regs.sr & 1 != 0)
-    }
-
-    pub fn external_interrupt(&mut self) {
-        self.exception(Exception::ExternalInterrupt, None);
-    }
-
-    pub fn exception(&mut self, cause: Exception, baddr: Option<u32>) {
-        let mode = self.regs.sr & 0x3f;
-        self.regs.sr &= !0x3f;
-        self.regs.sr |= (mode << 2) & 0x3f;
-
-        self.regs.cause &= !0x7c;
-        self.regs.cause |= (cause.code() as u32) << 2; // woot?
-
-        // if self.regs.delay_slot { // this what happend?
-        //     self.regs.epc = self.regs.current_pc.wrapping_sub(4);
-        //     self.regs.cause |= 1 << 31;
-        // } else {
-        self.regs.epc = self.regs.pc;
-        self.regs.cause &= !(1 << 31);
-        // }
-
-        // exception handler address depends on the BEV bit
-        let handler: u32 = if self.regs.sr & (1 << 22) != 0 {
-            0xbfc00180
-        } else {
-            0x80000080
-        };
-
-        if let Exception::LoadAddressError | Exception::StoreAddressError = cause {
-            self.regs.baddr = baddr.unwrap();
-        }
-
-        self.regs.pc = handler;
-    }
-
-    // pub fn debug_print(&mut self) {
-    //     if !self.debug.hit_breakpoint {
-    //         if self.regs.pc == 0xBFC02EA0 {
-    //             self.debug.hit_breakpoint = true;
-    //         }
-    //     }
-    //     if self.debug.hit_breakpoint {
-    //         if self.debug.i < 40 {
-    //             println!("CPU pc: 0x{:X}", self.regs.pc);
-    //             self.debug.i += 1;
-    //         } else {
-    //             println!("CPU pc: 0x{:X}", self.regs.pc);
-    //             panic!("done");
-    //         }
-    //     }
-    //     // println!("CPU pc: 0x{:X}", self.regs.pc);
-    //     // for (i, x) in self.regs.regs.iter().enumerate() {
-    //     //     println!("regs[{:02}]: 0x{:X}", i, x);
-    //     // }
-    //     // println!();
-    // }
-
-    pub fn compile_block(system: &mut System, addr: u32) -> block_cache::Block {
+    pub fn compile_block(&mut self, addr: u32,  xs: Vec<Instruction>) -> block_cache::Block {
         // woot?
         // if addr == 0x80000080 {
         //     panic!("at exception handler");
         // }
-        let mut buff = [Instruction(0); 256];
+        // let mut buff = [Instruction(0); 256];
         // I guess first parse the block
-        let xs = Self::parse_block(system, addr, &mut buff);
+        // let xs = Self::parse_block(system, addr, &mut buff);
 
-        system.cpu.ctx
+        self.ctx
             .func
             .signature
             .returns
             .push(AbiParam::new(types::I32));
 
         // Create the builder to build a function.
-        let mut builder = FunctionBuilder::new(&mut system.cpu.ctx.func, &mut system.cpu.builder_context);
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
 
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
@@ -405,9 +537,9 @@ impl Dynarec {
         let mut bldr = BlockBuilder {
             bldr: builder,
             vars: HashMap::new(),
-            module: &mut system.cpu.module,
+            module: &mut self.module,
             delayed_load: None,
-            constants: &system.cpu.constants,
+            constants: &self.constants,
             store_word: None,
             store_half_word: None,
             store_byte: None,
@@ -465,10 +597,10 @@ impl Dynarec {
         });
 
         let flags = settings::Flags::new(settings::builder());
-        match verify_function(&system.cpu.ctx.func, &flags) {
+        match verify_function(&self.ctx.func, &flags) {
             Ok(()) => {}
             Err(x) => {
-                println!("{}", system.cpu.ctx.func.display());
+                println!("{}", self.ctx.func.display());
                 panic!("{}", x);
             }
         };
@@ -477,9 +609,9 @@ impl Dynarec {
             println!("last command is not jump");
         }
         //
-        let id = system.cpu
+        let id = self
             .module
-            .declare_anonymous_function(&system.cpu.ctx.func.signature)
+            .declare_anonymous_function(&self.ctx.func.signature)
             // .declare_function(&name, Linkage::Export, &self.ctx.func.signature)
             .expect("ok");
 
@@ -488,18 +620,18 @@ impl Dynarec {
         // cannot finish relocations until all functions to be called are
         // defined. For this toy demo for now, we'll just finalize the
         // function below.
-        system.cpu.module.define_function(id, &mut system.cpu.ctx).expect("OK");
+        self.module.define_function(id, &mut self.ctx).expect("OK");
 
         // Now that compilation is finished, we can clear out the context state.
-        system.cpu.module.clear_context(&mut system.cpu.ctx);
+        self.module.clear_context(&mut self.ctx);
 
         // Finalize the functions which we just defined, which resolves any
         // outstanding relocations (patching in addresses, now that they're
         // available).
-        system.cpu.module.finalize_definitions().unwrap();
+        self.module.finalize_definitions().unwrap();
 
         // We can now retrieve a pointer to the machine code.
-        let code = system.cpu.module.get_finalized_function(id);
+        let code = self.module.get_finalized_function(id);
 
         // let mut mem = Vec::with_capacity(xs.len() * 4);
         // mem.extend_from_slice(&xs.iter().flat_map(|x| x.0.to_le_bytes()).collect());
@@ -513,53 +645,7 @@ impl Dynarec {
             addr
         }
     }
-    pub fn is_block_valid(system: &System, block_idx: u32) -> bool {
-        let block = system.block_cache.get_block(block_idx);
-        // for now check ram only
-        // let ram_idx = block.
-        let addr = mask_region(block.addr) as usize; // offset should be somewhere in ram, I hope
-        let current = &system.ram.data[addr..addr + block.mem.len()];
-        &block.mem == current
-    }
 
-    pub fn parse_block<'a, 'b>(
-        system: &'a mut System,
-        addr: u32,
-        buff: &'b mut [Instruction],
-    ) -> &'b [Instruction] {
-        let mut len = 255;
-        for i in 0..255 {
-            buff[i] = Instruction(system.load::<u32>(addr + i as u32 * 4));
-            if buff[i].is_unconditional_jump() {
-                buff[i + 1] = Instruction(system.load::<u32>(addr + (i + 1) as u32 * 4));
-                // what to do with syscall? break?
-                len = i + 2;
-                break;
-            }
-        }
-        if len == 255 && buff[254].is_conditional_jump() {
-            buff[255] = Instruction(system.load::<u32>(addr + (255) as u32 * 4));
-            len = 256;
-        }
-        &buff[0..len]
-    }
-
-    // pub fn create_data(&mut self) {
-    //     // self.module.declare_data(name, linkage, writable, tls)
-    //     // self.data_description.define(contents);
-    // }
-}
-
-impl Serialize for Dynarec {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer {
-        let mut s = serializer.serialize_struct("Dynarec", 2)?;
-        s.serialize_field("regs", &*self.regs)?;
-        s.serialize_field("gte", &*self.gte)?;
-        // self.regs.serialize(serializer)
-        s.end()
-    }
 }
 
 struct BlockBuilder<'a> {

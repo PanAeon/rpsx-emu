@@ -31,10 +31,10 @@ use vek::{Mat4, Vec2, Vec4};
 use crate::cdrom::CDRom;
 use crate::dynarec::Dynarec;
 use crate::gpu::DisplayDepth;
+use crate::save_state::load_state;
+use crate::save_state::save_state;
 use crate::sio::Sio;
 use crate::spu::Spu;
-use crate::save_state::save_state;
-use crate::save_state::load_state;
 use crate::system::System;
 
 mod audio;
@@ -57,14 +57,14 @@ mod spu;
 mod system;
 mod timers;
 
-mod cdxa;
-mod resources;
-mod dynarec;
 mod block_cache;
-mod dummy_renderer;
-mod interpreter;
-mod save_state;
 mod cd_cache;
+mod cdxa;
+mod dummy_renderer;
+mod dynarec;
+mod interpreter;
+mod resources;
+mod save_state;
 
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
@@ -219,7 +219,7 @@ pub struct State {
     display_depth: DisplayDepth,
     display_vram: bool,
     software_render: bool,
-    sideload_exe: Option<String>
+    sideload_exe: Option<String>,
 }
 
 impl State {
@@ -549,13 +549,25 @@ impl State {
         let gpu = gpu::Gpu::new(sender, receiver, handle);
         let block_cache = block_cache::BlockCache::new();
         let cpu = dynarec::Dynarec::new();
-        let system = system::System::new(cpu,
-            bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec, gpu, block_cache,
+        let system = system::System::new(
+            cpu,
+            bios,
+            ram,
+            scratchpad,
+            dma,
+            spu,
+            irqctl,
+            scheduler,
+            timers,
+            cdrom,
+            sio,
+            mdec,
+            gpu,
+            block_cache,
         );
         let mut system = Box::pin(system);
 
-        Dynarec::set_ptrs(&mut system);
-
+        Dynarec::create_compiler(&mut system);
 
         // interpreter
         // let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
@@ -584,14 +596,12 @@ impl State {
         // let interpreter = cpu::Cpu::new(system);
         let interpreter = interpreter::Interpreter::new();
 
-
-
-        // I trust you, linux scheduler
-        // let core_ids = core_affinity::get_core_ids().unwrap();
-        // let res = core_affinity::set_for_current(core_ids[0]);
-        // if res {
-        //     println!("main thread pinned to 0");
-        // }
+        // I trust you, linux scheduler, but..
+        let core_ids = core_affinity::get_core_ids().unwrap();
+        let res = core_affinity::set_for_current(core_ids[0]);
+        if res {
+            println!("main thread pinned to 0");
+        }
 
         let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
         // let file = File::create("output.pcm")?;
@@ -789,7 +799,9 @@ impl State {
         println!("exe size: {}", exe_size);
         self.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
-        self.system.block_cache.invalidate();
+        let mut bc = self.system.block_cache.lock().expect("Ok");
+        bc.invalidate();
+        drop(bc);
         //  let dest = self
         //     .cpu.system.ram.data
         //     .bytes()
@@ -814,8 +826,8 @@ impl State {
         let Some(filename) = &self.sideload_exe else {
             panic!("not filename specified");
         };
-        
-        
+
+
         // let filename = "/foo/psxtest_cpu.exe";
         // let filename = "/foo/psxtest_gte.exe";
         // let filename = "/foo/psxtest_gpu.exe";
@@ -881,7 +893,7 @@ impl State {
         }
         self.interpreter.pc = initial_pc;
         self.interpreter.next_pc = initial_pc + 4;
-        
+
     }*/
 
     fn update_vertex_buffer_if_needed(
@@ -1043,8 +1055,9 @@ impl State {
                         timers::Timers::exit_vsync(&mut self.system);
                         // let (w, h) = self.cpu.system.gpu_ctrl_receiver.recv().expect("ok");
                         // self.update_vertex_buffer_if_needed(w, h, false);
-                        if self.audio_sender.len() > 5*735 { // 2.5 * 735
-                           break;
+                        if self.audio_sender.len() > 5 * 735 {
+                            // 2.5 * 735
+                            break;
                         }
                     }
                     scheduler::Event::HBlankStart => {
@@ -1082,27 +1095,51 @@ impl State {
             }
             if self.system.cpu.regs.pc & 3 != 0 {
                 let baddr = self.system.cpu.regs.pc;
-                self.system.cpu.exception(crate::dynarec::Exception::LoadAddressError, Some(baddr));
+                self.system
+                    .cpu
+                    .exception(crate::dynarec::Exception::LoadAddressError, Some(baddr));
             }
             let pc = self.system.cpu.pc();
 
-            let block_idx = if let Some(entry) = self.system.block_cache.get_entry(pc) {
+            let block_cache = self.system.block_cache.clone();
+            let mut bc = block_cache.lock().expect("ok");
+
+            let block_idx = if let Some(entry) = bc.get_entry(pc) {
+                drop(bc);
                 if entry.dirty {
                     if !Dynarec::is_block_valid(&mut self.system, entry.block_idx) {
                         // recompile block...
-                        let block = Dynarec::compile_block(&mut self.system, pc);
-                        self.system.block_cache.insert_block_at(entry.block_idx, pc, block);
+                        Dynarec::schedule_compile_block(&mut self.system, pc, Some(entry.block_idx));
+                        // let block = Dynarec::compile_block(&mut self.system, pc);
+                        // self.system
+                        //     .block_cache
+                        //     .insert_block_at(entry.block_idx, pc, block);
+                        None
                     } else {
-                        self.system.block_cache.get_entry_mut(pc).dirty = false;                   }
+                        bc = block_cache.lock().expect("ok");
+                        bc.get_entry_mut(pc).dirty = false;
+                        drop(bc);
+                        Some(entry.block_idx)
+                    }
+                } else {
+                        Some(entry.block_idx)
                 }
-                entry.block_idx
             } else {
-                let block = Dynarec::compile_block(&mut self.system, pc);
-                let idx = self.system.block_cache.insert_block(pc, block);
-                idx
+                drop(bc);
+                Dynarec::schedule_compile_block(&mut self.system, pc, None);
+                None
+                // let block = Dynarec::compile_block(&mut self.system, pc);
+                // let idx = self.system.block_cache.insert_block(pc, block);
+                // idx
                 // compile new block...
             };
-            let num_cycles = Dynarec::run_block(&mut self.system, block_idx);
+            let num_cycles = if let Some(block_idx) = block_idx {
+                Dynarec::run_block(&mut self.system, block_idx)
+            } else {
+                // run interpreter
+                self.interpreter.next_pc = pc + 4;
+                self.interpreter.run_block(&mut self.system)
+            };
             // then run it...
 
             // let interpreter_pc = self.interpreter.pc;
@@ -1361,12 +1398,10 @@ impl State {
             (KeyCode::KeyV, false) => self.display_vram = !self.display_vram,
             (KeyCode::Digit1, false) => {
                 save_state(1, &mut self.system);
-
-            },
+            }
             (KeyCode::Enter, false) => {
                 load_state(1, &mut self.system);
-
-            },
+            }
             // (KeyCode::ArrowRight, true) => self.game_state.camera_pos.0 += 33.0,
             // (KeyCode::ArrowLeft, true) => if self.game_state.camera_pos.0 >= 33.0 {self.game_state.camera_pos.0 -= 33.0 },
             // (KeyCode::ArrowUp, true) => if self.game_state.camera_pos.1 >= 33.0  {self.game_state.camera_pos.1 -= 33.0},
@@ -1509,9 +1544,11 @@ impl State {
         self.system.sio.gamepad1.set_buttons(prev_buttons);
     }
 }
-const REGISTER_NAMES : [&str;32] = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
-  "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
-  "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"];
+const REGISTER_NAMES: [&str; 32] = [
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
+    "ra",
+];
 
 // fn check_mem(cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) -> bool {
 //     cpu.system.ram.data[..] == interpreter.system.ram.data[..]
@@ -1524,25 +1561,40 @@ fn check_dynarec(pc: u32, interpreter_pc: u32, cpu: &dynarec::Dynarec, interpret
     // }
     for i in 0..32 {
         if interpreter.regs[i] != cpu.regs.regs[i] {
-            println!("different reg[{}] ({}), interpreter: {:X}, dynarec: {:X}", i, REGISTER_NAMES[i], interpreter.regs[i], cpu.regs.regs[i]);
+            println!(
+                "different reg[{}] ({}), interpreter: {:X}, dynarec: {:X}",
+                i, REGISTER_NAMES[i], interpreter.regs[i], cpu.regs.regs[i]
+            );
             is_ok = false;
         }
     }
     if interpreter.pc != cpu.regs.pc {
-            is_ok = false;
-            println!("different return pc addresses");
+        is_ok = false;
+        println!("different return pc addresses");
     }
     if interpreter.hi != cpu.regs.hi {
-            is_ok = false;
-            println!("different hi reg, interpreter: {:X}, dynarec: {:X}", interpreter.hi, cpu.regs.hi);
+        is_ok = false;
+        println!(
+            "different hi reg, interpreter: {:X}, dynarec: {:X}",
+            interpreter.hi, cpu.regs.hi
+        );
     }
     if interpreter.lo != cpu.regs.lo {
-            is_ok = false;
-            println!("different lo reg, interpreter: {:X}, dynarec: {:X}", interpreter.lo, cpu.regs.lo);
+        is_ok = false;
+        println!(
+            "different lo reg, interpreter: {:X}, dynarec: {:X}",
+            interpreter.lo, cpu.regs.lo
+        );
     }
     if !is_ok {
-        println!("at block start pc: 0x{:X}, interpreter_pc: {:X}", pc, interpreter_pc);
-        println!("at block end pc: 0x{:X}, interpreter_pc: {:X}", cpu.regs.pc, interpreter.pc);
+        println!(
+            "at block start pc: 0x{:X}, interpreter_pc: {:X}",
+            pc, interpreter_pc
+        );
+        println!(
+            "at block end pc: 0x{:X}, interpreter_pc: {:X}",
+            cpu.regs.pc, interpreter.pc
+        );
         panic!("---");
     }
 }

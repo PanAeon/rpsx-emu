@@ -1,6 +1,8 @@
 
 
 
+use std::sync::{Arc, Mutex};
+
 use serde::{ Serialize};
 
 use crate::{bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, dynarec::Dynarec, gpu::Gpu, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
@@ -104,7 +106,7 @@ pub struct System {
     pub mdec: Mdec,
     pub gpu: Gpu,
     #[serde(skip)]
-    pub block_cache: BlockCache,
+    pub block_cache: Arc<Mutex<BlockCache>>,
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -122,6 +124,7 @@ impl System {
     pub fn new(cpu: Dynarec, bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, spu: Spu, irqctl: InterruptController,
         scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu, block_cache: BlockCache) -> System {
     
+        let block_cache = Arc::new(Mutex::new(block_cache));
         System { cpu, bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
         gpu, block_cache}
     }

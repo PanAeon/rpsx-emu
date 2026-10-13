@@ -12,6 +12,7 @@ pub struct Interpreter {
 
     branch: bool,     // set by the current instruction if the branch occurred
     delay_slot: bool, // set if the current instruction executes in the delay slot
+    interrupt: bool,
 }
 
 #[allow(dead_code)]
@@ -22,8 +23,55 @@ impl Interpreter {
             current_pc: 0xBFC00000,
             branch: false,
             delay_slot: false,
+            interrupt: false,
         }
     }
+   pub fn run_block(&mut self, system: &mut System) -> u64 {
+        // self.next_pc = regs.pc.wrapping_add(4);
+        self.branch = false;
+        self.delay_slot = false;
+        self.interrupt = false;
+        let mut num_instr = 0;
+        while !self.branch && !self.interrupt {
+            self.run_next_instruction_no_interrupts( system);
+            // self.check_for_tty_output(&mut system.cpu.regs);
+            num_instr += 1;
+        }
+        if !self.interrupt {
+           self.run_next_instruction_no_interrupts(system);
+           // self.check_for_tty_output(&mut system.cpu.regs);
+           num_instr += 1;
+        }
+        num_instr
+    }
+
+    pub fn run_next_instruction_no_interrupts(&mut self, system: &mut System) {
+        if system.cpu.regs.pc & 3 != 0 {
+            return self.exception(Exception::LoadAddressError(system.cpu.regs.pc), &mut system.cpu.regs);
+        }
+        let instr = Instruction(self.load::<u32>(system.cpu.regs.pc, system));
+        self.current_pc = system.cpu.regs.pc;
+        system.cpu.regs.pc = self.next_pc;
+        self.next_pc = self.next_pc.wrapping_add(4);
+        // let (reg, val) = self.load;
+        // self.set_reg(reg, val, regs);
+        // self.load = (0, 0);
+        self.delay_slot = self.branch;
+        self.branch = false;
+
+        // let is_gte = (instr.0 & 0xFE00_0000) == 0x4A00_0000;
+        // let pending_interrupt = self.check_for_pending_interrupts(system);
+
+        // if !pending_interrupt || (is_gte && !self.delay_slot) {
+            self.decode_and_execute(instr, system);
+        // }
+
+        // if pending_interrupt {
+        //     self.exception(Exception::ExternalInterrupt, &mut system.cpu.regs);
+        // }
+        // self.regs = self.out_regs;
+    }
+
     pub fn run_next_instruction(&mut self, system: &mut System) {
         if system.cpu.regs.pc & 3 != 0 {
             return self.exception(Exception::LoadAddressError(system.cpu.regs.pc), &mut system.cpu.regs);
@@ -681,6 +729,7 @@ impl Interpreter {
 
         regs.pc = handler;
         self.next_pc = handler.wrapping_add(4);
+        self.interrupt = true;
     }
 
     pub fn op_syscall(&mut self, _: Instruction, regs: &mut Registers) {

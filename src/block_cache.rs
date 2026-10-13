@@ -21,6 +21,8 @@ pub struct Block {
     pub mem: Vec<u8>
 }
 
+unsafe impl Send for Block {}
+
 // we got RAM 2mb and bios 512kb.
 pub struct BlockCache {
     bios: Box<[CacheEntry]>,

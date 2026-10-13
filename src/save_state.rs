@@ -47,7 +47,7 @@ pub fn load_state(idx: u32, system: &mut System) {
     system.ram.data.copy_from_slice(&ram);
     system.cpu.regs.set(cpu.regs);
     system.cpu.gte.set(cpu.gte);
-    system.block_cache.invalidate();
+    system.block_cache.lock().expect("ok").invalidate();
     system.scratchpad = scratchpad;
     system.dma = dma;
     system.spu = spu;

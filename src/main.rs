@@ -65,7 +65,8 @@ mod dynarec;
 mod interpreter;
 mod resources;
 mod save_state;
-
+mod fastmem_proto;
+mod simple_memory_provider;
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
 //     let mut i = 0;
@@ -80,7 +81,9 @@ fn main() {
     // for x in FIVE_BIT_TO_8BIT {
     //     println!("{},", (x as f32) / 255.0 )
     // }
-    run().unwrap();
+    // run().unwrap();
+    fastmem_proto::run();
+    println!("ok");
 }
 
 const fn mat4_const_from_rows(m: [[f32; 4]; 4]) -> Mat4<f32> {

@@ -32,6 +32,10 @@ serde_bytes = "*"
 serde_arrays = "*"
 flexbuffers = "*"
 lru = "*"
+libc = "*"
+userfaultfd = "*"
+nix = {version = "*", features = ["ioctl", "mman", "feature", "poll"]}
+memmap2 = "*"
 
 [dependencies.image]
 version = "0.25"

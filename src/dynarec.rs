@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 
 use crate::block_cache::{self, BlockCache};
 use crate::system::{
-    load_byte, load_half_word, load_word, mask_region, store_byte, store_half_word, store_word,
+    load_byte, load_half_word, load_word, load_word_fast, mask_region, store_byte, store_half_word, store_word,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
 use crossbeam::channel::Sender;
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use cranelift::codegen::{ir::BlockArg, isa::CallConv};
 use cranelift::prelude::*;
-use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 // use cranelift::codegen::
 // use cranelift_codegen::ir::types::*;
@@ -56,6 +56,7 @@ pub struct Constants {
     gte: u64,
     store_word: FuncId,
     load_word: FuncId,
+    load_word_fast: FuncId,
     store_half_word: FuncId,
     store_byte: FuncId,
     load_half_word: FuncId,
@@ -352,10 +353,14 @@ impl Compiler {
             .unwrap();
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
+        let provider = Box::new(ArenaMemoryProvider::new_with_size(64*1024*1024).expect("ok"));
+        builder.memory_provider(provider);
+
         builder.symbol("store_word", store_word as *const u8);
         builder.symbol("store_half_word", store_half_word as *const u8);
         builder.symbol("store_byte", store_byte as *const u8);
         builder.symbol("load_word", load_word as *const u8);
+        builder.symbol("load_word_fast", load_word_fast as *const u8);
         builder.symbol("load_half_word", load_half_word as *const u8);
         builder.symbol("load_byte", load_byte as *const u8);
         builder.symbol("print_", print_ as *const u8);
@@ -402,6 +407,15 @@ impl Compiler {
         sig_external.call_conv = module.target_config().default_call_conv;
         let load_word = module
             .declare_function("load_word", Linkage::Import, &sig_external)
+            .unwrap();
+
+        let mut sig_external = module.make_signature();
+        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.returns.push(AbiParam::new(types::I32));
+        sig_external.call_conv = module.target_config().default_call_conv;
+        let load_word_fast = module
+            .declare_function("load_word_fast", Linkage::Import, &sig_external)
             .unwrap();
 
         let mut sig_external = module.make_signature();
@@ -499,6 +513,7 @@ impl Compiler {
                 store_half_word,
                 store_byte,
                 load_word,
+                load_word_fast,
                 load_half_word,
                 load_byte,
                 print_,
@@ -514,10 +529,10 @@ impl Compiler {
     }
 
     pub fn init(&mut self) {
-        let slow_load_word = self.compile_slowmem32_load();
-        let fast_load_word = self.compile_fastmem32_load();
-        self.constants.fast_load_word = fast_load_word;
-        self.constants.slow_load_word = slow_load_word;
+        // let slow_load_word = self.compile_slowmem32_load();
+        // let fast_load_word = self.compile_fastmem32_load();
+        // self.constants.fast_load_word = fast_load_word;
+        // self.constants.slow_load_word = slow_load_word;
     }
 
     pub fn compile_fastmem32_load(&mut self) -> FuncId {
@@ -744,6 +759,7 @@ impl Compiler {
             store_half_word: None,
             store_byte: None,
             load_word: None,
+            load_word_fast: None,
             load_half_word: None,
             load_byte: None,
             print_: None,
@@ -873,6 +889,7 @@ struct BlockBuilder<'a> {
     gte_set_control: Option<FuncRef>,
     fast_load_word: Option<FuncRef>,
     slow_load_word: Option<FuncRef>,
+    load_word_fast: Option<FuncRef>,
     // entry_block: Block,
     // start_block: Block,
 }
@@ -3015,7 +3032,9 @@ impl<'a> BlockBuilder<'a> {
                 // let fast_load_word = self.get_load_word();
                 // let res = self.bldr.ins().call(fast_load_word, &[system, address]);
                 // self.bldr.inst_results(res)[0]
-                let fast_load_word = self.get_fast_load_word();
+                // let fast_load_word = self.get_fast_load_word();
+                 let fast_load_word = self.get_load_word_fast();
+
                 let res = self.bldr.ins().call(fast_load_word, &[system, address]);
                 self.bldr.inst_results(res)[0]
             },
@@ -3699,6 +3718,19 @@ impl<'a> BlockBuilder<'a> {
                     .module
                     .declare_func_in_func(self.constants.load_word, &mut self.bldr.func);
                 self.load_word = Some(f);
+                f
+            }
+        }
+    }
+
+    pub fn get_load_word_fast(&mut self) -> FuncRef {
+        match self.load_word_fast {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.load_word_fast, &mut self.bldr.func);
+                self.load_word_fast = Some(f);
                 f
             }
         }

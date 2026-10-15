@@ -1,7 +1,7 @@
 
 
 
-use std::sync::{Arc, Mutex};
+use std::{ sync::{Arc, Mutex}};
 
 use serde::{ Serialize};
 
@@ -484,9 +484,27 @@ pub extern "C" fn load_word(system_ptr: *mut System, addr: u32) -> u32 {
     let system = unsafe { system_ptr.as_mut().expect("ok") };
     // let masked_address = mask_region(addr);
     // if let Some(_) = map::RAM.contains(addr) {
+    //         println!("system ram load !!!! where it should not be");
+    // }
+    // println!("load word slow..., system address: 0x{:X}", system_ptr as u64);
+    System::load(system, addr)
+    
+
+}
+
+pub extern "C" fn load_word_fast(system_ptr: *mut System, addr: u32) -> u32 {
+    // let system = unsafe { system_ptr.as_mut().expect("ok") };
+    // println!("load word fast! {}", system.irqctl.status.0);
+    let ptr = (addr + 0x10000) as *const u32;
+    unsafe {
+        *ptr
+    }
+    // let system = unsafe { system_ptr.as_mut().expect("ok") };
+    // let masked_address = mask_region(addr);
+    // if let Some(_) = map::RAM.contains(addr) {
     //         println!("system ram load");
     // }
-    System::load(system, addr)
+    // System::load(system, addr)
 }
 
 

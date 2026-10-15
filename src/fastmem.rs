@@ -17,12 +17,16 @@ use nix::poll::{PollFd, PollFlags, poll};
 use libc::truncate;
 use target_lexicon::PointerWidth;
 
+use crate::system::{load_word, load_word_fast};
+
 pub static mut FASTMEM_LOAD32_ADDR: u64 = 0;
 pub static mut SLOWMEM_LOAD32_ADDR: u64 = 0;
 
 #[allow(static_mut_refs)]
 pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut std::ffi::c_void) {
     unsafe {
+        SLOWMEM_LOAD32_ADDR = load_word as *const u8 as u64;
+        FASTMEM_LOAD32_ADDR = load_word_fast as *const u8 as u64;
         let si = (&mut *si) as &mut libc::siginfo_t;
         println!("caught segfault at address {:?}", si.si_addr());
 
@@ -31,11 +35,13 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         let mut rsp = uctx.uc_mcontext.gregs[libc::REG_RSP as usize];
         let rdi = uctx.uc_mcontext.gregs[libc::REG_RDI as usize];
         let rbp = uctx.uc_mcontext.gregs[libc::REG_RBP as usize];
+        let rsi = uctx.uc_mcontext.gregs[libc::REG_RSI as usize];
 
         println!("faulting RIP: 0x{:X}, RSP: 0x{:X}", rip, rsp);
-        println!("faulting RDI: 0x{:X}", rdi);
+        println!("faulting RDI: 0x{:X}, RSI: 0x{:X}", rdi, rsi);
 
-        if (rip as u64) >= FASTMEM_LOAD32_ADDR && (rip as u64) < FASTMEM_LOAD32_ADDR + 4096 {
+
+        if (rip as u64) >= FASTMEM_LOAD32_ADDR && (rip as u64) < FASTMEM_LOAD32_ADDR + 1024 {
             println!("caught fastmem fault")
         } else {
             println!("caught some other shitty fault");
@@ -54,11 +60,12 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
             std::process::exit(1);
         }
 
+        uctx.uc_mcontext.gregs[libc::REG_RSI as usize] -= 0x10_000;
         // restore caller stack
         // movq %rbp, %rsp
         //
-        rsp = rbp;
-        uctx.uc_mcontext.gregs[libc::REG_RSP as usize] = rbp;
+        // rsp = rbp;
+        // uctx.uc_mcontext.gregs[libc::REG_RSP as usize] = rbp;
 
         let stack = (rsp) as *const u64;
         let stack = std::slice::from_raw_parts_mut(stack as *mut u64, 5 * 8);
@@ -66,30 +73,34 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
             println!("stack [{}]: 0x{:X}", i, stack[i]);
         }
         // popq rbp
-        uctx.uc_mcontext.gregs[libc::REG_RBP as usize] = stack[0] as i64;
+        // uctx.uc_mcontext.gregs[libc::REG_RBP as usize] = stack[0] as i64;
         // retq
-        uctx.uc_mcontext.gregs[libc::REG_RSP as usize] += 8;
+        uctx.uc_mcontext.gregs[libc::REG_RSP as usize] += 4;
 
         // ok
-        let instr_addr = stack[1] - 5; // callq
+        let instr_addr = stack[0] - 12; // moveabsq, callq
         println!("return addr:   0x{:X}", instr_addr);
 
         // now unprotect the instruction...
         unprotect_instr(instr_addr).expect("ok");
         // modify the instruction
         let instr_ptr = instr_addr as *mut u8;
-        let instr_slice = std::slice::from_raw_parts_mut(instr_ptr as *mut u8, 5);
+        let instr_slice = std::slice::from_raw_parts_mut(instr_ptr as *mut u8, 10);
         println!("instr old: {:?}", instr_slice);
         // let offset = (instr_addr as i64).wrapping_sub(SLOWMEM_LOAD_ADDR as i64);
-        let offset = (SLOWMEM_LOAD32_ADDR as i64).wrapping_sub((instr_addr + 5) as i64);
-        let bytes = (offset as u32).to_le_bytes();
-        instr_slice[1] = bytes[0];
-        instr_slice[2] = bytes[1];
-        instr_slice[3] = bytes[2];
-        instr_slice[4] = bytes[3];
+        // let offset = (SLOWMEM_LOAD32_ADDR as i64).wrapping_sub((instr_addr + 5) as i64);
+        let bytes = (SLOWMEM_LOAD32_ADDR).to_le_bytes();
+        instr_slice[2] = bytes[0];
+        instr_slice[3] = bytes[1];
+        instr_slice[4] = bytes[2];
+        instr_slice[5] = bytes[3];
+        instr_slice[6] = bytes[4];
+        instr_slice[7] = bytes[5];
+        instr_slice[8] = bytes[6];
+        instr_slice[9] = bytes[7];
         println!("instr new: {:?}", instr_slice);
         // jump to instr
-        uctx.uc_mcontext.gregs[libc::REG_RIP as usize] = instr_addr as i64;
+        uctx.uc_mcontext.gregs[libc::REG_RIP as usize] = (instr_addr - 10) as i64;
         // fix stack (ok, it was fixed implicitly) code after callq gets executed twice..
         // wait woot?
         // uctx.uc_mcontext.gregs[libc::REG_RSP as usize] = rsp;
@@ -257,6 +268,8 @@ pub fn create_memory_mappings() -> (&'static mut [u8], &'static mut [u8]) {
     //
     let biosfd = create_memfd().expect("ok");
     truncate_mem(biosfd, 512 * KB as i64).expect("ok");
+    // let kuseg_bios = create_fixed_anon_map(0xDF_C10_000 as *mut std::ffi::c_void, 2 * MB, biosfd)
+    //     .expect("mem to be allocated");
     let kuseg_bios = create_fixed_anon_map(0x1F_C10_000 as *mut std::ffi::c_void, 2 * MB, biosfd)
         .expect("mem to be allocated");
     let kseg0_bios = create_fixed_anon_map(0x9F_C10_000 as *mut std::ffi::c_void, 2 * MB, biosfd)
@@ -268,7 +281,10 @@ pub fn create_memory_mappings() -> (&'static mut [u8], &'static mut [u8]) {
     let bios_slice = unsafe { std::slice::from_raw_parts_mut(kuseg_bios as *mut u8, 512 * KB) };
 
     // reserve psx address space
-    reserve_address_space(0x810_000,0x1FC10_000 - 0x810_000).expect("ok"); // TODO: actually reserve address space..
+    // reserve_address_space(0x810_000,0x1FC10_000 - 0x810_000).expect("ok"); // TODO: actually reserve address space..
+    // reserve_address_space(0x80_010_000,0x9F_C10_000 - 0x80_010_000).expect("ok"); // TODO: actually reserve address space..
+    // reserve_address_space(0xA0_010_000,0xBF_C10_000 - 0xA0_010_000).expect("ok"); // TODO: actually reserve address space..
+    // reserve_address_space(0xC0_000_000, 1 * GB).expect("ok"); // TODO: actually reserve address space..
 
     (slice, bios_slice )
 }
@@ -308,6 +324,6 @@ pub fn create_memory_mappings() -> (&'static mut [u8], &'static mut [u8]) {
 //     let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
 //     jit_fn() as u64
 // }
-const MB: usize = 1024 * 1024;
 const KB: usize = 1024;
+const MB: usize = 1024 * KB;
 const GB: usize = 1024 * MB;

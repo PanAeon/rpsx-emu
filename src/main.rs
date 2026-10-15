@@ -1142,6 +1142,7 @@ impl State {
                 Dynarec::run_block(&mut self.system, block_idx)
             } else {
                 // run interpreter
+                // continue;
                 self.interpreter.next_pc = pc + 4;
                 self.interpreter.run_block(&mut self.system)
             };

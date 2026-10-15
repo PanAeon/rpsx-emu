@@ -5,14 +5,17 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 
 pub struct Ram {
-    pub data: Pin<Box<[u8]>>
+    pub data: &'static mut [u8]
 }
 
 impl Ram {
-    pub fn new() -> Ram {
-        let data = vec![0xca; 2 * 1024 * 1024].into_boxed_slice();
+    pub fn new(s: &'static mut [u8]) -> Ram {
+        // let data = vec![0xca; 2 * 1024 * 1024].into_boxed_slice();
+        for i in 0..2 * 1024 * 1024 {
+            s[i] = 0xca;
+        }
         
-        Ram { data: Box::into_pin(data) }
+        Ram { data: s }
     }
 
 
@@ -46,12 +49,12 @@ impl Serialize for Ram {
     }
 }
 
-impl<'de> Deserialize<'de> for Ram {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de> {
-        let bytes = serde_bytes::ByteBuf::deserialize(deserializer)?;
-        let data = bytes.into_boxed_slice();
-        Ok(Ram { data: Box::into_pin(data) })
-    }
-}
+// impl<'de> Deserialize<'de> for Ram {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: Deserializer<'de> {
+//         let bytes = serde_bytes::ByteBuf::deserialize(deserializer)?;
+//         let data = bytes.into_boxed_slice();
+//         Ok(Ram { data: Box::into_pin(data) })
+//     }
+// }

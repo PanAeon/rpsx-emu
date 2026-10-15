@@ -36,14 +36,27 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
 
         let mut uctx = (&mut * (ctx as *mut libc::ucontext_t)) as &mut libc::ucontext_t;
         let rip = uctx.uc_mcontext.gregs[libc::REG_RIP as usize];
-        let rsp = uctx.uc_mcontext.gregs[libc::REG_RSP as usize];
+        let mut rsp = uctx.uc_mcontext.gregs[libc::REG_RSP as usize];
         let rdi = uctx.uc_mcontext.gregs[libc::REG_RDI as usize];
+        let rbp = uctx.uc_mcontext.gregs[libc::REG_RBP as usize];
+
+
+        // restore caller stack
+        // movq %rbp, %rsp
+        //
+        rsp = rbp;
+        uctx.uc_mcontext.gregs[libc::REG_RSP as usize] = rbp;
 
         let stack = (rsp) as *const u64;
         let stack =  std::slice::from_raw_parts_mut(stack as *mut u64, 5 * 8) ;
         for i in 0..5 {
             println!("stack [{}]: 0x{:X}", i, stack[i]);
         }
+        // popq rbp
+        uctx.uc_mcontext.gregs[libc::REG_RBP as usize] = stack[0] as i64;
+        // retq
+        uctx.uc_mcontext.gregs[libc::REG_RSP as usize] += 8;
+
         // ok 
         let instr_addr = stack[1] - 5; // callq
         println!("return addr:   0x{:X}", instr_addr);
@@ -258,8 +271,9 @@ pub fn run() {
     unsafe {
         BLOCK_ADDR = block as u64;
     }
-    let jit_fn: extern "C" fn() -> () = unsafe { std::mem::transmute(block) };
-    jit_fn();
+    let jit_fn: extern "C" fn() -> u32 = unsafe { std::mem::transmute(block) };
+    let res = jit_fn();
+    println!("result: {}", res);
 
 
     // let slice = unsafe { std::slice::from_raw_parts_mut(mem_mirr_3_ptr as *mut u8, 2 * MB) };
@@ -381,7 +395,7 @@ impl Compiler {
 
         // translate... everything...
         builder.finalize(isa::TargetFrontendConfig {
-            default_call_conv: CallConv::Fast,
+            default_call_conv: CallConv::SystemV,
             pointer_width: PointerWidth::U64,
             page_size_align_log2: 12,
         });
@@ -396,8 +410,8 @@ impl Compiler {
         };
         let id = self
             .module
-            .declare_function("fastmem_load", Linkage::Export, &self.ctx.func.signature)
-            // .declare_anonymous_function(&self.ctx.func.signature)
+            // .declare_function("fastmem_load", Linkage::Local, &self.ctx.func.signature)
+            .declare_anonymous_function(&self.ctx.func.signature)
             // .declare_function(&name, Linkage::Export, &self.ctx.func.signature)
             .expect("ok");
 
@@ -467,12 +481,12 @@ impl Compiler {
         let _ = builder.ins().call(io_fun, &[address]);
 
 
-        let v = builder.ins().iconst(types::I32, 0);
+        let v = builder.ins().iconst(types::I32, 1488);
         builder.ins().return_(&[v]);
 
         // translate... everything...
         builder.finalize(isa::TargetFrontendConfig {
-            default_call_conv: CallConv::Fast,
+            default_call_conv: CallConv::SystemV,
             pointer_width: PointerWidth::U64,
             page_size_align_log2: 12,
         });
@@ -487,8 +501,8 @@ impl Compiler {
         };
         let id = self
             .module
-            .declare_function("slowmem_load", Linkage::Local, &self.ctx.func.signature)
-            // .declare_anonymous_function(&self.ctx.func.signature)
+            // .declare_function("slowmem_load", Linkage::Local, &self.ctx.func.signature)
+            .declare_anonymous_function(&self.ctx.func.signature)
             // .declare_function(&name, Linkage::Export, &self.ctx.func.signature)
             .expect("ok");
 
@@ -522,11 +536,11 @@ impl Compiler {
 
     pub fn compile_block(&mut self, fastmem_load: FuncId, slowmem_load: FuncId) -> *const u8 {
 
-        // self.ctx
-        //     .func
-        //     .signature
-        //     .returns
-        //     .push(AbiParam::new(types::I32));
+        self.ctx
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I32));
 
         // Create the builder to build a function.
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
@@ -568,7 +582,16 @@ impl Compiler {
 
         // but instead we got fastmem..
         let p = builder.ins().iconst(types::I32, 0x901_000);
-        builder.ins().call(fastmem_load, &[p]);
+        let inst = builder.ins().call(fastmem_load, &[p]);
+        let v = builder.inst_results(inst)[0];
+        
+        // let p = builder.ins().iconst(types::I32, 0x901_000);
+        // let inst = builder.ins().call(slowmem_load, &[p]);
+        // let v = builder.inst_results(inst)[0];
+        // builder.def_var(var, v);
+        // let v = builder.use_var(var);
+
+        // let v = builder.ins().iconst(types::I32, 777);
 
         // now trigger memfault
         // let p = builder.ins().iconst(types::I64, 63);
@@ -578,11 +601,11 @@ impl Compiler {
         // builder.ins().store(MachMemFlags::trusted(), v, p, 0);
 
 
-        builder.ins().return_(&[]);
+        builder.ins().return_(&[v]);
 
         // translate... everything...
         builder.finalize(isa::TargetFrontendConfig {
-            default_call_conv: CallConv::Fast,
+            default_call_conv: CallConv::SystemV,
             pointer_width: PointerWidth::U64,
             page_size_align_log2: 12,
         });
@@ -629,6 +652,7 @@ impl Compiler {
 
 pub extern "C" fn io_fun(address: u32) {
     println!("IO!!!!, address: 0x{:X}", address);
+    // 1488
 }
 
 const MB: usize = 1024 * 1024;

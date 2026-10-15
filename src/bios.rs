@@ -4,17 +4,19 @@ use crate::system::Addressable;
 
 
 pub struct Bios {
-    pub data: Vec<u8>
+    // pub data: Vec<u8>
+    pub data: &'static mut [u8]
 }
 
 const BIOS_SIZE: u64 = 512 * 1024;
 impl Bios {
-    pub fn new(path: &Path) -> Result<Bios, Error> {
+    pub fn new(s: &'static mut [u8], path: &Path) -> Result<Bios, Error> {
         let file = File::open(path)?;
-        let mut data: Vec<u8> = Vec::new();
-        file.take(BIOS_SIZE).read_to_end(&mut data).expect("ok");
-        if data.len() == BIOS_SIZE as usize {
-            Ok(Bios { data })
+        // let mut data: Vec<u8> = Vec::new();
+        // let taken = file.take(BIOS_SIZE).read_to_end(&mut data).expect("ok");
+        let taken = file.take(BIOS_SIZE).read(s).expect("ok");
+        if taken == BIOS_SIZE as usize {
+            Ok(Bios { data: s })
         } else {
             Err(Error::new(std::io::ErrorKind::InvalidInput, "Invalid BIOS size."))
 

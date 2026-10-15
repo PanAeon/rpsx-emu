@@ -3,14 +3,14 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crossbeam::channel::Sender;
-use serde::ser::SerializeStruct;
-use serde::{Deserialize, Serialize, Serializer};
 use crate::block_cache::{self, BlockCache};
 use crate::system::{
     load_byte, load_half_word, load_word, mask_region, store_byte, store_half_word, store_word,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
+use crossbeam::channel::Sender;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use cranelift::codegen::{ir::BlockArg, isa::CallConv};
 use cranelift::prelude::*;
@@ -68,17 +68,16 @@ pub struct Constants {
     gte_set_control: FuncId,
     ram: u64,
     cache: u64,
+    fast_load_word: FuncId,
+    slow_load_word: FuncId,
 }
-
 
 // #[derive(serde::Serialize)]
 pub struct Dynarec {
     pub regs: Pin<Box<Registers>>,
     pub gte: Pin<Box<Gte>>,
     pub sender: Option<Sender<CompileMsg>>,
-    pub handle: Option<JoinHandle<()>>
-
-
+    pub handle: Option<JoinHandle<()>>,
 }
 
 impl Dynarec {
@@ -102,15 +101,13 @@ impl Dynarec {
             // delay_slot: false,
         };
 
-
-
         let regs = Box::pin(regs);
         let gte = Box::pin(Gte::new());
         Dynarec {
             regs,
             gte,
             sender: None,
-            handle: None
+            handle: None,
         }
     }
 
@@ -119,7 +116,6 @@ impl Dynarec {
         system.cpu.sender = Some(sender);
         system.cpu.handle = Some(handle);
     }
-
 
     pub fn pc(&self) -> u32 {
         self.regs.pc
@@ -137,8 +133,18 @@ impl Dynarec {
     pub fn schedule_compile_block(system: &mut System, addr: u32, idx: Option<u32>) {
         let mut buff = [Instruction(0); 256];
         let xs = Self::parse_block(system, addr, &mut buff);
-        system.cpu.sender.as_mut().unwrap().send(CompileMsg { pc: addr, block: xs.to_vec(), idx }).expect("ok");
-    }  
+        system
+            .cpu
+            .sender
+            .as_mut()
+            .unwrap()
+            .send(CompileMsg {
+                pc: addr,
+                block: xs.to_vec(),
+                idx,
+            })
+            .expect("ok");
+    }
 
     pub fn check_for_pending_interrupts(system: &mut System) -> bool {
         if system.irqctl.pending() {
@@ -226,7 +232,8 @@ impl Dynarec {
 impl Serialize for Dynarec {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer {
+        S: Serializer,
+    {
         let mut s = serializer.serialize_struct("Dynarec", 2)?;
         s.serialize_field("regs", &*self.regs)?;
         s.serialize_field("gte", &*self.gte)?;
@@ -241,21 +248,20 @@ struct CompileMsg {
     block: Vec<Instruction>,
 }
 
-fn create_compiler_thread(
-    system: &mut System
-) -> (Sender<CompileMsg>, JoinHandle<()>) {
+fn create_compiler_thread(system: &mut System) -> (Sender<CompileMsg>, JoinHandle<()>) {
     let (sender, receiver) = crossbeam::channel::bounded(32096);
     let block_cache = system.block_cache.clone();
     let regs_ptr: u64 = &mut *system.cpu.regs as *mut Registers as u64;
     // let regs_ptr: u64 = unsafe { std::mem::transmute(system.cpu.regs.as_mut()) } as u64;
     let system_ptr: u64 = &mut *system as *mut System as u64;
-    let gte_ptr: u64 = &mut *system.cpu.gte as *mut Gte as u64; 
+    let gte_ptr: u64 = &mut *system.cpu.gte as *mut Gte as u64;
     let ram_ptr: u64 = system.ram.data.as_ptr() as *mut u8 as u64;
     let bc = system.block_cache.lock().unwrap();
     let cache_ptr: u64 = bc.ram.as_ptr() as *mut u8 as u64;
     drop(bc);
     let handle = std::thread::spawn(move || {
         let mut compiler = Compiler::new(regs_ptr, system_ptr, gte_ptr, ram_ptr, cache_ptr);
+        compiler.init();
         let core_ids = core_affinity::get_core_ids().unwrap();
         let res = core_affinity::set_for_current(core_ids[2]);
         if res {
@@ -266,7 +272,7 @@ fn create_compiler_thread(
                 Ok(msg) => msg,
                 Err(_) => return,
             };
-            let CompileMsg { pc, block, idx} = msg;
+            let CompileMsg { pc, block, idx } = msg;
 
             // check that block is not compiled already...
             let bc = block_cache.lock().expect("ok");
@@ -278,7 +284,7 @@ fn create_compiler_thread(
             let mut bc = block_cache.lock().expect("ok");
             // FIXME: hmm, need to check that block is still valid?
             if let Some(idx) = idx {
-                bc.insert_block_at(idx, pc, block );
+                bc.insert_block_at(idx, pc, block);
             } else {
                 bc.insert_block(pc, block);
             }
@@ -310,8 +316,13 @@ struct Compiler {
 }
 
 impl Compiler {
-
-    pub fn new(regs_ptr: u64, system_ptr: u64, gte_ptr: u64, ram_ptr: u64, cache_ptr: u64) -> Compiler {
+    pub fn new(
+        regs_ptr: u64,
+        system_ptr: u64,
+        gte_ptr: u64,
+        ram_ptr: u64,
+        cache_ptr: u64,
+    ) -> Compiler {
         let mut regs = [0xdeadbeef; 32];
         regs[0] = 0;
         let regs = Registers {
@@ -496,14 +507,203 @@ impl Compiler {
                 gte_control,
                 gte_set_data,
                 gte_set_control,
+                fast_load_word: load_word,
+                slow_load_word: load_word,
             },
         }
     }
 
+    pub fn init(&mut self) {
+        let slow_load_word = self.compile_slowmem32_load();
+        let fast_load_word = self.compile_fastmem32_load();
+        self.constants.fast_load_word = fast_load_word;
+        self.constants.slow_load_word = slow_load_word;
+    }
 
-    
+    pub fn compile_fastmem32_load(&mut self) -> FuncId {
+        self.ctx
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
+        self.ctx
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I32));
 
-    pub fn compile_block(&mut self, addr: u32,  xs: Vec<Instruction>) -> block_cache::Block {
+        self.ctx
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I32));
+
+        // Create the builder to build a function.
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+
+        // Create the entry block, to start emitting code in.
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        // Tell the builder to emit code in this block.
+        builder.switch_to_block(entry_block);
+
+        // And, tell the builder that this block will have no further
+        // predecessors. Since it's the entry block, it won't have any
+        // predecessors.
+        builder.seal_block(entry_block);
+
+        let address = builder.block_params(entry_block)[1];
+        let address = builder.ins().uextend(types::I64, address);
+
+        let v = builder
+            .ins()
+            .load(types::I32, MachMemFlags::trusted(), address, 0x10_000);
+
+        builder.ins().return_(&[v]);
+
+        // translate... everything...
+        builder.finalize(isa::TargetFrontendConfig {
+            default_call_conv: CallConv::SystemV,
+            pointer_width: PointerWidth::U64,
+            page_size_align_log2: 12,
+        });
+
+        let flags = settings::Flags::new(settings::builder());
+        match verify_function(&self.ctx.func, &flags) {
+            Ok(()) => {}
+            Err(x) => {
+                println!("{}", self.ctx.func.display());
+                panic!("{}", x);
+            }
+        };
+        let id = self
+            .module
+            // .declare_function("fastmem_load", Linkage::Local, &self.ctx.func.signature)
+            .declare_anonymous_function(&self.ctx.func.signature)
+            // .declare_function(&name, Linkage::Export, &self.ctx.func.signature)
+            .expect("ok");
+
+        // Define the function to jit. This finishes compilation, although
+        // there may be outstanding relocations to perform. Currently, jit
+        // cannot finish relocations until all functions to be called are
+        // defined. For this toy demo for now, we'll just finalize the
+        // function below.
+        self.module.define_function(id, &mut self.ctx).expect("OK");
+
+        // Now that compilation is finished, we can clear out the context state.
+        self.module.clear_context(&mut self.ctx);
+
+        // Finalize the functions which we just defined, which resolves any
+        // outstanding relocations (patching in addresses, now that they're
+        // available).
+        self.module.finalize_definitions().unwrap();
+
+        // We can now retrieve a pointer to the machine code.
+        let code = self.module.get_finalized_function(id);
+
+        unsafe {
+            crate::fastmem::FASTMEM_LOAD32_ADDR = code as u64;
+        }
+
+        id
+    }
+
+    pub fn compile_slowmem32_load(&mut self) -> FuncId {
+        self.ctx
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
+        self.ctx
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I32));
+
+        self.ctx
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I32));
+
+        // Create the builder to build a function.
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+
+        // Create the entry block, to start emitting code in.
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        // Tell the builder to emit code in this block.
+        builder.switch_to_block(entry_block);
+
+        // And, tell the builder that this block will have no further
+        // predecessors. Since it's the entry block, it won't have any
+        // predecessors.
+        builder.seal_block(entry_block);
+
+        let system = builder.block_params(entry_block)[0];
+        let address = builder.block_params(entry_block)[1];
+
+        let load_word = self
+            .module
+            .declare_func_in_func(self.constants.load_word, &mut builder.func);
+
+        // let system = builder
+        //     .ins()
+        //     .iconst(types::I64, self.constants.system as i64);
+
+        let result = builder.ins().call(load_word, &[system, address]);
+
+        let v = builder.inst_results(result)[0];
+        builder.ins().return_(&[v]);
+
+        // translate... everything...
+        builder.finalize(isa::TargetFrontendConfig {
+            default_call_conv: CallConv::SystemV,
+            pointer_width: PointerWidth::U64,
+            page_size_align_log2: 12,
+        });
+
+        let flags = settings::Flags::new(settings::builder());
+        match verify_function(&self.ctx.func, &flags) {
+            Ok(()) => {}
+            Err(x) => {
+                println!("{}", self.ctx.func.display());
+                panic!("{}", x);
+            }
+        };
+        let id = self
+            .module
+            // .declare_function("slowmem_load", Linkage::Local, &self.ctx.func.signature)
+            .declare_anonymous_function(&self.ctx.func.signature)
+            // .declare_function(&name, Linkage::Export, &self.ctx.func.signature)
+            .expect("ok");
+
+        // Define the function to jit. This finishes compilation, although
+        // there may be outstanding relocations to perform. Currently, jit
+        // cannot finish relocations until all functions to be called are
+        // defined. For this toy demo for now, we'll just finalize the
+        // function below.
+        self.module.define_function(id, &mut self.ctx).expect("OK");
+
+        // Now that compilation is finished, we can clear out the context state.
+        self.module.clear_context(&mut self.ctx);
+
+        // Finalize the functions which we just defined, which resolves any
+        // outstanding relocations (patching in addresses, now that they're
+        // available).
+        self.module.finalize_definitions().unwrap();
+
+        // We can now retrieve a pointer to the machine code.
+        let code = self.module.get_finalized_function(id);
+
+        unsafe {
+            crate::fastmem::SLOWMEM_LOAD32_ADDR = code as u64;
+        }
+
+        id
+    }
+
+    pub fn compile_block(&mut self, addr: u32, xs: Vec<Instruction>) -> block_cache::Block {
         // woot?
         // if addr == 0x80000080 {
         //     panic!("at exception handler");
@@ -557,13 +757,14 @@ impl Compiler {
             next_instr: None,
             delay_slot: false,
             regs: HashSet::new(),
+            fast_load_word: None,
+            slow_load_word: None,
             // entry_block,
             // start_block,
         };
 
-
         for i in 0..xs.len() {
-           bldr.get_registers(xs[i]);
+            bldr.get_registers(xs[i]);
         }
 
         bldr.compile_entry_block();
@@ -642,10 +843,9 @@ impl Compiler {
             // crc32: 0,
             length: xs.len() as u32,
             mem,
-            addr
+            addr,
         }
     }
-
 }
 
 struct BlockBuilder<'a> {
@@ -671,6 +871,8 @@ struct BlockBuilder<'a> {
     gte_control: Option<FuncRef>,
     gte_set_data: Option<FuncRef>,
     gte_set_control: Option<FuncRef>,
+    fast_load_word: Option<FuncRef>,
+    slow_load_word: Option<FuncRef>,
     // entry_block: Block,
     // start_block: Block,
 }
@@ -1351,17 +1553,21 @@ impl<'a> BlockBuilder<'a> {
                 .ins()
                 .iconst(types::I64, self.constants.regs as usize as i64);
             let delayed_load_reg = self.get_reg_read(REG_LOAD_REG);
-            let reg = self
-                .bldr
-                .ins()
-                .load(types::I32, MachMemFlags::trusted(), regs_address, REG_LOAD_REG as i32 * 4);
+            let reg = self.bldr.ins().load(
+                types::I32,
+                MachMemFlags::trusted(),
+                regs_address,
+                REG_LOAD_REG as i32 * 4,
+            );
             self.bldr.def_var(delayed_load_reg, reg);
             // let reg = self.bldr.use_var(delayed_load_reg);
             let delayed_load_val = self.get_reg_read(REG_LOAD_VAL);
-            let delayed_load = self
-                .bldr
-                .ins()
-                .load(types::I32, MachMemFlags::trusted(), regs_address, REG_LOAD_VAL as i32 * 4);
+            let delayed_load = self.bldr.ins().load(
+                types::I32,
+                MachMemFlags::trusted(),
+                regs_address,
+                REG_LOAD_VAL as i32 * 4,
+            );
             self.bldr.def_var(delayed_load_val, delayed_load);
             // let delayed_load = self.bldr.use_var(delayed_load_val);
             let zero = self.bldr.ins().iconst(types::I32, 0);
@@ -2679,18 +2885,17 @@ impl<'a> BlockBuilder<'a> {
         self.compile_delayed_load_chain(instr.rt(), v);
     }
 
-// const REGION_MASK: [u32; 8] = [
-//     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KUSEG: 2048MB,
-//     0x7fffffff, // KSEG0: 512MB,
-//     0x1fffffff, // KSEG1: 512MB,
-//     0xffffffff, 0xffffffff, // KSEG2: 1024MB, cache cotnrol hw registers
-// ];
-// pub fn mask_region(addr: u32) -> u32 {
-//     let index = (addr >> 29) as usize;
-//     addr & REGION_MASK[index]
-// }
-    // now make polymorphic...
-    fn compile_load(&mut self, ty: Type, address: Value) -> Value {
+    // const REGION_MASK: [u32; 8] = [
+    //     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KUSEG: 2048MB,
+    //     0x7fffffff, // KSEG0: 512MB,
+    //     0x1fffffff, // KSEG1: 512MB,
+    //     0xffffffff, 0xffffffff, // KSEG2: 1024MB, cache cotnrol hw registers
+    // ];
+    // pub fn mask_region(addr: u32) -> u32 {
+    //     let index = (addr >> 29) as usize;
+    //     addr & REGION_MASK[index]
+    // }
+ /*   fn compile_load(&mut self, ty: Type, address: Value) -> Value {
         //self.bldr.func.dfg.value_type(my_value);
         // self.bldr.func.
         let index = self.bldr.ins().sshr_imm_u(address, 29);
@@ -2698,8 +2903,6 @@ impl<'a> BlockBuilder<'a> {
         let is_kuseg = self.bldr.ins().band_not(kuseg_test, index);
         let is_kseg2 = self.bldr.ins().band_imm_u(index, 0b010);
         let is_kseg1 = self.bldr.ins().band_imm_u(index, 0b001);
-
-
 
         let kseg0_mask = self.bldr.ins().iconst(types::I32, 0x7fffffff);
         let kseg1_mask = self.bldr.ins().iconst(types::I32, 0x1fffffff);
@@ -2710,31 +2913,58 @@ impl<'a> BlockBuilder<'a> {
 
         let mask = self.bldr.ins().select(is_kuseg, kuseg_mask, not_kuseg_mask);
 
-        let masked_address = self.bldr.ins().band(address, mask);
-        let masked_address = self.bldr.ins().uextend(types::I64, masked_address);
+        let masked_address_unextended = self.bldr.ins().band(address, mask);
+        let masked_address = self.bldr.ins().uextend(types::I64, masked_address_unextended);
 
         // now check if we in ram:
         // pub const RAM: Range = Range(0x0000_0000, 2 * 1024 * 1024);
-        let is_ram = self.bldr.ins().icmp_imm_u(IntCC::UnsignedLessThan, masked_address, 2 * 1024 * 1024);
-
+        let is_ram =
+            self.bldr
+                .ins()
+                .icmp_imm_u(IntCC::UnsignedLessThan, masked_address, 2 * 1024 * 1024);
 
         let then_block = self.bldr.create_block();
         let else_block = self.bldr.create_block();
         let merge_block = self.bldr.create_block();
         self.bldr.append_block_param(merge_block, ty);
 
-        self.bldr.ins().brif(is_ram, then_block, &[], else_block, &[]);
+        self.bldr
+            .ins()
+            .brif(is_ram, then_block, &[], else_block, &[]);
         self.bldr.switch_to_block(then_block);
         self.bldr.seal_block(then_block);
-        let p = self
+
+        let val = match ty {
+            types::I32 => {
+        let system = self
             .bldr
             .ins()
-            .iconst(types::I64, self.constants.ram as *mut u8 as usize as i64);
-        let p = self.bldr.ins().iadd(p, masked_address);
-            let val = self
-                .bldr
-                .ins()
-                .load(ty, MachMemFlags::trusted(), p, 0);
+            .iconst(types::I64, self.constants.system as i64);
+                let load_word = self.get_fast_load_word();
+                let res = self.bldr.ins().call(load_word, &[system, address]);
+                self.bldr.inst_results(res)[0]
+            }
+            types::I16 | types::I8 => {
+                let p = self
+                    .bldr
+                    .ins()
+                    .iconst(types::I64, self.constants.ram as *mut u8 as usize as i64);
+                let p = self.bldr.ins().iadd(p, masked_address);
+                self.bldr.ins().load(ty, MachMemFlags::trusted(), p, 0)
+            }
+            _ => {
+                panic!("unsupported type: {}", ty);
+            }
+        };
+        // let p = self
+        //     .bldr
+        //     .ins()
+        //     .iconst(types::I64, self.constants.ram as *mut u8 as usize as i64);
+        // let p = self.bldr.ins().iadd(p, masked_address);
+        //     let val = self
+        //         .bldr
+        //         .ins()
+        //         .load(ty, MachMemFlags::trusted(), p, 0);
 
         self.bldr.ins().jump(merge_block, &[BlockArg::Value(val)]);
 
@@ -2747,23 +2977,23 @@ impl<'a> BlockBuilder<'a> {
             .iconst(types::I64, self.constants.system as i64);
         match ty {
             types::I32 => {
-                let load_word = self.get_load_word();
+                let load_word = self.get_slow_load_word();
                 let res = self.bldr.ins().call(load_word, &[system, address]);
                 let res = self.bldr.inst_results(res)[0];
                 self.bldr.ins().jump(merge_block, &[BlockArg::Value(res)]);
-            },
+            }
             types::I16 => {
                 let load_half_word = self.get_load_half_word();
                 let res = self.bldr.ins().call(load_half_word, &[system, address]);
                 let res = self.bldr.inst_results(res)[0];
                 self.bldr.ins().jump(merge_block, &[BlockArg::Value(res)]);
-            },
+            }
             types::I8 => {
                 let load_byte = self.get_load_byte();
                 let res = self.bldr.ins().call(load_byte, &[system, address]);
                 let res = self.bldr.inst_results(res)[0];
                 self.bldr.ins().jump(merge_block, &[BlockArg::Value(res)]);
-            },
+            }
             _ => {
                 panic!("unsupported type: {}", ty);
             }
@@ -2772,6 +3002,37 @@ impl<'a> BlockBuilder<'a> {
         self.bldr.switch_to_block(merge_block);
         self.bldr.seal_block(merge_block);
         self.bldr.block_params(merge_block)[0]
+    }*/
+
+    fn compile_load(&mut self, ty: Type, address: Value) -> Value {
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as i64);
+        match ty {
+            types::I32 => {
+
+                // let fast_load_word = self.get_load_word();
+                // let res = self.bldr.ins().call(fast_load_word, &[system, address]);
+                // self.bldr.inst_results(res)[0]
+                let fast_load_word = self.get_fast_load_word();
+                let res = self.bldr.ins().call(fast_load_word, &[system, address]);
+                self.bldr.inst_results(res)[0]
+            },
+            types::I16 => {
+                let load_half_word = self.get_load_half_word();
+                let res = self.bldr.ins().call(load_half_word, &[system, address]);
+                self.bldr.inst_results(res)[0]
+            },
+            types::I8 => {
+                let load_byte = self.get_load_byte();
+                let res = self.bldr.ins().call(load_byte, &[system, address]);
+                self.bldr.inst_results(res)[0]
+            },
+            _ => {
+                panic!("unsupported type: {}", ty);
+            }
+        }
     }
 
     fn compile_lw(&mut self, instr: Instruction) {
@@ -3406,6 +3667,30 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
+    pub fn get_fast_load_word(&mut self) -> FuncRef {
+        match self.fast_load_word {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.fast_load_word, &mut self.bldr.func);
+                self.fast_load_word = Some(f);
+                f
+            }
+        }
+    }
+    pub fn get_slow_load_word(&mut self) -> FuncRef {
+        match self.slow_load_word {
+            Some(f) => f,
+            None => {
+                let f = self
+                    .module
+                    .declare_func_in_func(self.constants.slow_load_word, &mut self.bldr.func);
+                self.slow_load_word = Some(f);
+                f
+            }
+        }
+    }
     pub fn get_load_word(&mut self) -> FuncRef {
         match self.load_word {
             Some(f) => f,

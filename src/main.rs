@@ -66,7 +66,7 @@ mod interpreter;
 mod resources;
 mod save_state;
 mod fastmem_proto;
-mod simple_memory_provider;
+mod fastmem;
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
 //     let mut i = 0;
@@ -81,8 +81,9 @@ fn main() {
     // for x in FIVE_BIT_TO_8BIT {
     //     println!("{},", (x as f32) / 255.0 )
     // }
-    // run().unwrap();
-    fastmem_proto::run();
+    crate::fastmem::install_segfault_handler();
+    run().unwrap();
+    // fastmem_proto::run();
     println!("ok");
 }
 
@@ -522,9 +523,10 @@ impl State {
             ],
         });
 
-        let bios = bios::Bios::new(Path::new("/foo/SCPH1001.BIN"))?;
+        let (ram_slice, bios_slice) = fastmem::create_memory_mappings();
+        let bios = bios::Bios::new(bios_slice, Path::new("/foo/SCPH1001.BIN"))?;
         // let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
-        let ram = ram::Ram::new();
+        let ram = ram::Ram::new(ram_slice);
         let scratchpad = scratchpad::Scratchpad::new();
         let dma = dma::Dma::new();
         // let gpu = gpu::Gpu::new();

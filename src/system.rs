@@ -129,6 +129,7 @@ impl System {
         gpu, block_cache}
     }
     pub fn load<T:Addressable>(&mut self, addr: u32) -> T {
+        // println!("self addr: 0x{:X}", self as *const System as u64);
         let address = mask_region(addr);
         if !address.is_multiple_of(T::width() as u32) {
             panic!("unaligned load{:?} address: {:08x}", T::width(), address)
@@ -192,6 +193,7 @@ impl System {
         //     println!("Unhandled read from ??? address {:x}", address);
         //     return T::from_u32(0);
         // }
+        println!("Unhandled load{:?} address: {:08x}", T::width(), address);
         panic!("Unhandled load{:?} address: {:08x}", T::width(), address);
         // T::from_u32(0x0)
     }
@@ -486,6 +488,7 @@ pub extern "C" fn load_word(system_ptr: *mut System, addr: u32) -> u32 {
     // }
     System::load(system, addr)
 }
+
 
 pub extern "C" fn load_half_word(system_ptr: *mut System, addr: u32) -> u16 {
     let system = unsafe { system_ptr.as_mut().expect("ok") };

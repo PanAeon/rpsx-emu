@@ -60,7 +60,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
             std::process::exit(1);
         }
 
-        uctx.uc_mcontext.gregs[libc::REG_RSI as usize] -= 0x10_000;
+        // uctx.uc_mcontext.gregs[libc::REG_RSI as usize] -= 0x10_000;
         // restore caller stack
         // movq %rbp, %rsp
         //
@@ -78,7 +78,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         uctx.uc_mcontext.gregs[libc::REG_RSP as usize] += 4;
 
         // ok
-        let instr_addr = stack[0] - 12; // moveabsq, callq
+        let instr_addr = stack[0] - 22; // moveabsq, moveabsq, callq
         println!("return addr:   0x{:X}", instr_addr);
 
         // now unprotect the instruction...
@@ -89,7 +89,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         println!("instr old: {:?}", instr_slice);
         // let offset = (instr_addr as i64).wrapping_sub(SLOWMEM_LOAD_ADDR as i64);
         // let offset = (SLOWMEM_LOAD32_ADDR as i64).wrapping_sub((instr_addr + 5) as i64);
-        let bytes = (SLOWMEM_LOAD32_ADDR).to_le_bytes();
+        let bytes = (0x1488_u64).to_le_bytes();
         instr_slice[2] = bytes[0];
         instr_slice[3] = bytes[1];
         instr_slice[4] = bytes[2];
@@ -100,7 +100,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         instr_slice[9] = bytes[7];
         println!("instr new: {:?}", instr_slice);
         // jump to instr
-        uctx.uc_mcontext.gregs[libc::REG_RIP as usize] = (instr_addr - 10) as i64;
+        uctx.uc_mcontext.gregs[libc::REG_RIP as usize] = (instr_addr) as i64;
         // fix stack (ok, it was fixed implicitly) code after callq gets executed twice..
         // wait woot?
         // uctx.uc_mcontext.gregs[libc::REG_RSP as usize] = rsp;

@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 
 use crate::block_cache::{self, BlockCache};
 use crate::system::{
-    load_byte, load_half_word, load_word, load_word_fast, mask_region, store_byte, store_half_word, store_word,
+    self, load_byte, load_half_word, load_word, load_word_fast, mask_region, store_byte, store_half_word, store_word,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
 use crossbeam::channel::Sender;
@@ -116,6 +116,9 @@ impl Dynarec {
         let (sender, handle) = create_compiler_thread(system);
         system.cpu.sender = Some(sender);
         system.cpu.handle = Some(handle);
+        unsafe {
+           system::SYSTEM_ADDR = (system as *const System) as u64;
+        }
     }
 
     pub fn pc(&self) -> u32 {
@@ -3033,7 +3036,7 @@ impl<'a> BlockBuilder<'a> {
                 // let res = self.bldr.ins().call(fast_load_word, &[system, address]);
                 // self.bldr.inst_results(res)[0]
                 // let fast_load_word = self.get_fast_load_word();
-                 let fast_load_word = self.get_load_word_fast();
+                 let fast_load_word = self.get_load_word();
 
                 let res = self.bldr.ins().call(fast_load_word, &[system, address]);
                 self.bldr.inst_results(res)[0]

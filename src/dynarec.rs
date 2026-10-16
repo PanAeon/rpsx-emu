@@ -408,7 +408,7 @@ impl Compiler {
 
         let mut sig_external = module.make_signature();
         sig_external.params.push(AbiParam::new(types::I64));
-        sig_external.params.push(AbiParam::new(types::I64));
+        sig_external.params.push(AbiParam::new(types::I32));
         sig_external.returns.push(AbiParam::new(types::I32));
         sig_external.call_conv = module.target_config().default_call_conv;
         let load_word = module
@@ -3127,7 +3127,7 @@ impl<'a> BlockBuilder<'a> {
 
     fn compile_load(&mut self, ty: Type, address: Value) -> Value {
         let address_corr = self.bldr.ins().iadd_imm_u(address, 0x10_000);
-        let address_corr = self.bldr.ins().uextend(types::I64, address_corr);
+        // let address_corr = self.bldr.ins().uextend(types::I64, address_corr);
         // let address_corr = self.bldr.ins().band_imm_u(address_corr, 0xFFFFFFFF);
         let system = self
             .bldr

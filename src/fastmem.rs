@@ -29,7 +29,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         let load_word_addr = load_word as *const u8 as u64;
         //FASTMEM_LOAD32_ADDR = load_word_fast as *const u8 as u64;
         let si = (&mut *si) as &mut libc::siginfo_t;
-        println!("caught segfault at address 0x{:X}", si.si_addr() as u64);
+        // println!("caught segfault at address 0x{:X}", si.si_addr() as u64);
         // println!("caught segfault at address {:?}", si.si_addr());
 
         let mut uctx = (&mut *(ctx as *mut libc::ucontext_t)) as &mut libc::ucontext_t;
@@ -39,13 +39,13 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         let rbp = uctx.uc_mcontext.gregs[libc::REG_RBP as usize];
         let rsi = uctx.uc_mcontext.gregs[libc::REG_RSI as usize];
 
-        println!("faulting RIP: 0x{:X}, RSP: 0x{:X}", rip, rsp);
-        println!("faulting RDI: 0x{:X}, RSI: 0x{:X}", rdi, rsi);
+        // println!("faulting RIP: 0x{:X}, RSP: 0x{:X}", rip, rsp);
+        // println!("faulting RDI: 0x{:X}, RSI: 0x{:X}", rdi, rsi);
 
         let addr = si.si_addr() as u64;
 
         if (addr as u64) >= 0x10_000 && (addr as u64) < 4 * GB as u64 + 0x10_000 {
-            println!("caught fastmem fault")
+            // println!("caught fastmem fault")
         } else {
             println!("caught some other shitty fault");
             let bt = Backtrace::force_capture();
@@ -104,14 +104,14 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
 
         let reg = instruction.op0_register();
 
-        println!("got reg: {:?}", reg);
+        // println!("got reg: {:?}", reg);
 
         // now we need to gen 2 byte callq...
         let mut encoder = Encoder::new(64);
         let ins = Instruction::with1(Code::Call_rm64, reg).expect("ok");
         let len = encoder.encode(&ins, instr_addr).expect("ok");
 
-        println!("encoded len: {}", len);
+        // println!("encoded len: {}", len);
         let buff = encoder.take_buffer();
         bytes[0..len].copy_from_slice(&buff);
         // modify the instruction
@@ -140,7 +140,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
 
         // println!("fastmem addr: 0x{:X}", FASTMEM_LOAD32_ADDR);
         // println!("slowmem addr: 0x{:X}", SLOWMEM_LOAD32_ADDR);
-        println!("---\n");
+        // println!("---\n");
         // println!("block addr:   0x{:X}", BLOCK_ADDR);
 
         // MEM_PROVIDER.as_mut().unwrap().allocate(size, align, kind)

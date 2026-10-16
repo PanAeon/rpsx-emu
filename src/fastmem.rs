@@ -12,6 +12,7 @@ use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use cranelift::codegen::ir::{BlockCall, FuncRef, MachMemFlags};
 use cranelift::codegen::verifier::verify_function;
 
+use iced_x86::{Code, Decoder, DecoderOptions, Encoder, Instruction};
 use nix::poll::{PollFd, PollFlags, poll};
 
 use libc::truncate;
@@ -25,10 +26,11 @@ pub static mut SLOWMEM_LOAD32_ADDR: u64 = 0;
 #[allow(static_mut_refs)]
 pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut std::ffi::c_void) {
     unsafe {
-        SLOWMEM_LOAD32_ADDR = load_word as *const u8 as u64;
-        FASTMEM_LOAD32_ADDR = load_word_fast as *const u8 as u64;
+        let load_word_addr = load_word as *const u8 as u64;
+        //FASTMEM_LOAD32_ADDR = load_word_fast as *const u8 as u64;
         let si = (&mut *si) as &mut libc::siginfo_t;
-        println!("caught segfault at address {:?}", si.si_addr());
+        println!("caught segfault at address 0x{:X}", si.si_addr() as u64);
+        // println!("caught segfault at address {:?}", si.si_addr());
 
         let mut uctx = (&mut *(ctx as *mut libc::ucontext_t)) as &mut libc::ucontext_t;
         let rip = uctx.uc_mcontext.gregs[libc::REG_RIP as usize];
@@ -40,8 +42,9 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         println!("faulting RIP: 0x{:X}, RSP: 0x{:X}", rip, rsp);
         println!("faulting RDI: 0x{:X}, RSI: 0x{:X}", rdi, rsi);
 
+        let addr = si.si_addr() as u64;
 
-        if (rip as u64) >= FASTMEM_LOAD32_ADDR && (rip as u64) < FASTMEM_LOAD32_ADDR + 1024 {
+        if (addr as u64) >= 0x10_000 && (addr as u64) < 4 * GB as u64 + 0x10_000 {
             println!("caught fastmem fault")
         } else {
             println!("caught some other shitty fault");
@@ -67,48 +70,76 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         // rsp = rbp;
         // uctx.uc_mcontext.gregs[libc::REG_RSP as usize] = rbp;
 
-        let stack = (rsp) as *const u64;
-        let stack = std::slice::from_raw_parts_mut(stack as *mut u64, 5 * 8);
-        for i in 0..5 {
-            println!("stack [{}]: 0x{:X}", i, stack[i]);
-        }
+        // let stack = (rsp) as *const u64;
+        // let stack = std::slice::from_raw_parts_mut(stack as *mut u64, 5 * 8);
+        // for i in 0..5 {
+        //     println!("stack [{}]: 0x{:X}", i, stack[i]);
+        // }
         // popq rbp
         // uctx.uc_mcontext.gregs[libc::REG_RBP as usize] = stack[0] as i64;
         // retq
-        uctx.uc_mcontext.gregs[libc::REG_RSP as usize] += 4;
+        // uctx.uc_mcontext.gregs[libc::REG_RSP as usize] += 4;
 
         // ok
-        let instr_addr = stack[0] - 22; // moveabsq, moveabsq, callq
-        println!("return addr:   0x{:X}", instr_addr);
+        // let instr_addr = stack[1] - 22; // moveabsq, moveabsq, callq
+        // println!("return addr:   0x{:X}", instr_addr);
+        let instr_addr = rip as u64;
 
         // now unprotect the instruction...
         unprotect_instr(instr_addr).expect("ok");
+        // decode the instruction and the next one
+        let bytes = std::slice::from_raw_parts_mut(instr_addr as *mut u8, 64 );
+        let mut instruction = iced_x86::Instruction::default();
+        let mut decoder = Decoder::with_ip(64, bytes, instr_addr, DecoderOptions::NONE);
+        decoder.decode_out(&mut instruction);
+        decoder.decode_out(&mut instruction);
+        // if instruction.op_code().is_nop() {
+        //     println!("3 byte instr not handled now... exiting");
+        //     std::process::exit(1);
+        // }  
+        let movq_address = instr_addr - 10;
+        let movq_bytes = std::slice::from_raw_parts(movq_address as *const u8, 64 );
+        let mut decoder = Decoder::with_ip(64, movq_bytes, movq_address, DecoderOptions::NONE);
+        decoder.decode_out(&mut instruction);
+
+        let reg = instruction.op0_register();
+
+        println!("got reg: {:?}", reg);
+
+        // now we need to gen 2 byte callq...
+        let mut encoder = Encoder::new(64);
+        let ins = Instruction::with1(Code::Call_rm64, reg).expect("ok");
+        let len = encoder.encode(&ins, instr_addr).expect("ok");
+
+        println!("encoded len: {}", len);
+        let buff = encoder.take_buffer();
+        bytes[0..len].copy_from_slice(&buff);
         // modify the instruction
-        let instr_ptr = instr_addr as *mut u8;
-        let instr_slice = std::slice::from_raw_parts_mut(instr_ptr as *mut u8, 10);
-        println!("instr old: {:?}", instr_slice);
+        // let instr_ptr = instr_addr as *mut u8;
+        // let instr_slice = std::slice::from_raw_parts_mut(instr_ptr as *mut u8, 10);
+        // println!("instr old: {:?}", instr_slice);
         // let offset = (instr_addr as i64).wrapping_sub(SLOWMEM_LOAD_ADDR as i64);
         // let offset = (SLOWMEM_LOAD32_ADDR as i64).wrapping_sub((instr_addr + 5) as i64);
-        let bytes = (0x1488_u64).to_le_bytes();
-        instr_slice[2] = bytes[0];
-        instr_slice[3] = bytes[1];
-        instr_slice[4] = bytes[2];
-        instr_slice[5] = bytes[3];
-        instr_slice[6] = bytes[4];
-        instr_slice[7] = bytes[5];
-        instr_slice[8] = bytes[6];
-        instr_slice[9] = bytes[7];
-        println!("instr new: {:?}", instr_slice);
+        // let bytes = (0x1488_u64).to_le_bytes();
+        // instr_slice[2] = bytes[0];
+        // instr_slice[3] = bytes[1];
+        // instr_slice[4] = bytes[2];
+        // instr_slice[5] = bytes[3];
+        // instr_slice[6] = bytes[4];
+        // instr_slice[7] = bytes[5];
+        // instr_slice[8] = bytes[6];
+        // instr_slice[9] = bytes[7];
+        // println!("instr new: {:?}", instr_slice);
         // jump to instr
-        uctx.uc_mcontext.gregs[libc::REG_RIP as usize] = (instr_addr) as i64;
+        // uctx.uc_mcontext.gregs[libc::REG_RIP as usize] = (instr_addr) as i64;
         // fix stack (ok, it was fixed implicitly) code after callq gets executed twice..
         // wait woot?
         // uctx.uc_mcontext.gregs[libc::REG_RSP as usize] = rsp;
         // protect the instruction
         protect_instr(instr_addr).expect("ok");
 
-        println!("fastmem addr: 0x{:X}", FASTMEM_LOAD32_ADDR);
-        println!("slowmem addr: 0x{:X}", SLOWMEM_LOAD32_ADDR);
+        // println!("fastmem addr: 0x{:X}", FASTMEM_LOAD32_ADDR);
+        // println!("slowmem addr: 0x{:X}", SLOWMEM_LOAD32_ADDR);
         println!("---\n");
         // println!("block addr:   0x{:X}", BLOCK_ADDR);
 
@@ -129,7 +160,7 @@ pub fn install_segfault_handler() {
     }
 }
 
-fn unprotect_instr(instr_addr: u64) -> Result<(), std::io::Error> {
+pub fn unprotect_instr(instr_addr: u64) -> Result<(), std::io::Error> {
     let prot = libc::PROT_READ | libc::PROT_WRITE;
     // let flags = libc::MAP_SHARED | libc::MAP_ANONYMOUS;
 
@@ -146,7 +177,7 @@ fn unprotect_instr(instr_addr: u64) -> Result<(), std::io::Error> {
     }
 }
 
-fn protect_instr(instr_addr: u64) -> Result<(), std::io::Error> {
+pub fn protect_instr(instr_addr: u64) -> Result<(), std::io::Error> {
     let prot = libc::PROT_READ | libc::PROT_EXEC;
 
     let addr = instr_addr & !0xFFF;

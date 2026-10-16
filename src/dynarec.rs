@@ -5,10 +5,12 @@ use std::thread::JoinHandle;
 
 use crate::block_cache::{self, BlockCache};
 use crate::system::{
-    self, load_byte, load_half_word, load_word, load_word_fast, mask_region, store_byte, store_half_word, store_word,
+    self, load_byte, load_half_word, load_word, load_word_fast, mask_region, store_byte,
+    store_half_word, store_word,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
 use crossbeam::channel::Sender;
+use iced_x86::{Decoder, DecoderOptions, Formatter, GasFormatter, IntelFormatter, NasmFormatter};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -117,7 +119,7 @@ impl Dynarec {
         system.cpu.sender = Some(sender);
         system.cpu.handle = Some(handle);
         unsafe {
-           system::SYSTEM_ADDR = (system as *const System) as u64;
+            system::SYSTEM_ADDR = (system as *const System) as u64;
         }
     }
 
@@ -285,6 +287,7 @@ fn create_compiler_thread(system: &mut System) -> (Sender<CompileMsg>, JoinHandl
             }
             drop(bc);
             let block = compiler.compile_block(pc, block);
+            compiler.patch_block(&block);
             let mut bc = block_cache.lock().expect("ok");
             // FIXME: hmm, need to check that block is still valid?
             if let Some(idx) = idx {
@@ -356,7 +359,7 @@ impl Compiler {
             .unwrap();
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
-        let provider = Box::new(ArenaMemoryProvider::new_with_size(64*1024*1024).expect("ok"));
+        let provider = Box::new(ArenaMemoryProvider::new_with_size(64 * 1024 * 1024).expect("ok"));
         builder.memory_provider(provider);
 
         builder.symbol("store_word", store_word as *const u8);
@@ -405,7 +408,7 @@ impl Compiler {
 
         let mut sig_external = module.make_signature();
         sig_external.params.push(AbiParam::new(types::I64));
-        sig_external.params.push(AbiParam::new(types::I32));
+        sig_external.params.push(AbiParam::new(types::I64));
         sig_external.returns.push(AbiParam::new(types::I32));
         sig_external.call_conv = module.target_config().default_call_conv;
         let load_word = module
@@ -863,6 +866,104 @@ impl Compiler {
             length: xs.len() as u32,
             mem,
             addr,
+        }
+    }
+
+    pub fn patch_block(&mut self, block: &block_cache::Block) {
+        // we just have to find our magic value...
+        unsafe {
+            let system_ptr = system::SYSTEM_ADDR;
+
+            let bytes = std::slice::from_raw_parts(block.ptr, 4 * 1024);
+            // let bytes = block.ptr;
+            let mut decoder = Decoder::with_ip(64, bytes, block.ptr as u64, DecoderOptions::NONE);
+
+            let mut formatter = GasFormatter::new();
+            formatter.options_mut().set_use_pseudo_ops(false);
+            formatter
+                .options_mut()
+                .set_gas_show_mnemonic_size_suffix(true);
+
+            // Change some options, there are many more
+            formatter.options_mut().set_digit_separator("_");
+            formatter.options_mut().set_first_operand_char_index(10);
+
+            // String implements FormatterOutput
+            let mut instruction = iced_x86::Instruction::default();
+            let mut output = String::new();
+
+            let mut to_be_patched: Vec<(u64, usize)> = vec![];
+
+            while decoder.can_decode() {
+                // There's also a decode() method that returns an instruction but that also
+                // means it copies an instruction (40 bytes):
+                //     instruction = decoder.decode();
+                decoder.decode_out(&mut instruction);
+
+                if instruction.code() == iced_x86::Code::Mov_r64_imm64
+                    && instruction.op0_register() == iced_x86::Register::RDI
+                    && instruction.immediate64() == system::SYSTEM_ADDR
+                {
+                    decoder.decode_out(&mut instruction); // should be mvabsq ...,%eax
+
+                    let load_word_addr = load_word as *const u8 as u64;
+
+                    if instruction.code() == iced_x86::Code::Mov_r64_imm64
+                        && instruction.immediate64() == load_word_addr
+                    {
+                        let pos = decoder.position();
+                        decoder.decode_out(&mut instruction); // should be callq %eax
+                        //instruction.op0_register() == iced_x86::Register::RDI &&
+                        // Format the instruction ("disassemble" it)
+                        if instruction.code() == iced_x86::Code::Call_rm64 {
+                            let len = instruction.len();
+                            // println!("*, len: {}", len);
+                            to_be_patched.push((block.ptr as u64 + pos as u64, len));
+
+                            // println!("{:?}", instruction.code());
+                            // output.clear();
+                            // formatter.format(&instruction, &mut output);
+                            //
+                            // // Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
+                            // print!("{:016X} ", instruction.ip());
+                            // let start_index = (instruction.ip() - block.ptr as u64) as usize;
+                            // let instr_bytes = &bytes[start_index..start_index + instruction.len()];
+                            // for b in instr_bytes.iter() {
+                            //     print!("{:02X}", b);
+                            // }
+                            // if instr_bytes.len() < HEXBYTES_COLUMN_BYTE_LENGTH {
+                            //     for _ in 0..HEXBYTES_COLUMN_BYTE_LENGTH - instr_bytes.len() {
+                            //         print!("  ");
+                            //     }
+                            // }
+                            // println!(" {}", output);
+                        }
+                        // decoder.decode_out(&mut instruction); // should be callq %eax
+                    }
+                }
+
+                if instruction.code() == iced_x86::Code::Retnq {
+                    break;
+                }
+            }
+            if to_be_patched.len() > 0 {
+                crate::fastmem::unprotect_instr(block.ptr as u64).expect("ok");
+                for (p, len) in to_be_patched {
+                    // address always in rsi
+                    // movq 0x8(%rax), $rsi... and ... now...  it takes 3 bytes..
+                    let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
+                    // movq (%rsi), $rax
+                    bytes[0] = 0x8b;
+                    bytes[1] = 0x06;
+                    if len == 3 {
+                        bytes[2] = 0x90;
+                    }
+                    // bytes[2] = 0x06;
+                    // now 9 byte nop
+                    // bytes[3..12].copy_from_slice(&[0x66, 0x0F, 0x1F, 0x84, 00, 00, 00, 00, 00]);
+                }
+                crate::fastmem::protect_instr(block.ptr as u64).expect("ok");
+            }
         }
     }
 }
@@ -2915,7 +3016,7 @@ impl<'a> BlockBuilder<'a> {
     //     let index = (addr >> 29) as usize;
     //     addr & REGION_MASK[index]
     // }
- /*   fn compile_load(&mut self, ty: Type, address: Value) -> Value {
+    /*   fn compile_load(&mut self, ty: Type, address: Value) -> Value {
         //self.bldr.func.dfg.value_type(my_value);
         // self.bldr.func.
         let index = self.bldr.ins().sshr_imm_u(address, 29);
@@ -3025,32 +3126,34 @@ impl<'a> BlockBuilder<'a> {
     }*/
 
     fn compile_load(&mut self, ty: Type, address: Value) -> Value {
+        let address_corr = self.bldr.ins().iadd_imm_u(address, 0x10_000);
+        let address_corr = self.bldr.ins().uextend(types::I64, address_corr);
+        // let address_corr = self.bldr.ins().band_imm_u(address_corr, 0xFFFFFFFF);
         let system = self
             .bldr
             .ins()
             .iconst(types::I64, self.constants.system as i64);
         match ty {
             types::I32 => {
-
                 // let fast_load_word = self.get_load_word();
                 // let res = self.bldr.ins().call(fast_load_word, &[system, address]);
                 // self.bldr.inst_results(res)[0]
                 // let fast_load_word = self.get_fast_load_word();
-                 let fast_load_word = self.get_load_word();
+                let load_word = self.get_load_word();
 
-                let res = self.bldr.ins().call(fast_load_word, &[system, address]);
+                let res = self.bldr.ins().call(load_word, &[system, address_corr]);
                 self.bldr.inst_results(res)[0]
-            },
+            }
             types::I16 => {
                 let load_half_word = self.get_load_half_word();
                 let res = self.bldr.ins().call(load_half_word, &[system, address]);
                 self.bldr.inst_results(res)[0]
-            },
+            }
             types::I8 => {
                 let load_byte = self.get_load_byte();
                 let res = self.bldr.ins().call(load_byte, &[system, address]);
                 self.bldr.inst_results(res)[0]
-            },
+            }
             _ => {
                 panic!("unsupported type: {}", ty);
             }
@@ -3925,3 +4028,5 @@ pub extern "C" fn gte_set_control(gte_ptr: *mut Gte, reg: u8, val: u32) {
     let gte = unsafe { gte_ptr.as_mut().expect("ok") };
     gte.set_control(reg, val)
 }
+
+const HEXBYTES_COLUMN_BYTE_LENGTH: usize = 10;

@@ -482,25 +482,26 @@ pub extern "C" fn store_byte(system_ptr: *mut System, addr: u32, val: u8) {
     System::store(system, addr, val);
 }
 
-pub extern "C" fn load_word(system_ptr: *mut System, addr: u32) -> u32 {
+pub extern "C" fn load_word(system_ptr: *mut System, addr: u64) -> u32 {
     // let masked_address = mask_region(addr);
     // if let Some(_) = map::RAM.contains(addr) {
     //         println!("system ram load !!!! where it should not be");
     // }
     // println!("load word slow..., system address: 0x{:X}", system_ptr as u64);
-    if system_ptr as u64 == 0x1488 {
-        let ptr = (addr + 0x10000) as *const u32;
-        unsafe {
-            return *ptr;
-        }
-    } else {
+    // if system_ptr as u64 != 0x1488 {
+    //     let ptr = (addr + 0x10000) as *const u32;
+    //     unsafe {
+    //         return *ptr;
+        // }
+    // } else {
         // println!("yepp!");
         unsafe {
+            let addr = addr.saturating_sub(0x10000);
             let system_ptr = SYSTEM_ADDR as *mut System;
             let system = system_ptr.as_mut().expect("ok") ;
-            System::load(system, addr)
+            System::load(system, addr as u32)
         }
-    }
+    // }
     
 
 }

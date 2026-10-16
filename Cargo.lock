@@ -1282,6 +1282,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
+name = "iced-x86"
+version = "1.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c447cff8c7f384a7d4f741cfcff32f75f3ad02b406432e8d6c878d56b1edf6b"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2590,12 +2599,13 @@ dependencies = [
  "env_logger",
  "flexbuffers",
  "gilrs",
+ "iced-x86",
  "image",
  "libc",
  "log",
  "lru",
  "memmap2",
- "nix 0.27.1",
+ "nix 0.31.3",
  "num_enum 0.7.6",
  "pollster",
  "serde",

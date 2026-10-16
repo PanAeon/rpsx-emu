@@ -36,6 +36,7 @@ libc = "*"
 userfaultfd = "*"
 nix = {version = "*", features = ["ioctl", "mman", "feature", "poll"]}
 memmap2 = "*"
+iced-x86 = "*"
 
 [dependencies.image]
 version = "0.25"

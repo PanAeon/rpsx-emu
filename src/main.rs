@@ -65,7 +65,6 @@ mod dynarec;
 mod interpreter;
 mod resources;
 mod save_state;
-mod fastmem_proto;
 mod fastmem;
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];

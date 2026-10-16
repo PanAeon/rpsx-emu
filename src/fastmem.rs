@@ -18,15 +18,15 @@ use nix::poll::{PollFd, PollFlags, poll};
 use libc::truncate;
 use target_lexicon::PointerWidth;
 
-use crate::system::{load_word, load_word_fast};
+// use crate::system::{load_word};
 
-pub static mut FASTMEM_LOAD32_ADDR: u64 = 0;
-pub static mut SLOWMEM_LOAD32_ADDR: u64 = 0;
+// pub static mut FASTMEM_LOAD32_ADDR: u64 = 0;
+// pub static mut SLOWMEM_LOAD32_ADDR: u64 = 0;
 
 #[allow(static_mut_refs)]
 pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut std::ffi::c_void) {
     unsafe {
-        let load_word_addr = load_word as *const u8 as u64;
+        // let load_word_addr = load_word as *const u8 as u64;
         //FASTMEM_LOAD32_ADDR = load_word_fast as *const u8 as u64;
         let si = (&mut *si) as &mut libc::siginfo_t;
         // println!("caught segfault at address 0x{:X}", si.si_addr() as u64);

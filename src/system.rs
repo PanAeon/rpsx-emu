@@ -506,28 +506,16 @@ pub extern "C" fn load_word(system_ptr: *mut System, addr: u32) -> u32 {
 
 }
 
-pub extern "C" fn load_word_fast(system_ptr: *mut System, addr: u32) -> u32 {
-    // let system = unsafe { system_ptr.as_mut().expect("ok") };
-    // println!("load word fast! {}", system.irqctl.status.0);
-    let ptr = (addr + 0x10000) as *const u32;
-    unsafe {
-        *ptr
-    }
-    // let system = unsafe { system_ptr.as_mut().expect("ok") };
-    // let masked_address = mask_region(addr);
-    // if let Some(_) = map::RAM.contains(addr) {
-    //         println!("system ram load");
-    // }
-    // System::load(system, addr)
+
+
+pub extern "C" fn load_half_word(system_ptr: *mut System, addr: u32) -> u32 {
+            let addr = addr.saturating_sub(0x10000);
+    let system = unsafe { system_ptr.as_mut().expect("ok") };
+    System::load::<u16>(system, addr) as u32
 }
 
-
-pub extern "C" fn load_half_word(system_ptr: *mut System, addr: u32) -> u16 {
+pub extern "C" fn load_byte(system_ptr: *mut System, addr: u32) -> u32 {
+            let addr = addr.saturating_sub(0x10000);
     let system = unsafe { system_ptr.as_mut().expect("ok") };
-    System::load(system, addr)
-}
-
-pub extern "C" fn load_byte(system_ptr: *mut System, addr: u32) -> u8 {
-    let system = unsafe { system_ptr.as_mut().expect("ok") };
-    System::load(system, addr)
+    System::load::<u8>(system, addr) as u32
 }

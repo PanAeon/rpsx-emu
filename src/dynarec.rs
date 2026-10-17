@@ -1,19 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::block_cache::{self, BlockCache};
+use crate::block_cache;
 use crate::system::{
     self, load_byte, load_half_word, load_word, mask_region, store_byte, store_half_word,
     store_word,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
-use crossbeam::channel::Sender;
-use iced_x86::{
-    Decoder, DecoderOptions, Encoder, Formatter, GasFormatter, IntelFormatter, MemoryOperand,
-    NasmFormatter,
-};
+use crossbeam::channel::{Receiver, Sender};
+use iced_x86::{Decoder, DecoderOptions, Encoder, Formatter, GasFormatter, MemoryOperand};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -71,8 +67,6 @@ pub struct Constants {
     gte_control: FuncId,
     gte_set_data: FuncId,
     gte_set_control: FuncId,
-    ram: u64,
-    cache: u64,
 }
 
 // #[derive(serde::Serialize)]
@@ -81,6 +75,7 @@ pub struct Dynarec {
     pub gte: Pin<Box<Gte>>,
     pub sender: Option<Sender<CompileMsg>>,
     pub handle: Option<JoinHandle<()>>,
+    receiver: Option<Receiver<BlockMsg>>,
 }
 
 impl Dynarec {
@@ -110,13 +105,15 @@ impl Dynarec {
             regs,
             gte,
             sender: None,
+            receiver: None,
             handle: None,
         }
     }
 
     pub fn create_compiler(system: &mut System) {
-        let (sender, handle) = create_compiler_thread(system);
+        let (sender, block_receiver, handle) = create_compiler_thread(system);
         system.cpu.sender = Some(sender);
+        system.cpu.receiver = Some(block_receiver);
         system.cpu.handle = Some(handle);
         unsafe {
             system::SYSTEM_ADDR = (system as *const System) as u64;
@@ -129,27 +126,43 @@ impl Dynarec {
 
     pub fn run_block(system: &mut System, idx: u32) -> u64 {
         // self.debug_print();
-        let bc = system.block_cache.lock().unwrap();
-        let block = bc.get_block(idx);
+        let block = system.block_cache.get_block(idx);
         let jit_fn: extern "C" fn() -> i32 = unsafe { std::mem::transmute(block.ptr) };
-        drop(bc);
         jit_fn() as u64
     }
 
     pub fn schedule_compile_block(system: &mut System, addr: u32, idx: Option<u32>) {
-        let mut buff = [Instruction(0); 256];
-        let xs = Self::parse_block(system, addr, &mut buff);
-        system
-            .cpu
-            .sender
-            .as_mut()
-            .unwrap()
-            .send(CompileMsg {
-                pc: addr,
-                block: xs.to_vec(),
-                idx,
-            })
-            .expect("ok");
+        if system.block_cache.in_flight.insert(addr) {
+            let mut buff = [Instruction(0); 256];
+            let xs = Self::parse_block(system, addr, &mut buff);
+            system
+                .cpu
+                .sender
+                .as_mut()
+                .unwrap()
+                .send(CompileMsg {
+                    pc: addr,
+                    block: xs.to_vec(),
+                    idx,
+                })
+                .expect("ok");
+        }
+    }
+
+    pub(crate) fn receive_compiled_blocks(system: &mut System) {
+        loop {
+           match system.cpu.receiver.as_mut().unwrap().try_recv() {
+                Ok(BlockMsg { idx, block }) => {
+                   system.block_cache.in_flight.remove(&block.addr);
+                   if let Some(idx) = idx {
+                    system.block_cache.insert_block_at(idx, block.addr, block);
+                   } else {
+                    system.block_cache.insert_block(block.addr, block);
+                   }
+                },
+                Err(_) => return,
+           }
+        }
     }
 
     pub fn check_for_pending_interrupts(system: &mut System) -> bool {
@@ -198,8 +211,7 @@ impl Dynarec {
     }
 
     pub fn is_block_valid(system: &System, block_idx: u32) -> bool {
-        let bc = system.block_cache.lock().unwrap();
-        let block = bc.get_block(block_idx);
+        let block = system.block_cache.get_block(block_idx);
         // for now check ram only
         // let ram_idx = block.
         let addr = mask_region(block.addr) as usize; // offset should be somewhere in ram, I hope
@@ -248,25 +260,33 @@ impl Serialize for Dynarec {
     }
 }
 
-struct CompileMsg {
+pub struct CompileMsg {
     pc: u32,
     idx: Option<u32>,
     block: Vec<Instruction>,
 }
 
-fn create_compiler_thread(system: &mut System) -> (Sender<CompileMsg>, JoinHandle<()>) {
+pub struct BlockMsg {
+    idx: Option<u32>,
+    block: block_cache::Block,
+}
+
+fn create_compiler_thread(
+    system: &mut System,
+) -> (
+    Sender<CompileMsg>,
+    Receiver<BlockMsg>,
+    JoinHandle<()>,
+) {
     let (sender, receiver) = crossbeam::channel::bounded(32096);
-    let block_cache = system.block_cache.clone();
+    let (code_sender, code_receiver) = crossbeam::channel::bounded(4096);
     let regs_ptr: u64 = &mut *system.cpu.regs as *mut Registers as u64;
     // let regs_ptr: u64 = unsafe { std::mem::transmute(system.cpu.regs.as_mut()) } as u64;
     let system_ptr: u64 = &mut *system as *mut System as u64;
     let gte_ptr: u64 = &mut *system.cpu.gte as *mut Gte as u64;
-    let ram_ptr: u64 = system.ram.data.as_ptr() as *mut u8 as u64;
-    let bc = system.block_cache.lock().unwrap();
-    let cache_ptr: u64 = bc.ram.as_ptr() as *mut u8 as u64;
-    drop(bc);
+    // let mut in_flight: HashSet<u32> = std::collections::HashSet::new();
     let handle = std::thread::spawn(move || {
-        let mut compiler = Compiler::new(regs_ptr, system_ptr, gte_ptr, ram_ptr, cache_ptr);
+        let mut compiler = Compiler::new(regs_ptr, system_ptr, gte_ptr);
         compiler.init();
         let core_ids = core_affinity::get_core_ids().unwrap();
         let res = core_affinity::set_for_current(core_ids[2]);
@@ -280,25 +300,23 @@ fn create_compiler_thread(system: &mut System) -> (Sender<CompileMsg>, JoinHandl
             };
             let CompileMsg { pc, block, idx } = msg;
 
-            // check that block is not compiled already...
-            let bc = block_cache.lock().expect("ok");
-            if bc.get_entry(pc).is_some() {
-                continue;
-            }
-            drop(bc);
+            // if in_flight.contains(&pc) {
+            //     continue;
+            // }
+            // in_flight.insert(pc);
+
             let block = compiler.compile_block(pc, block);
             compiler.patch_block(&block);
-            let mut bc = block_cache.lock().expect("ok");
-            // FIXME: hmm, need to check that block is still valid?
-            if let Some(idx) = idx {
-                bc.insert_block_at(idx, pc, block);
-            } else {
-                bc.insert_block(pc, block);
-            }
+            code_sender.send(BlockMsg { idx, block }).expect("ok");
+            // if let Some(idx) = idx {
+            //     bc.insert_block_at(idx, pc, block);
+            // } else {
+            //     bc.insert_block(pc, block);
+            // }
         }
     });
 
-    (sender, handle)
+    (sender, code_receiver, handle)
 }
 
 struct Compiler {
@@ -323,13 +341,7 @@ struct Compiler {
 }
 
 impl Compiler {
-    pub fn new(
-        regs_ptr: u64,
-        system_ptr: u64,
-        gte_ptr: u64,
-        ram_ptr: u64,
-        cache_ptr: u64,
-    ) -> Compiler {
+    pub fn new(regs_ptr: u64, system_ptr: u64, gte_ptr: u64) -> Compiler {
         let mut regs = [0xdeadbeef; 32];
         regs[0] = 0;
         let regs = Registers {
@@ -502,8 +514,6 @@ impl Compiler {
             constants: Constants {
                 regs: regs_ptr,
                 system: system_ptr,
-                ram: ram_ptr,
-                cache: cache_ptr,
                 gte: gte_ptr,
                 store_word,
                 store_half_word,

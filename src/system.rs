@@ -120,7 +120,7 @@ pub struct System {
     pub mdec: Mdec,
     pub gpu: Gpu,
     #[serde(skip)]
-    pub block_cache: Arc<Mutex<BlockCache>>,
+    pub block_cache: BlockCache,
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -151,7 +151,6 @@ impl System {
         gpu: Gpu,
         block_cache: BlockCache,
     ) -> System {
-        let block_cache = Arc::new(Mutex::new(block_cache));
         System {
             cpu,
             bios,

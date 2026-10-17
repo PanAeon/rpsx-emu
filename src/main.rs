@@ -803,9 +803,7 @@ impl State {
         println!("exe size: {}", exe_size);
         self.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
-        let mut bc = self.system.block_cache.lock().expect("Ok");
-        bc.invalidate();
-        drop(bc);
+        self.system.block_cache.invalidate();
         //  let dest = self
         //     .cpu.system.ram.data
         //     .bytes()
@@ -1105,11 +1103,12 @@ impl State {
             }
             let pc = self.system.cpu.pc();
 
-            let block_cache = self.system.block_cache.clone();
-            let mut bc = block_cache.lock().expect("ok");
+            Dynarec::receive_compiled_blocks(&mut self.system);
 
-            let block_idx = if let Some(entry) = bc.get_entry(pc) {
-                drop(bc);
+
+
+
+            let block_idx = if let Some(entry) = self.system.block_cache.get_entry(pc) {
                 if entry.dirty {
                     if !Dynarec::is_block_valid(&mut self.system, entry.block_idx) {
                         // recompile block...
@@ -1120,16 +1119,13 @@ impl State {
                         //     .insert_block_at(entry.block_idx, pc, block);
                         None
                     } else {
-                        bc = block_cache.lock().expect("ok");
-                        bc.get_entry_mut(pc).dirty = false;
-                        drop(bc);
+                        self.system.block_cache.get_entry_mut(pc).dirty = false;
                         Some(entry.block_idx)
                     }
                 } else {
                         Some(entry.block_idx)
                 }
             } else {
-                drop(bc);
                 Dynarec::schedule_compile_block(&mut self.system, pc, None);
                 None
                 // let block = Dynarec::compile_block(&mut self.system, pc);

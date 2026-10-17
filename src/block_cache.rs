@@ -1,4 +1,4 @@
-use std::pin::Pin;
+use std::{collections::HashSet, pin::Pin};
 
 use crate::system::map;
 
@@ -12,6 +12,10 @@ pub struct CacheEntry {
 }
 
 const _: () = assert!(core::mem::size_of::<CacheEntry>() == 8);
+
+pub struct Page {
+    blocks: Vec<CacheEntry>
+}
 
 pub struct Block {
     pub ptr: *const u8,
@@ -27,7 +31,8 @@ unsafe impl Send for Block {}
 pub struct BlockCache {
     bios: Box<[CacheEntry]>,
     pub ram: Pin<Box<[CacheEntry]>>, // 4 Mb
-    pub blocks: Vec<Block>
+    pub blocks: Vec<Block>,
+    pub in_flight: HashSet<u32>,
 }
 
 impl BlockCache {
@@ -36,7 +41,8 @@ impl BlockCache {
         BlockCache {
             bios: vec![CacheEntry::default();128*1024].into_boxed_slice(),
             ram: Box::into_pin(vec![CacheEntry::default();2 * 256 * 1024].into_boxed_slice()),
-            blocks: vec![] 
+            blocks: vec![],
+            in_flight: HashSet::new()
         }
 
     }
@@ -87,6 +93,7 @@ impl BlockCache {
             // entry.dirty = false;
         }
     }
+    // FIXME: check if the block is still valid
     pub fn insert_block(&mut self, addr: u32, block: Block) -> u32 {
         let idx = self.blocks.len();
         let block_len = block.length;

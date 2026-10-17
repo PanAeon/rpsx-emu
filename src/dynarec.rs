@@ -832,12 +832,12 @@ impl Compiler {
                         }
                         MemAccess::StoreWord => {
                             // mov %edx, (%rsi)
-                            // let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
-                            // bytes[0] = 0x89;
-                            // bytes[1] = 0x16;
-                            // if len == 3 {
-                            //     bytes[2] = 0x90;
-                            // }
+                            let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
+                            bytes[0] = 0x89;
+                            bytes[1] = 0x16;
+                            if len == 3 {
+                                bytes[2] = 0x90;
+                            }
                         }
                         MemAccess::StoreHalf => {
                             // mov %dx, (%rsi)
@@ -885,12 +885,12 @@ impl Compiler {
                         MemAccess::StoreByte => {
                             // mov %dl, (%rsi)
 
-                            // let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
-                            // bytes[0] = 0x88;
-                            // bytes[1] = 0x16;
-                            // if len == 3 {
-                            //     bytes[2] = 0x90;
-                            // }
+                            let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
+                            bytes[0] = 0x88;
+                            bytes[1] = 0x16;
+                            if len == 3 {
+                                bytes[2] = 0x90;
+                            }
                         }
                     }
                     // bytes[2] = 0x06;

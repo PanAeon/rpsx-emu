@@ -499,7 +499,7 @@ pub extern "C" fn store_word(system_ptr: *mut System, addr: u32, val: u32) {
 }
 
 pub extern "C" fn store_half_word(system_ptr: *mut System, addr: u32, val: u16) {
-    println!("are we here??");
+    // println!("are we here??");
     let system = unsafe { system_ptr.as_mut().expect("ok") };
     let addr = addr.saturating_sub(0x10000);
     System::store(system, addr, val);

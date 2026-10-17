@@ -114,7 +114,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         decoder.decode_out(&mut instruction);
 
         if instruction.op_code().is_nop() {
-            println!("^^got store 16");
+            // println!("^^got store 16");
             decoder.decode_out(&mut instruction);
             let reg = instruction.op0_register();
             // now we need to insert moveabsq $..., %reg
@@ -123,11 +123,11 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
             let l1 = encoder.encode(&ins, instr_addr).expect("ok");
             let ins = Instruction::with1(Code::Call_rm64, reg).expect("ok");
             let l2 = encoder.encode(&ins, instr_addr).expect("ok");
-            println!("l1: {}, l2: {}, reg: {:?}", l1, l2, reg);
+            // println!("l1: {}, l2: {}, reg: {:?}", l1, l2, reg);
 
             let buff = encoder.take_buffer();
             nop_bytes[0..l1 + l2].copy_from_slice(&buff);
-            print_what_we_have_got(nop_address, nop_bytes);
+            // print_what_we_have_got(nop_address, nop_bytes);
             uctx.uc_mcontext.gregs[libc::REG_RIP as usize] = (instr_addr-9) as i64;
         } else {
             let movq_address = instr_addr - 10;

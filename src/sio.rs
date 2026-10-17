@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::thread::current;
 
 use arrayvec::ArrayVec;
 use serde::{Deserialize, Serialize};
@@ -381,9 +380,9 @@ impl Gamepad {
         self.state = GamepadState::Init;
     }
 
-    pub fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
-        self.joystick_axes = [right.0, right.1, left.0, left.1];
-    }
+    // pub fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
+    //     self.joystick_axes = [right.0, right.1, left.0, left.1];
+    // }
 
     pub fn set_buttons(&mut self, buttons: u16) {
         self.digital_switches = buttons;
@@ -451,7 +450,7 @@ impl Memcard {
     }
 
     pub fn read_file_data(&mut self) {
-        let mut data =  vec![0_u8; 0x20000].into_boxed_slice();
+        let data =  vec![0_u8; 0x20000].into_boxed_slice();
         // let filedata = std::fs::read(path).expect("can't read memcard");
         self.data = data;
     }
@@ -704,6 +703,7 @@ enum GamepadState {
     AnalogInput3,
 }
 
+#[allow(dead_code)]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub enum Button {

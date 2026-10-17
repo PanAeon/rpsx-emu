@@ -135,27 +135,27 @@ impl Gpu {
         }
     }
 
-    pub fn get_command(val: u32) -> u32 {
-        val >> 29
-    }
+    // pub fn get_command(val: u32) -> u32 {
+    //     val >> 29
+    // }
 
-    pub fn get_shading(val: u32) -> bool {
-        val & (0x1 << 28) != 0
-    }
-    pub fn get_vertices(val: u32) -> bool {
-        val & (0x1 << 27) != 0
-    }
-    pub fn get_textured(val: u32) -> bool {
-        val & (0x1 << 26) != 0
-    }
+    // pub fn get_shading(val: u32) -> bool {
+    //     val & (0x1 << 28) != 0
+    // }
+    // pub fn get_vertices(val: u32) -> bool {
+    //     val & (0x1 << 27) != 0
+    // }
+    // pub fn get_textured(val: u32) -> bool {
+    //     val & (0x1 << 26) != 0
+    // }
 
-    pub fn get_blend_mode(val: u32) -> bool {
-        val & (0x1 << 25) != 0
-    }
+    // pub fn get_blend_mode(val: u32) -> bool {
+    //     val & (0x1 << 25) != 0
+    // }
 
-    pub fn get_modulation(val: u32) -> bool {
-        val & (0x1 << 24) != 0
-    }
+    // pub fn get_modulation(val: u32) -> bool {
+    //     val & (0x1 << 24) != 0
+    // }
 
     pub fn gp0(&mut self, val: u32) {
         if self.gp0_words_remaining == 0 {
@@ -420,13 +420,12 @@ impl Gpu {
         let v = Self::gp0_vertex(self.gp0_command[1]);
         let side = Self::gp0_vertex(self.gp0_command[2]);
 
-        let ctx = self.rendering_ctx();
+        // let ctx = self.rendering_ctx();
         self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::FillRect {
                 v,
                 side,
                 c: color,
-                ctx,
             })
             .expect("ok");
     }
@@ -1514,10 +1513,10 @@ impl Colour {
         }
     }
 
-    pub fn from_5bit(color: u16) -> Self {
-        let [lsb, msb] = color.to_le_bytes();
-        Self::from_bytes(msb, lsb)
-    }
+    // pub fn from_5bit(color: u16) -> Self {
+    //     let [lsb, msb] = color.to_le_bytes();
+    //     Self::from_bytes(msb, lsb)
+    // }
 
     pub fn from_gp0(color: u32) -> Self {
         let r = (color & 0xFF) as u8;
@@ -1580,6 +1579,7 @@ pub fn convert_5bit_to_8bit(color: u16) -> u8 {
 }
 
 // from rustation-ng
+#[allow(dead_code)]
 pub struct Command {
     /// Callback function to actually perform the command. If the command is a draw command it only
     /// takes care of the timings and maintaining the façade, the drawing takes place in an other

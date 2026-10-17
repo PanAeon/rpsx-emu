@@ -5,7 +5,7 @@ use std::{fs::File, io::{Read, Seek}, num::NonZero, sync::{Arc, Condvar, Mutex},
 
 pub struct CdCache {
     reader: Arc<(Mutex<Reader>, Condvar)>,
-    handle: thread::JoinHandle<()>,
+    handle: Option<thread::JoinHandle<()>>,
     file: File
 }
 
@@ -22,7 +22,7 @@ impl CdCache {
 
         CdCache {
             reader,
-            handle,
+            handle: Some(handle),
             file
         }
     }
@@ -54,7 +54,9 @@ impl Drop for CdCache {
 
         reader.quit = true;
         cond.notify_one();
-        // self.handle.join().unwrap();
+        if let Some(_) = self.handle.take() {
+            // h.join().unwrap();
+        }
     }
 }
 

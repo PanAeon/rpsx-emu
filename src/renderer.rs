@@ -7,10 +7,8 @@ use std::{
 use crossbeam::channel::{Receiver, Sender};
 
 use crate::{
-    Color,
     gpu::{
         Colour, DisplayDepth, HorizontalRes, TextureDepth, Vertex, VerticalRes,
-        convert_5bit_to_8bit,
     },
 };
 
@@ -52,8 +50,7 @@ pub enum RendererMsg {
     FillRect {
         v: Vertex,
         side: Vertex,
-        c: Colour,
-        ctx: RenderingContext,
+        c: Colour
     },
     Vram2VramBlit {
         src: Vertex,
@@ -92,6 +89,7 @@ pub enum RendererResponse {
     },
 }
 
+#[allow(dead_code)]
 pub struct RenderingContext {
     // Texture page base X coordinate (4 bits, 64 byte increment)
     pub page_base_x: u8,
@@ -343,7 +341,7 @@ impl Renderer {
                         }
                         _ => unreachable!("wrong combo"),
                     },
-                    RendererMsg::FillRect { v, side, c, ctx } => renderer.fill_rect(*v, *side, *c),
+                    RendererMsg::FillRect { v, side, c, .. } => renderer.fill_rect(*v, *side, *c),
                     RendererMsg::Vram2VramBlit { src, dst, size } => {
                         renderer.vram2vram_blit(*src, *dst, *size)
                     }
@@ -377,10 +375,7 @@ impl Renderer {
                             Err(_) => return,
                         }
                     }
-                    RendererMsg::DrawingAreaChange {
-                        top_left,
-                        bottom_right,
-                    } => {
+                    RendererMsg::DrawingAreaChange {..}  => {
                         // ignore for now..
                     }
                 }
@@ -644,10 +639,10 @@ impl Renderer {
         };
 
         // bounding box
-        let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
-        let mut max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
-        let mut min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
-        let mut max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
+        let min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
+        let max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
+        let min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
+        let max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
 
         let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
         else {
@@ -716,10 +711,10 @@ impl Renderer {
         };
 
         // bounding box
-        let mut min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
-        let mut max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
-        let mut min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
-        let mut max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
+        let min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
+        let max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
+        let min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
+        let max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
 
         let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
         else {
@@ -830,10 +825,10 @@ impl Renderer {
         vs[2].y += ctx.drawing_y_offset as i32;
 
         // bounding box
-        let mut min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
-        let mut max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
-        let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
-        let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
+        let min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
+        let max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
+        let min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
+        let max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
         let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
         else {
@@ -943,10 +938,10 @@ impl Renderer {
         vs[2].y += ctx.drawing_y_offset as i32;
 
         // bounding box
-        let mut min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
-        let mut max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
-        let mut min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
-        let mut max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
+        let min_x = cmp::min(vs[0].x, cmp::min(vs[1].x, vs[2].x));
+        let max_x = cmp::max(vs[0].x, cmp::max(vs[1].x, vs[2].x));
+        let min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
+        let max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
         let Some((min_x, min_y, max_x, max_y)) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
         else {
@@ -1154,7 +1149,7 @@ impl Renderer {
             // }
             (1024, 512, 0, 0, ctx.display_depth)
         } else {
-            let (sx, sy, width, height, interlaced) = (
+            let (sx, sy, width, height, _interlaced ) = (
                 ctx.display_vram_x_start as usize,
                 ctx.display_vram_y_start as usize,
                 ctx.hres.into_pixels(),
@@ -1162,7 +1157,7 @@ impl Renderer {
                 ctx.interlaced,
             );
             for i in 0..1024*512 {
-                output_frame_buffer[i] = (self.vram[2*i] as u32);
+                output_frame_buffer[i] = self.vram[2*i] as u32;
                 output_frame_buffer[i] |= (self.vram[2*i+1] as u32) << 8;
             }
             // output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
@@ -1406,6 +1401,7 @@ impl Clut {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Texture {
     base_x: usize,

@@ -1,4 +1,3 @@
-use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
@@ -525,7 +524,7 @@ pub extern "C" fn load_word(system_ptr: *mut System, addr: u32) -> u32 {
     // println!("yepp!");
     unsafe {
         let addr = addr.saturating_sub(0x10000);
-        let system_ptr = SYSTEM_ADDR as *mut System;
+        // let system_ptr = SYSTEM_ADDR as *mut System;
         let system = system_ptr.as_mut().expect("ok");
         System::load(system, addr as u32)
     }

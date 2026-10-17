@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    cdrom::CDRom, dma::Dma, dynarec::{Dynarec, Registers}, gpu::Gpu, gte::Gte, irq::InterruptController, mdec::Mdec, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, system::System, timers::Timers,
+    cdrom::CDRom, dma::Dma, dynarec::{Registers}, gpu::Gpu, gte::Gte, irq::InterruptController, mdec::Mdec, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, system::System, timers::Timers,
 };
-use serde::de::Deserializer;
+// use serde::de::Deserializer;
 
-pub fn save_state(idx: u32, system: &mut System) {
+pub fn save_state(_idx: u32, system: &mut System) {
     let save_dir = "/home/vitalii/.config/rpsx-emu/saves";
 
     let mut fb = flexbuffers::FlexbufferSerializer::new();
@@ -23,7 +23,7 @@ pub fn save_state(idx: u32, system: &mut System) {
     println!("save successful");
 }
 
-pub fn load_state(idx: u32, system: &mut System) {
+pub fn load_state(_idx: u32, system: &mut System) {
     let save_dir = "/home/vitalii/.config/rpsx-emu/saves";
     let filename = save_dir.to_string() + "/1.save";
     let data = std::fs::read(filename).expect("ok");

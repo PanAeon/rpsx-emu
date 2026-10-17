@@ -1,9 +1,9 @@
-use std::{cell::Cell, collections::VecDeque, ops::{Index, IndexMut, Range}};
+use std::{cell::Cell, ops::{Index, IndexMut, Range}};
 use serde::{Deserialize, Serialize};
 
 use num_enum::FromPrimitive;
 
-use crate::{cdrom::CDRom, system::{Addressable, System}};
+use crate::system::{Addressable, System};
 
 bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize)]
@@ -576,7 +576,7 @@ impl Spu {
 
     // 8bit/16bit/32bit reads
     pub fn load<T: Addressable>(&self, address: u32) -> T {
-        let width = T::width() as usize;
+        // let width = T::width() as usize;
         // let addr = address as usize;
         // let mut buffer = [0u8;4];
         // buffer[..width].copy_from_slice(&self.data[addr..addr+width]);
@@ -703,7 +703,7 @@ impl Spu {
     // 8 bit writes on odd addresses are ignored,
     // 8 bit writes on even addresses are executed as 16 bit writes
     pub fn store<T: Addressable>(&mut self, address: u32, value: T) {
-        let width = T::width() as usize;
+        // let width = T::width() as usize;
         // let addr = address as usize;
         // let bytes = value.as_u32().to_le_bytes();
         // self.control.enabled();
@@ -997,32 +997,32 @@ fn clamped_i16(a: i32) -> i16 {
     a.clamp(-0x8000, 0x7FFF) as i16
 }
 // from starpsx
-fn decode_adpcm_block2(
-    block: &[u8],
-    decoded: &mut [i16; 28],
-    old_sample: &mut i16,
-    older_sample: &mut i16,
-) {
-    let shift = block[0] & 0x0F;
-    let shift = 12 - if shift > 12 { 9 } else { shift };
-    let filter = ((block[0] & 0x70) >> 4).min(4);
-
-    let f0 = POS_ADPCM_TABLE[usize::from(filter)];
-    let f1 = NEG_ADPCM_TABLE[usize::from(filter)];
-
-    for i in 0..28 {
-        let old = i32::from(*old_sample);
-        let older = i32::from(*older_sample);
-
-        let t = signed4bit((block[2 + i / 2] >> (4 * (i & 1))) & 0xF);
-        let s = clamped_i16((t << shift) + (old * f0 + older * f1 + 32) / 64);
-
-        *older_sample = *old_sample;
-        *old_sample = s;
-
-        decoded[i] = s;
-    }
-}
+// fn decode_adpcm_block2(
+//     block: &[u8],
+//     decoded: &mut [i16; 28],
+//     old_sample: &mut i16,
+//     older_sample: &mut i16,
+// ) {
+//     let shift = block[0] & 0x0F;
+//     let shift = 12 - if shift > 12 { 9 } else { shift };
+//     let filter = ((block[0] & 0x70) >> 4).min(4);
+//
+//     let f0 = POS_ADPCM_TABLE[usize::from(filter)];
+//     let f1 = NEG_ADPCM_TABLE[usize::from(filter)];
+//
+//     for i in 0..28 {
+//         let old = i32::from(*old_sample);
+//         let older = i32::from(*older_sample);
+//
+//         let t = signed4bit((block[2 + i / 2] >> (4 * (i & 1))) & 0xF);
+//         let s = clamped_i16((t << shift) + (old * f0 + older * f1 + 32) / 64);
+//
+//         *older_sample = *old_sample;
+//         *old_sample = s;
+//
+//         decoded[i] = s;
+//     }
+// }
 // from https://jsgroth.dev/blog/posts/ps1-spu-part-1/
 pub fn decode_adpcm_block(
     block: &[u8],
@@ -1313,12 +1313,12 @@ pub const GAUSSIAN_TABLE: [i32; 512] = [
     0x5997, 0x599E, 0x59A4, 0x59A9, 0x59AD, 0x59B0, 0x59B2, 0x59B3,
 ];
 
-const FIR_FILTER: &[i32; 39] = &[
-    -0x0001, 0x0000, 0x0002, 0x0000, -0x000A, 0x0000, 0x0023, 0x0000, -0x0067, 0x0000, 0x010A,
-    0000, -0x0268, 0000, 0x0534, 0000, -0x0B90, 0000, 0x2806, 0x4000, 0x2806, 0000, -0x0B90, 0000,
-    0x0534, 0000, -0x0268, 0000, 0x010A, 0000, -0x0067, 0000, 0x0023, 0000, -0x000A, 0000, 0x0002,
-    0000, -0x0001,
-];
+// const FIR_FILTER: &[i32; 39] = &[
+//     -0x0001, 0x0000, 0x0002, 0x0000, -0x000A, 0x0000, 0x0023, 0x0000, -0x0067, 0x0000, 0x010A,
+//     0000, -0x0268, 0000, 0x0534, 0000, -0x0B90, 0000, 0x2806, 0x4000, 0x2806, 0000, -0x0B90, 0000,
+//     0x0534, 0000, -0x0268, 0000, 0x010A, 0000, -0x0067, 0000, 0x0023, 0000, -0x000A, 0000, 0x0002,
+//     0000, -0x0001,
+// ];
 
 pub fn write_half<const HIGH: usize>(r: &mut u32, value: u16) {
     let shift = HIGH * 16;

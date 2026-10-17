@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 
 pub const LINE_DURATION: u64 = 2172;
 pub const HBLANK_DURATION: u64 = 390;
-pub const SPU_INTERVAL: u64 = 668;
-pub const SAMPLES_PER_FRAME: u64 = 735;
-pub const CLOCKS_PER_FRAME: u64 = SAMPLES_PER_FRAME * SPU_INTERVAL;
+// pub const SPU_INTERVAL: u64 = 668;
+// pub const SAMPLES_PER_FRAME: u64 = 735;
+// pub const CLOCKS_PER_FRAME: u64 = SAMPLES_PER_FRAME * SPU_INTERVAL;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct TimerInterrupt {
@@ -74,12 +74,12 @@ impl Scheduler {
         Some(task.event)
     }
 
-    pub fn next_event_budget(&mut self) -> u64 {
-        match self.tasks.first() {
-            Some(task) => task.cycle - self.cycle,
-            None => 1024
-        }
-    }
+    // pub fn next_event_budget(&mut self) -> u64 {
+    //     match self.tasks.first() {
+    //         Some(task) => task.cycle - self.cycle,
+    //         None => 1024
+    //     }
+    // }
 
     pub fn unschedule(&mut self, event: &Event) {
         self.tasks.retain(|x| x.event != *event);

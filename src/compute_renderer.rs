@@ -389,7 +389,7 @@ impl ComputeRenderer {
                             ctx,
                         );
                     }
-                    RendererMsg::FillRect { v, side, c, ctx :_} => renderer.fill_rect(*v, *side, *c),
+                    RendererMsg::FillRect { v, side, c } => renderer.fill_rect(*v, *side, *c),
                     RendererMsg::Vram2VramBlit { src, dst, size } => {
                         renderer.vram2vram_blit(*src, *dst, *size)
                     }

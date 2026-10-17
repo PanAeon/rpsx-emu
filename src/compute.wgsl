@@ -289,9 +289,12 @@ fn draw_triangle_barycentric( v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i
     let clut = get_clut(v1);
     let transparency = get_transparency(v1);
 
-    let bias1 = 0.00000000000001 * f32(!is_top_left(p0, p1));
-    let bias2 = 0.00000000000001 * f32(!is_top_left(p1, p2));
-    let bias3 = 0.00000000000001 * f32(!is_top_left(p2, p0));
+    let bias1 = select(-0.00000000001, 0.0000000000000000001,  !is_top_left(p0, p1));
+    let bias2 = select(-0.00000000001, 0.0000000000000000001,  !is_top_left(p1, p2));
+    let bias3 = select(-0.00000000001, 0.0000000000000000001,  !is_top_left(p2, p0));
+    // let bias1 = 0.00000000000001 * f32(!is_top_left(p0, p1));
+    // let bias2 = 0.00000000000001 * f32(!is_top_left(p1, p2));
+    // let bias3 = 0.00000000000001 * f32(!is_top_left(p2, p0));
 
     for (var y = bds.y; y <= bds.w; y++) {
         for (var x = bds.x; x <= bds.z; x++) {

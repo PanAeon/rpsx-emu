@@ -3,17 +3,12 @@ use cgmath::prelude::*;
 use cpal::traits::StreamTrait;
 use wgpu_profiler::GpuProfiler;
 // use env_logger::fmt::style::Color;
-use std::cmp::min;
-use std::fmt::Display;
-use std::fs::File;
-use std::io::{BufWriter, Cursor, Read, Write};
+use std::io::Read;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::{iter, sync::Arc};
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
-use winit::dpi::LogicalSize;
-use winit::event_loop::EventLoopProxy;
 use winit::keyboard::Key;
 use winit::{
     application::ApplicationHandler,
@@ -23,10 +18,10 @@ use winit::{
     window::Window,
 };
 
-use gilrs::{Button, Event, GamepadId, Gilrs};
+use gilrs::{Event, GamepadId, Gilrs};
 
-use std::{borrow::Cow, collections::HashMap, hash::Hash, num::NonZeroU64};
-use vek::{Mat4, Vec2, Vec4};
+use std::{borrow::Cow, num::NonZeroU64};
+use vek::{Mat4, Vec4};
 
 use crate::cdrom::CDRom;
 use crate::dynarec::Dynarec;

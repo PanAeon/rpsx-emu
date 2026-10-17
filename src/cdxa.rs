@@ -102,7 +102,7 @@ fn decode_28_nibbles<const NIBBLE: usize>(
 }
 
 bitfield::bitfield! {
-    pub struct AudioHeader(u8);
+    pub struct AudioHeader(pub u8);
     pub into Channel, channel, _ : 1, 0;
     pub into SampleRate, sample_rate, _ : 3, 2;
     pub into BitsPerSample, bits_per_channel, _ : 5, 4;

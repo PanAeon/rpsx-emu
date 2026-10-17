@@ -154,11 +154,7 @@ impl Dynarec {
            match system.cpu.receiver.as_mut().unwrap().try_recv() {
                 Ok(BlockMsg { idx, block }) => {
                    system.block_cache.in_flight.remove(&block.addr);
-                   if let Some(idx) = idx {
-                    system.block_cache.insert_block_at(idx, block.addr, block);
-                   } else {
-                    system.block_cache.insert_block(block.addr, block);
-                   }
+                   crate::block_cache::insert_block(system, block.addr, block);
                 },
                 Err(_) => return,
            }
@@ -676,6 +672,7 @@ impl Compiler {
             length: xs.len() as u32,
             mem,
             addr,
+            dirty: false,
         }
     }
 

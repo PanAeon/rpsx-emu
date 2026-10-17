@@ -803,7 +803,7 @@ impl State {
         println!("exe size: {}", exe_size);
         self.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
-        self.system.block_cache.invalidate();
+        // self.system.block_cache.invalidate();
         //  let dest = self
         //     .cpu.system.ram.data
         //     .bytes()
@@ -1109,21 +1109,21 @@ impl State {
 
 
             let block_idx = if let Some(entry) = self.system.block_cache.get_entry(pc) {
-                if entry.dirty {
-                    if !Dynarec::is_block_valid(&mut self.system, entry.block_idx) {
+                if self.system.block_cache.is_block_dirty(entry.block_idx.unwrap()) {
+                    if !Dynarec::is_block_valid(&mut self.system, entry.block_idx.unwrap()) {
                         // recompile block...
-                        Dynarec::schedule_compile_block(&mut self.system, pc, Some(entry.block_idx));
+                        Dynarec::schedule_compile_block(&mut self.system, pc, entry.block_idx);
                         // let block = Dynarec::compile_block(&mut self.system, pc);
                         // self.system
                         //     .block_cache
                         //     .insert_block_at(entry.block_idx, pc, block);
                         None
                     } else {
-                        self.system.block_cache.get_entry_mut(pc).dirty = false;
-                        Some(entry.block_idx)
+                        self.system.block_cache.mark_fresh(entry.block_idx.unwrap());
+                        entry.block_idx
                     }
                 } else {
-                        Some(entry.block_idx)
+                        entry.block_idx
                 }
             } else {
                 Dynarec::schedule_compile_block(&mut self.system, pc, None);

@@ -18,7 +18,7 @@ use nix::poll::{PollFd, PollFlags, poll};
 use libc::truncate;
 use target_lexicon::PointerWidth;
 
-use crate::system::store_half_word;
+use crate::system::{System, store_half_word};
 
 // use crate::system::{load_word};
 
@@ -66,12 +66,19 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
 
             std::process::exit(1);
         }
-        // TODO: totally unvverified if it works..
         if (uctx.uc_mcontext.gregs[libc::REG_ERR as usize] & 0x2) != 0 {
-            println!("caught fastmem write fault!");
-            println!("caught fastmem write fault!");
-            println!("caught fastmem write fault!");
-            // std::process::exit(1);
+            // got write fault..
+            let addr = addr.wrapping_sub(0x10_000);
+            let addr = crate::system::mask_region(addr as u32);
+            if (addr as usize) < 2 * MB {
+                println!("caught code protection!");
+
+                let system = (&mut *(crate::system::SYSTEM_ADDR as *mut System)) as &mut System;
+                system.block_cache.invalidate_addr(addr);
+                unprotect_page((addr as usize) >> 12).expect("ok");
+
+                return;
+            }
         }
 
         // uctx.uc_mcontext.gregs[libc::REG_RSI as usize] -= 0x10_000;
@@ -256,6 +263,38 @@ pub fn protect_instr(instr_addr: u64) -> Result<(), std::io::Error> {
     let prot = libc::PROT_READ | libc::PROT_EXEC;
 
     let addr = instr_addr & !0xFFF;
+    let addr = addr as *mut std::ffi::c_void;
+
+    unsafe {
+        let ptr = libc::mprotect(addr, 4096, prot);
+        if ptr == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub fn protect_page(page: usize) -> Result<(), std::io::Error> {
+    let prot = libc::PROT_READ | libc::PROT_EXEC;
+
+    let addr = page * 4096 + 0x10_000;
+    let addr = addr as *mut std::ffi::c_void;
+
+    unsafe {
+        let ptr = libc::mprotect(addr, 4096, prot);
+        if ptr == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub fn unprotect_page(page: usize) -> Result<(), std::io::Error> {
+    let prot = libc::PROT_READ | libc::PROT_WRITE;
+
+    let addr = page * 4096 + 0x10_000;
     let addr = addr as *mut std::ffi::c_void;
 
     unsafe {

@@ -1,7 +1,6 @@
-use std::pin::Pin;
 
 use crate::system::{Addressable, System};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Serialize, Serializer};
 
 
 pub struct Ram {

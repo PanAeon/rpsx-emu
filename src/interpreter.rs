@@ -2,7 +2,6 @@ use crate::cpu::Exception;
 use crate::{
     cpu::Instruction,
     dynarec::Registers,
-    gte::Gte,
     system::{Addressable, System},
 };
 

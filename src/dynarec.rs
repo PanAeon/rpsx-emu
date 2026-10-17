@@ -131,7 +131,7 @@ impl Dynarec {
         jit_fn() as u64
     }
 
-    pub fn schedule_compile_block(system: &mut System, addr: u32, idx: Option<u32>) {
+    pub fn schedule_compile_block(system: &mut System, addr: u32) {
         if system.block_cache.in_flight.insert(addr) {
             let mut buff = [Instruction(0); 256];
             let xs = Self::parse_block(system, addr, &mut buff);
@@ -143,7 +143,6 @@ impl Dynarec {
                 .send(CompileMsg {
                     pc: addr,
                     block: xs.to_vec(),
-                    idx,
                 })
                 .expect("ok");
         }
@@ -152,7 +151,7 @@ impl Dynarec {
     pub(crate) fn receive_compiled_blocks(system: &mut System) {
         loop {
            match system.cpu.receiver.as_mut().unwrap().try_recv() {
-                Ok(BlockMsg { idx, block }) => {
+                Ok(BlockMsg {  block, .. }) => {
                    system.block_cache.in_flight.remove(&block.addr);
                    crate::block_cache::insert_block(system, block.addr, block);
                 },
@@ -258,12 +257,10 @@ impl Serialize for Dynarec {
 
 pub struct CompileMsg {
     pc: u32,
-    idx: Option<u32>,
     block: Vec<Instruction>,
 }
 
 pub struct BlockMsg {
-    idx: Option<u32>,
     block: block_cache::Block,
 }
 
@@ -294,7 +291,7 @@ fn create_compiler_thread(
                 Ok(msg) => msg,
                 Err(_) => return,
             };
-            let CompileMsg { pc, block, idx } = msg;
+            let CompileMsg { pc, block} = msg;
 
             // if in_flight.contains(&pc) {
             //     continue;
@@ -303,7 +300,7 @@ fn create_compiler_thread(
 
             let block = compiler.compile_block(pc, block);
             compiler.patch_block(&block);
-            code_sender.send(BlockMsg { idx, block }).expect("ok");
+            code_sender.send(BlockMsg { block }).expect("ok");
             // if let Some(idx) = idx {
             //     bc.insert_block_at(idx, pc, block);
             // } else {
@@ -338,24 +335,6 @@ struct Compiler {
 
 impl Compiler {
     pub fn new(regs_ptr: u64, system_ptr: u64, gte_ptr: u64) -> Compiler {
-        let mut regs = [0xdeadbeef; 32];
-        regs[0] = 0;
-        let regs = Registers {
-            regs,
-            hi: 0xdeadbeef,
-            lo: 0xdeadbeef,
-            pc: 0xBFC00000,
-            // next_pc: 0xBFC00004,
-            // current_pc: 0xBFC00000,
-            sr: 0,
-            cause: 0,
-            epc: 0,
-            baddr: 0,
-            // out_regs: regs,
-            load: (0, 0),
-            // branch: false,
-            // delay_slot: false,
-        };
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
@@ -676,6 +655,7 @@ impl Compiler {
         }
     }
 
+    #[allow(dead_code)]
     pub fn print_instruction(instruction: &iced_x86::Instruction, formatter: &mut GasFormatter) {
         let mut output = String::new();
         // println!("{:?}", instruction.code());
@@ -699,7 +679,7 @@ impl Compiler {
     pub fn patch_block(&mut self, block: &block_cache::Block) {
         // we just have to find our magic value...
         unsafe {
-            let system_ptr = system::SYSTEM_ADDR;
+            // let system_ptr = system::SYSTEM_ADDR;
 
             let bytes = std::slice::from_raw_parts(block.ptr, 4 * 1024);
             // let bytes = block.ptr;
@@ -856,7 +836,7 @@ impl Compiler {
                                 reg.unwrap(),
                             )
                             .expect("ok");
-                            let l = encoder.encode(&ins, p - 10 + 1).expect("ok"); // should be 3
+                            let _ = encoder.encode(&ins, p - 10 + 1).expect("ok"); // should be 3
 
                             // println!("^^encoded len: {}", len);
                             let buff = encoder.take_buffer();
@@ -872,7 +852,7 @@ impl Compiler {
                                 iced_x86::Register::DX,
                             )
                             .expect("ok");
-                            let l = encoder.encode(&instruction, p - 10 + 9).expect("ok"); // should be 3
+                            let _ = encoder.encode(&instruction, p - 10 + 9).expect("ok"); // should be 3
                             let buff = encoder.take_buffer();
                             bytes[9..12].copy_from_slice(&buff);
 
@@ -3290,10 +3270,6 @@ impl<'a> BlockBuilder<'a> {
         let curr_v = self.get_reg_read(instr.rt());
         let curr_v = self.bldr.use_var(curr_v);
 
-        let system = self
-            .bldr
-            .ins()
-            .iconst(types::I64, self.constants.system as i64);
         // let load_word = self.get_load_word();
         // let res = self.bldr.ins().call(load_word, &[system, aligned_address]);
         // let curr_memory = self.bldr.inst_results(res)[0];
@@ -3342,10 +3318,6 @@ impl<'a> BlockBuilder<'a> {
         let curr_v = self.get_reg_read(instr.rt());
         let curr_v = self.bldr.use_var(curr_v);
 
-        let system = self
-            .bldr
-            .ins()
-            .iconst(types::I64, self.constants.system as i64);
         // let load_word = self.get_load_word();
         // let res = self.bldr.ins().call(load_word, &[system, aligned_address]);
         // let curr_memory = self.bldr.inst_results(res)[0];
@@ -3431,12 +3403,12 @@ impl<'a> BlockBuilder<'a> {
         self.compile_delayed_load_chain(instr.rt(), v);
     }
 
-    fn compile_break(&mut self, instr: Instruction) {
+    fn compile_break(&mut self, _: Instruction) {
         self.compile_delayed_load(true);
         self.compile_exception(Exception::Break, None);
     }
 
-    fn compile_syscall(&mut self, instr: Instruction) {
+    fn compile_syscall(&mut self, _: Instruction) {
         self.compile_delayed_load(true);
         self.compile_exception(Exception::SysCall, None);
     }
@@ -3528,7 +3500,7 @@ impl<'a> BlockBuilder<'a> {
                 .bldr
                 .ins()
                 .iconst(types::I64, self.constants.gte as usize as i64);
-            let res = self.bldr.ins().call(gte_command, &[gte, i]);
+            let _ = self.bldr.ins().call(gte_command, &[gte, i]);
             // self.gte.command(instr.0);
         } else {
             match cop_opcode {
@@ -3682,10 +3654,6 @@ impl<'a> BlockBuilder<'a> {
 
         let res = self.bldr.ins().call(gte_data, &[gte, cop_r]);
         let res = self.bldr.inst_results(res)[0];
-        let system = self
-            .bldr
-            .ins()
-            .iconst(types::I64, self.constants.system as usize as i64);
         self.compile_store(types::I32, address, res);
         self.bldr.ins().jump(then_block, &[]);
 
@@ -3893,6 +3861,7 @@ impl<'a> BlockBuilder<'a> {
     }
 */
 
+#[allow(dead_code)]
 pub enum Exception {
     ExternalInterrupt,
     LoadAddressError,  // baddr
@@ -3950,7 +3919,6 @@ pub extern "C" fn gte_set_control(gte_ptr: *mut Gte, reg: u8, val: u32) {
     gte.set_control(reg, val)
 }
 
-const HEXBYTES_COLUMN_BYTE_LENGTH: usize = 10;
 
 pub enum MemAccess {
     Load,

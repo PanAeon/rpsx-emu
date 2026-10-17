@@ -1,22 +1,9 @@
 use std::backtrace::Backtrace;
-use std::ffi::CString;
 use std::mem::MaybeUninit;
-use std::ptr;
 
-use cranelift::codegen::{ir::BlockArg, isa::CallConv};
-use cranelift::prelude::*;
-use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITMemoryProvider, JITModule};
-use cranelift_module::{DataDescription, FuncId, Linkage, Module};
-// use cranelift::codegen::
-// use cranelift_codegen::ir::types::*;
-use cranelift::codegen::ir::{BlockCall, FuncRef, MachMemFlags};
-use cranelift::codegen::verifier::verify_function;
 
 use iced_x86::{Code, Decoder, DecoderOptions, Encoder, GasFormatter, Instruction, Formatter};
-use nix::poll::{PollFd, PollFlags, poll};
 
-use libc::truncate;
-use target_lexicon::PointerWidth;
 
 use crate::system::{System, store_half_word};
 
@@ -36,12 +23,12 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         // println!("caught segfault at address {:?}", si.si_addr());
         // si.si_status()
 
-        let mut uctx = (&mut *(ctx as *mut libc::ucontext_t)) as &mut libc::ucontext_t;
+        let uctx = (&mut *(ctx as *mut libc::ucontext_t)) as &mut libc::ucontext_t;
         let rip = uctx.uc_mcontext.gregs[libc::REG_RIP as usize];
-        let mut rsp = uctx.uc_mcontext.gregs[libc::REG_RSP as usize];
-        let rdi = uctx.uc_mcontext.gregs[libc::REG_RDI as usize];
-        let rbp = uctx.uc_mcontext.gregs[libc::REG_RBP as usize];
-        let rsi = uctx.uc_mcontext.gregs[libc::REG_RSI as usize];
+        // let rsp = uctx.uc_mcontext.gregs[libc::REG_RSP as usize];
+        // let rdi = uctx.uc_mcontext.gregs[libc::REG_RDI as usize];
+        // let rbp = uctx.uc_mcontext.gregs[libc::REG_RBP as usize];
+        // let rsi = uctx.uc_mcontext.gregs[libc::REG_RSI as usize];
 
         // println!("faulting RIP: 0x{:X}, RSP: 0x{:X}", rip, rsp);
         // println!("faulting RDI: 0x{:X}, RSI: 0x{:X}", rdi, rsi);
@@ -190,6 +177,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
     }
 }
 
+#[allow(dead_code)]
 pub fn print_what_we_have_got(addr: u64, bytes: &[u8]) {
             let mut formatter = GasFormatter::new();
             formatter.options_mut().set_use_pseudo_ops(false);
@@ -325,6 +313,7 @@ fn create_fixed_anon_map(
     }
 }
 
+#[allow(dead_code)]
 fn reserve_address_space(
     start: u64,
     length: usize,
@@ -369,9 +358,7 @@ fn truncate_mem(fd: i32, length: i64) -> Result<(), std::io::Error> {
         return Ok(());
     }
 }
-unsafe fn extend_lifetime<'a, T>(r: &'a mut T) -> &'static mut T {
-    unsafe { std::mem::transmute::<&'a mut T, &'static mut T>(r) }
-}
+
 
 /*
   KUSEG     KSEG0     KSEG1
@@ -407,9 +394,9 @@ pub fn create_memory_mappings() -> (&'static mut [u8], &'static mut [u8]) {
     // let mem_mirr_2_ptr =create_fixed_anon_map(0x410_000 as *mut std::ffi::c_void, 2 * MB, memfd).expect("mem to be allocated");
     // let mem_mirr_3_ptr =create_fixed_anon_map(0x610_000 as *mut std::ffi::c_void, 2 * MB, memfd).expect("mem to be allocated");
     // 80_000_000
-    let kseg0_ptr = create_fixed_anon_map(0x80_010_000 as *mut std::ffi::c_void, 2 * MB, memfd)
+    let _ = create_fixed_anon_map(0x80_010_000 as *mut std::ffi::c_void, 2 * MB, memfd)
         .expect("mem to be allocated");
-    let kseg1_ptr = create_fixed_anon_map(0xA0_010_000 as *mut std::ffi::c_void, 2 * MB, memfd)
+    let _ = create_fixed_anon_map(0xA0_010_000 as *mut std::ffi::c_void, 2 * MB, memfd)
         .expect("mem to be allocated");
 
     // now bios...
@@ -420,19 +407,21 @@ pub fn create_memory_mappings() -> (&'static mut [u8], &'static mut [u8]) {
     //     .expect("mem to be allocated");
     let kuseg_bios = create_fixed_anon_map(0x1F_C10_000 as *mut std::ffi::c_void, 2 * MB, biosfd)
         .expect("mem to be allocated");
-    let kseg0_bios = create_fixed_anon_map(0x9F_C10_000 as *mut std::ffi::c_void, 2 * MB, biosfd)
+    let _ = create_fixed_anon_map(0x9F_C10_000 as *mut std::ffi::c_void, 2 * MB, biosfd)
         .expect("mem to be allocated");
-    let kseg1_bios = create_fixed_anon_map(0xBF_C10_000 as *mut std::ffi::c_void, 2 * MB, biosfd)
+    let _ = create_fixed_anon_map(0xBF_C10_000 as *mut std::ffi::c_void, 2 * MB, biosfd)
         .expect("mem to be allocated");
 
     let slice = unsafe { std::slice::from_raw_parts_mut(mem_ptr as *mut u8, 2 * MB) };
     let bios_slice = unsafe { std::slice::from_raw_parts_mut(kuseg_bios as *mut u8, 512 * KB) };
 
+    // TODO: actually reserve address space..
+    //
     // reserve psx address space
-    // reserve_address_space(0x810_000,0x1FC10_000 - 0x810_000).expect("ok"); // TODO: actually reserve address space..
-    // reserve_address_space(0x80_010_000,0x9F_C10_000 - 0x80_010_000).expect("ok"); // TODO: actually reserve address space..
-    // reserve_address_space(0xA0_010_000,0xBF_C10_000 - 0xA0_010_000).expect("ok"); // TODO: actually reserve address space..
-    // reserve_address_space(0xC0_000_000, 1 * GB).expect("ok"); // TODO: actually reserve address space..
+    // reserve_address_space(0x810_000,0x1FC10_000 - 0x810_000).expect("ok"); 
+    // reserve_address_space(0x80_010_000,0x9F_C10_000 - 0x80_010_000).expect("ok"); 
+    // reserve_address_space(0xA0_010_000,0xBF_C10_000 - 0xA0_010_000).expect("ok"); 
+    // reserve_address_space(0xC0_000_000, 1 * GB).expect("ok"); 
 
     (slice, bios_slice)
 }

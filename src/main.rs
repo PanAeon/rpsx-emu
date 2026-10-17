@@ -1,4 +1,3 @@
-use cgmath::prelude::*;
 
 use cpal::traits::StreamTrait;
 use wgpu_profiler::GpuProfiler;
@@ -40,7 +39,7 @@ mod cpu;
 mod dma;
 mod gpu;
 mod gte;
-mod hw_renderer;
+// mod hw_renderer;
 mod irq;
 mod mdec;
 mod ram;
@@ -58,7 +57,6 @@ mod cdxa;
 mod dummy_renderer;
 mod dynarec;
 mod interpreter;
-mod resources;
 mod save_state;
 mod fastmem;
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
@@ -176,7 +174,7 @@ pub struct Color {
     a: u8,
 }
 
-// #[derive(Clone)]
+#[allow(dead_code)]
 pub struct State {
     instance: wgpu::Instance,
     surface: Option<wgpu::Surface<'static>>,
@@ -777,7 +775,7 @@ impl State {
         };
 
         let mut data: Vec<u8> = Vec::new();
-        let file_size = match file.read_to_end(&mut data) {
+        let _file_size = match file.read_to_end(&mut data) {
             Ok(x) => x,
             Err(e) => panic!("Can't read exe {}", e),
         };
@@ -981,7 +979,7 @@ impl State {
         self.display_depth = depth;
     }
 
-    fn update(&mut self, event_loop: &ActiveEventLoop) {
+    fn update(&mut self, _event_loop: &ActiveEventLoop) {
         self.update_gamepad();
         if self.paused {
             // println!("current pc: 0x{:X}", self.cpu.pc);
@@ -1107,7 +1105,7 @@ impl State {
                 if self.system.block_cache.is_block_dirty(entry.block_idx.unwrap()) {
                     if !Dynarec::is_block_valid(&mut self.system, entry.block_idx.unwrap()) {
                         // recompile block...
-                        Dynarec::schedule_compile_block(&mut self.system, pc, entry.block_idx);
+                        Dynarec::schedule_compile_block(&mut self.system, pc);
                         // let block = Dynarec::compile_block(&mut self.system, pc);
                         // self.system
                         //     .block_cache
@@ -1121,7 +1119,7 @@ impl State {
                         entry.block_idx
                 }
             } else {
-                Dynarec::schedule_compile_block(&mut self.system, pc, None);
+                Dynarec::schedule_compile_block(&mut self.system, pc);
                 None
                 // let block = Dynarec::compile_block(&mut self.system, pc);
                 // let idx = self.system.block_cache.insert_block(pc, block);
@@ -1333,7 +1331,7 @@ impl State {
         }
     }
 
-    fn handle_mouse_moved(&mut self, x: f64, y: f64) {
+    fn handle_mouse_moved(&mut self, _x: f64, _y: f64) {
         // self.clear_color.r = x / self.config.width as f64;
         // self.clear_color.g = y / self.config.height as f64;
     }
@@ -1383,11 +1381,11 @@ impl State {
 
     fn handle_key(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         code: KeyCode,
         key_state: ElementState,
         logical_key: Key,
-        repeat: bool,
+        _repeat: bool,
     ) {
         match (code, key_state.is_pressed()) {
             (KeyCode::Space, false) => self.paused = !self.paused,
@@ -1434,8 +1432,8 @@ impl State {
             // }
             // (KeyCode::Escape, true) => event_loop.exit(),
             _ => {
-                match (logical_key.to_text()) {
-                    Some(str) => {
+                match logical_key.to_text() {
+                    Some(_str) => {
                         // self.game_state.last_input = Some((String::from(str), repeat));
                     }
                     _ => {}
@@ -1447,7 +1445,7 @@ impl State {
     pub fn update_gamepad(&mut self) {
         let mut prev_buttons = self.system.sio.gamepad1.digital_switches;
         while let Some(Event {
-            id, event, time, ..
+            id:_, event, time:_, ..
         }) = self.gilrs.next_event()
         {
             // println!("{:?} New event from {}: {:?}", time, id, event);
@@ -1530,7 +1528,7 @@ impl State {
                     }
                     _ => {} // ignore..
                 },
-                gilrs::EventType::AxisChanged(axis, value, _) => {}
+                gilrs::EventType::AxisChanged(_axis, _value, _) => {}
                 gilrs::EventType::Connected => {}
                 gilrs::EventType::Disconnected => {}
                 _ => {} //println!("gamepad evvent ignored {:?} ", event)
@@ -1540,60 +1538,7 @@ impl State {
         self.system.sio.gamepad1.set_buttons(prev_buttons);
     }
 }
-const REGISTER_NAMES: [&str; 32] = [
-    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
-    "ra",
-];
 
-// fn check_mem(cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) -> bool {
-//     cpu.system.ram.data[..] == interpreter.system.ram.data[..]
-// }
-fn check_dynarec(pc: u32, interpreter_pc: u32, cpu: &dynarec::Dynarec, interpreter: &cpu::Cpu) {
-    let mut is_ok = true;
-    // if !check_mem(cpu, interpreter) {
-    //     println!("memory different!");
-    //     is_ok = false;
-    // }
-    for i in 0..32 {
-        if interpreter.regs[i] != cpu.regs.regs[i] {
-            println!(
-                "different reg[{}] ({}), interpreter: {:X}, dynarec: {:X}",
-                i, REGISTER_NAMES[i], interpreter.regs[i], cpu.regs.regs[i]
-            );
-            is_ok = false;
-        }
-    }
-    if interpreter.pc != cpu.regs.pc {
-        is_ok = false;
-        println!("different return pc addresses");
-    }
-    if interpreter.hi != cpu.regs.hi {
-        is_ok = false;
-        println!(
-            "different hi reg, interpreter: {:X}, dynarec: {:X}",
-            interpreter.hi, cpu.regs.hi
-        );
-    }
-    if interpreter.lo != cpu.regs.lo {
-        is_ok = false;
-        println!(
-            "different lo reg, interpreter: {:X}, dynarec: {:X}",
-            interpreter.lo, cpu.regs.lo
-        );
-    }
-    if !is_ok {
-        println!(
-            "at block start pc: 0x{:X}, interpreter_pc: {:X}",
-            pc, interpreter_pc
-        );
-        println!(
-            "at block end pc: 0x{:X}, interpreter_pc: {:X}",
-            cpu.regs.pc, interpreter.pc
-        );
-        panic!("---");
-    }
-}
 
 pub struct App {
     state: Option<State>,
@@ -1746,7 +1691,7 @@ pub fn set_camera(state: &State, queue: &wgpu::Queue, camera: Mat4<f32>) {
 }
 pub fn render<'a: 'pass, 'pass>(
     state: &State,
-    device: &wgpu::Device,
+    _device: &wgpu::Device,
     rpass: &mut wgpu::RenderPass<'pass>,
 ) {
     rpass.set_pipeline(&state.pipeline);

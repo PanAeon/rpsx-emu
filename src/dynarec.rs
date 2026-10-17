@@ -5,12 +5,15 @@ use std::thread::JoinHandle;
 
 use crate::block_cache::{self, BlockCache};
 use crate::system::{
-    self, load_byte, load_half_word, load_word,  mask_region, store_byte,
-    store_half_word, store_word,
+    self, load_byte, load_half_word, load_word, mask_region, store_byte, store_half_word,
+    store_word,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
 use crossbeam::channel::Sender;
-use iced_x86::{Decoder, DecoderOptions, Formatter, GasFormatter, IntelFormatter, NasmFormatter};
+use iced_x86::{
+    Decoder, DecoderOptions, Encoder, Formatter, GasFormatter, IntelFormatter, MemoryOperand,
+    NasmFormatter,
+};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -411,7 +414,6 @@ impl Compiler {
             .declare_function("load_word", Linkage::Import, &sig_external)
             .unwrap();
 
-
         let mut sig_external = module.make_signature();
         sig_external.params.push(AbiParam::new(types::I64));
         sig_external.params.push(AbiParam::new(types::I32));
@@ -667,6 +669,26 @@ impl Compiler {
         }
     }
 
+    pub fn print_instruction(instruction: &iced_x86::Instruction, formatter: &mut GasFormatter) {
+        let mut output = String::new();
+        // println!("{:?}", instruction.code());
+        formatter.format(&instruction, &mut output);
+
+        // Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
+        // print!("{:016X} ", instruction.ip());
+        // let start_index = (instruction.ip() - block.ptr as u64) as usize;
+        // let instr_bytes = &bytes[start_index..start_index + instruction.len()];
+        // for b in instr_bytes.iter() {
+        // print!("{:02X}", b);
+        // }
+        // if instr_bytes.len() < HEXBYTES_COLUMN_BYTE_LENGTH {
+        // for _ in 0..HEXBYTES_COLUMN_BYTE_LENGTH - instr_bytes.len() {
+        // print!("  ");
+        // }
+        // }
+        println!(" {}", output);
+    }
+
     pub fn patch_block(&mut self, block: &block_cache::Block) {
         // we just have to find our magic value...
         unsafe {
@@ -688,9 +710,16 @@ impl Compiler {
 
             // String implements FormatterOutput
             let mut instruction = iced_x86::Instruction::default();
-            let mut output = String::new();
 
-            let mut to_be_patched: Vec<(u64, usize)> = vec![];
+            let mut to_be_patched: Vec<(u64, usize, MemAccess, Option<iced_x86::Register>)> =
+                vec![];
+
+            let load_word_addr = load_word as *const u8 as u64;
+            let load_half_word_addr = load_half_word as *const u8 as u64;
+            let load_byte_addr = load_byte as *const u8 as u64;
+            let store_word_addr = store_word as *const u8 as u64;
+            let store_half_word_addr = store_half_word as *const u8 as u64;
+            let store_byte_addr = store_byte as *const u8 as u64;
 
             while decoder.can_decode() {
                 // There's also a decode() method that returns an instruction but that also
@@ -704,15 +733,10 @@ impl Compiler {
                 {
                     decoder.decode_out(&mut instruction); // should be mvabsq ...,%eax
 
-                    let load_word_addr = load_word as *const u8 as u64;
-                    let load_half_word_addr = load_half_word as *const u8 as u64;
-                    let load_byte_addr = load_byte as *const u8 as u64;
-
                     if instruction.code() == iced_x86::Code::Mov_r64_imm64
-                        && (
-                           instruction.immediate64() == load_word_addr
-                          || instruction.immediate64() == load_half_word_addr
-                          || instruction.immediate64() == load_byte_addr)
+                        && (instruction.immediate64() == load_word_addr
+                            || instruction.immediate64() == load_half_word_addr
+                            || instruction.immediate64() == load_byte_addr)
                     {
                         let pos = decoder.position();
                         decoder.decode_out(&mut instruction); // should be callq %eax
@@ -721,27 +745,69 @@ impl Compiler {
                         if instruction.code() == iced_x86::Code::Call_rm64 {
                             let len = instruction.len();
                             // println!("*, len: {}", len);
-                            to_be_patched.push((block.ptr as u64 + pos as u64, len));
-
-                            // println!("{:?}", instruction.code());
-                            // output.clear();
-                            // formatter.format(&instruction, &mut output);
-                            //
-                            // // Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
-                            // print!("{:016X} ", instruction.ip());
-                            // let start_index = (instruction.ip() - block.ptr as u64) as usize;
-                            // let instr_bytes = &bytes[start_index..start_index + instruction.len()];
-                            // for b in instr_bytes.iter() {
-                            //     print!("{:02X}", b);
-                            // }
-                            // if instr_bytes.len() < HEXBYTES_COLUMN_BYTE_LENGTH {
-                            //     for _ in 0..HEXBYTES_COLUMN_BYTE_LENGTH - instr_bytes.len() {
-                            //         print!("  ");
-                            //     }
-                            // }
-                            // println!(" {}", output);
+                            to_be_patched.push((
+                                block.ptr as u64 + pos as u64,
+                                len,
+                                MemAccess::Load,
+                                None,
+                            ));
                         }
                         // decoder.decode_out(&mut instruction); // should be callq %eax
+                    } else if instruction.code() == iced_x86::Code::Mov_r64_imm64
+                        && (instruction.immediate64() == store_word_addr)
+                    {
+                        let pos = decoder.position();
+                        decoder.decode_out(&mut instruction); // should be callq %eax
+                        //instruction.op0_register() == iced_x86::Register::RDI &&
+                        // Format the instruction ("disassemble" it)
+                        if instruction.code() == iced_x86::Code::Call_rm64 {
+                            let len = instruction.len();
+                            // println!("*, len: {}", len);
+                            to_be_patched.push((
+                                block.ptr as u64 + pos as u64,
+                                len,
+                                MemAccess::StoreWord,
+                                None,
+                            ));
+                        }
+                    } else if instruction.code() == iced_x86::Code::Mov_r64_imm64
+                        && (instruction.immediate64() == store_half_word_addr)
+                    {
+                        let pos = decoder.position();
+                        let reg = instruction.op0_register();
+                        // Self::print_instruction(&instruction, &mut formatter);
+                        decoder.decode_out(&mut instruction); // should be callq %eax
+                        //instruction.op0_register() == iced_x86::Register::RDI &&
+                        // Format the instruction ("disassemble" it)
+                        if instruction.code() == iced_x86::Code::Call_rm64 {
+                            let len = instruction.len();
+                            // Self::print_instruction(&instruction, &mut formatter);
+                            // decoder.decode_out(&mut instruction); // should be callq %eax
+                            // Self::print_instruction(&instruction, &mut formatter);
+                            to_be_patched.push((
+                                block.ptr as u64 + pos as u64,
+                                len,
+                                MemAccess::StoreHalf,
+                                Some(reg),
+                            ));
+                        }
+                    } else if instruction.code() == iced_x86::Code::Mov_r64_imm64
+                        && (instruction.immediate64() == store_byte_addr)
+                    {
+                        let pos = decoder.position();
+                        decoder.decode_out(&mut instruction); // should be callq %eax
+                        //instruction.op0_register() == iced_x86::Register::RDI &&
+                        // Format the instruction ("disassemble" it)
+                        if instruction.code() == iced_x86::Code::Call_rm64 {
+                            let len = instruction.len();
+                            // println!("*, len: {}", len);
+                            to_be_patched.push((
+                                block.ptr as u64 + pos as u64,
+                                len,
+                                MemAccess::StoreByte,
+                                None,
+                            ));
+                        }
                     }
                 }
 
@@ -751,15 +817,81 @@ impl Compiler {
             }
             if to_be_patched.len() > 0 {
                 crate::fastmem::unprotect_instr(block.ptr as u64).expect("ok");
-                for (p, len) in to_be_patched {
-                    // address always in rsi
-                    // movq 0x8(%rax), $rsi... and ... now...  it takes 3 bytes..
-                    let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
-                    // movq (%rsi), $rax
-                    bytes[0] = 0x8b;
-                    bytes[1] = 0x06;
-                    if len == 3 {
-                        bytes[2] = 0x90;
+                for (p, len, mem_access, reg) in to_be_patched {
+                    match mem_access {
+                        MemAccess::Load => {
+                            // address always in rsi
+                            // movq 0x8(%rax), $rsi... and ... now...  it takes 3 bytes..
+                            let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
+                            // movq (%rsi), $rax
+                            bytes[0] = 0x8b;
+                            bytes[1] = 0x06;
+                            if len == 3 {
+                                bytes[2] = 0x90;
+                            }
+                        }
+                        MemAccess::StoreWord => {
+                            // mov %edx, (%rsi)
+                            // let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
+                            // bytes[0] = 0x89;
+                            // bytes[1] = 0x16;
+                            // if len == 3 {
+                            //     bytes[2] = 0x90;
+                            // }
+                        }
+                        MemAccess::StoreHalf => {
+                            // mov %dx, (%rsi)
+                            let bytes = std::slice::from_raw_parts_mut((p - 10) as *mut u8, 15);
+                            bytes[0] = 0x90;
+                            let mut encoder = Encoder::new(64);
+                            let ins = iced_x86::Instruction::with1(
+                                iced_x86::Code::Not_rm64,
+                                reg.unwrap(),
+                            )
+                            .expect("ok");
+                            let l = encoder.encode(&ins, p - 10 + 1).expect("ok"); // should be 3
+
+                            // println!("^^encoded len: {}", len);
+                            let buff = encoder.take_buffer();
+                            bytes[1..4].copy_from_slice(&buff);
+
+                            bytes[4..9].copy_from_slice(&[0x90, 0x90, 0x90, 0x90, 0x90]);
+                            // bytes[0..9].copy_from_slice(&[0x66, 0x0F, 0x1F, 0x84, 00, 00, 00, 00, 00]);
+                            let mut encoder = Encoder::new(64);
+                            let mem_op = MemoryOperand::with_base(iced_x86::Register::RSI);
+                            let instruction = iced_x86::Instruction::with2(
+                                iced_x86::Code::Mov_rm16_r16,
+                                mem_op,
+                                iced_x86::Register::DX,
+                            )
+                            .expect("ok");
+                            let l = encoder.encode(&instruction, p - 10 + 9).expect("ok"); // should be 3
+                            let buff = encoder.take_buffer();
+                            bytes[9..12].copy_from_slice(&buff);
+
+                            // let ins = iced_x86::Instruction::with2(
+                            //     iced_x86::Code::Mov_r16_m16,
+                            //     reg.unwrap(),
+                            // )
+                            // .expect("ok");
+                            // bytes[9] = 0x66;
+                            // bytes[10] = 0x89;
+                            // bytes[11] = 0x16;
+                            // bytes[3..12].copy_from_slice(&[0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90]);
+                            if len == 3 {
+                                bytes[12] = 0x90;
+                            }
+                        }
+                        MemAccess::StoreByte => {
+                            // mov %dl, (%rsi)
+
+                            // let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
+                            // bytes[0] = 0x88;
+                            // bytes[1] = 0x16;
+                            // if len == 3 {
+                            //     bytes[2] = 0x90;
+                            // }
+                        }
                     }
                     // bytes[2] = 0x06;
                     // now 9 byte nop
@@ -2611,12 +2743,7 @@ impl<'a> BlockBuilder<'a> {
         self.bldr.switch_to_block(else_block);
         self.bldr.seal_block(else_block);
 
-        let system = self
-            .bldr
-            .ins()
-            .iconst(types::I64, self.constants.system as usize as i64);
-        let store_word = self.get_store_word();
-        self.bldr.ins().call(store_word, &[system, address, val]);
+        self.compile_store(types::I32, address, val);
         self.bldr.ins().jump(then_block, &[]);
 
         self.bldr.switch_to_block(then_block);
@@ -2674,14 +2801,7 @@ impl<'a> BlockBuilder<'a> {
         self.bldr.switch_to_block(else_block);
         self.bldr.seal_block(else_block);
 
-        let system = self
-            .bldr
-            .ins()
-            .iconst(types::I64, self.constants.system as usize as i64);
-        let store_half_word = self.get_store_half_word();
-        self.bldr
-            .ins()
-            .call(store_half_word, &[system, address, val]);
+        self.compile_store(types::I16, address, val);
         self.bldr.ins().jump(then_block, &[]);
 
         self.bldr.switch_to_block(then_block);
@@ -2719,12 +2839,7 @@ impl<'a> BlockBuilder<'a> {
         self.bldr.switch_to_block(else_block);
         self.bldr.seal_block(else_block);
 
-        let system = self
-            .bldr
-            .ins()
-            .iconst(types::I64, self.constants.system as usize as i64);
-        let store_byte = self.get_store_byte();
-        self.bldr.ins().call(store_byte, &[system, address, val]);
+        self.compile_store(types::I8, address, val);
         self.bldr.ins().jump(then_block, &[]);
 
         self.bldr.switch_to_block(then_block);
@@ -2944,7 +3059,10 @@ impl<'a> BlockBuilder<'a> {
             }
             types::I16 => {
                 let load_half_word = self.get_load_half_word();
-                let res = self.bldr.ins().call(load_half_word, &[system, address_corr]);
+                let res = self
+                    .bldr
+                    .ins()
+                    .call(load_half_word, &[system, address_corr]);
                 let res = self.bldr.inst_results(res)[0];
                 self.bldr.ins().ireduce(types::I16, res)
             }
@@ -2953,6 +3071,46 @@ impl<'a> BlockBuilder<'a> {
                 let res = self.bldr.ins().call(load_byte, &[system, address_corr]);
                 let res = self.bldr.inst_results(res)[0];
                 self.bldr.ins().ireduce(types::I8, res)
+            }
+            _ => {
+                panic!("unsupported type: {}", ty);
+            }
+        }
+    }
+
+    fn compile_store(&mut self, ty: Type, address: Value, val: Value) {
+        let address_corr = self.bldr.ins().iadd_imm_u(address, 0x10_000);
+        // let val = self.bldr.ins().uextend(types::I32, val);
+        // let address_corr = self.bldr.ins().uextend(types::I64, address_corr);
+        // let address_corr = self.bldr.ins().band_imm_u(address_corr, 0xFFFFFFFF);
+        let val = self.bldr.ins().iadd_imm_u(val, 0);
+        let system = self
+            .bldr
+            .ins()
+            .iconst(types::I64, self.constants.system as i64);
+        match ty {
+            types::I32 => {
+                // let fast_load_word = self.get_load_word();
+                // let res = self.bldr.ins().call(fast_load_word, &[system, address]);
+                // self.bldr.inst_results(res)[0]
+                // let fast_load_word = self.get_fast_load_word();
+                let store_word = self.get_store_word();
+
+                self.bldr
+                    .ins()
+                    .call(store_word, &[system, address_corr, val]);
+            }
+            types::I16 => {
+                let store_half_word = self.get_store_half_word();
+                self.bldr
+                    .ins()
+                    .call(store_half_word, &[system, address_corr, val]);
+            }
+            types::I8 => {
+                let store_byte = self.get_store_byte();
+                self.bldr
+                    .ins()
+                    .call(store_byte, &[system, address_corr, val]);
             }
             _ => {
                 panic!("unsupported type: {}", ty);
@@ -3153,10 +3311,7 @@ impl<'a> BlockBuilder<'a> {
 
         // FIXME: where's SR check?
 
-        let store_word = self.get_store_word();
-        self.bldr
-            .ins()
-            .call(store_word, &[system, aligned_address, v]);
+        self.compile_store(types::I32, aligned_address, v);
 
         // let mem = match addr & 3 {
         //     0 => (cur_mem & 0xffffff00) | (v >> 24),
@@ -3206,10 +3361,7 @@ impl<'a> BlockBuilder<'a> {
 
         self.compile_delayed_load(true);
 
-        let store_word = self.get_store_word();
-        self.bldr
-            .ins()
-            .call(store_word, &[system, aligned_address, v]);
+        self.compile_store(types::I32, aligned_address, v);
 
         // let mem = match addr & 3 {
         //     0 => (cur_mem & 0x00000000) | (v),
@@ -3527,8 +3679,7 @@ impl<'a> BlockBuilder<'a> {
             .bldr
             .ins()
             .iconst(types::I64, self.constants.system as usize as i64);
-        let store_word = self.get_store_word();
-        self.bldr.ins().call(store_word, &[system, address, res]);
+        self.compile_store(types::I32, address, res);
         self.bldr.ins().jump(then_block, &[]);
 
         self.bldr.switch_to_block(then_block);
@@ -3604,7 +3755,6 @@ impl<'a> BlockBuilder<'a> {
             }
         }
     }
-
 
     pub fn get_load_half_word(&mut self) -> FuncRef {
         match self.load_half_word {
@@ -3794,3 +3944,10 @@ pub extern "C" fn gte_set_control(gte_ptr: *mut Gte, reg: u8, val: u32) {
 }
 
 const HEXBYTES_COLUMN_BYTE_LENGTH: usize = 10;
+
+pub enum MemAccess {
+    Load,
+    StoreWord,
+    StoreHalf,
+    StoreByte,
+}

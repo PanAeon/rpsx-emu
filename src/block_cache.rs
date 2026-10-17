@@ -61,7 +61,8 @@ impl BlockCache {
             panic!("unaligned load{:?} address: {:08x}", 4, address)
         }
         if let Some(offset) = map::RAM.contains(address) {
-            let entry = self.ram[(offset / 4) as usize];
+            let mut entry = self.ram[(offset / 4) as usize];
+            entry.dirty = true;
             return entry.has_block.then(|| entry)
         }
         if let Some(offset) = map::BIOS.contains(address) {

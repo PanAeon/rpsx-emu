@@ -1,11 +1,23 @@
+use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
 
-
-use std::{ sync::{Arc, Mutex}};
-
-use serde::{ Serialize};
-
-use crate::{bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{Direction, Dma, Port, Step, Sync}, dynarec::Dynarec, gpu::Gpu, irq::InterruptController, mdec::Mdec, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers};
+use crate::{
+    bios::Bios,
+    block_cache::BlockCache,
+    cdrom::CDRom,
+    dma::{Direction, Dma, Port, Step, Sync},
+    dynarec::Dynarec,
+    gpu::Gpu,
+    irq::InterruptController,
+    mdec::Mdec,
+    ram::Ram,
+    scheduler::Scheduler,
+    scratchpad::Scratchpad,
+    sio::Sio,
+    spu::Spu,
+    timers::Timers,
+};
 
 pub mod map {
     pub struct Range(u32, u32);
@@ -25,7 +37,7 @@ pub mod map {
     pub const MEM_CTRL: Range = Range(0x1f801000, 36);
     pub const RAM_SIZE: Range = Range(0x1f801060, 4);
     pub const CACHE_CONTROL: Range = Range(0xfffe0130, 4);
-    pub const RAM: Range = Range(0x0000_0000, 8 * 1024 * 1024);// ram is mirrored 4 times..
+    pub const RAM: Range = Range(0x0000_0000, 8 * 1024 * 1024); // ram is mirrored 4 times..
     pub const SCRATCHPAD: Range = Range(0x1f80_0000, 1024);
     pub const SPU: Range = Range(0x1f801c00, 640);
     pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
@@ -44,12 +56,12 @@ pub mod map {
 pub enum AccessWidth {
     Byte = 1,
     Halfword = 2,
-    Word = 4
+    Word = 4,
 }
 
 pub trait Addressable {
     fn width() -> AccessWidth;
-    fn from_u32(x:u32) -> Self;
+    fn from_u32(x: u32) -> Self;
     fn as_u32(&self) -> u32;
 }
 
@@ -57,11 +69,11 @@ impl Addressable for u8 {
     fn width() -> AccessWidth {
         AccessWidth::Byte
     }
-    fn from_u32(x:u32) -> Self {
+    fn from_u32(x: u32) -> Self {
         x as u8
     }
     fn as_u32(&self) -> u32 {
-       *self as u32 
+        *self as u32
     }
 }
 
@@ -69,11 +81,11 @@ impl Addressable for u16 {
     fn width() -> AccessWidth {
         AccessWidth::Halfword
     }
-    fn from_u32(x:u32) -> Self {
+    fn from_u32(x: u32) -> Self {
         x as u16
     }
     fn as_u32(&self) -> u32 {
-       *self as u32
+        *self as u32
     }
 }
 
@@ -81,11 +93,11 @@ impl Addressable for u32 {
     fn width() -> AccessWidth {
         AccessWidth::Word
     }
-    fn from_u32(x:u32) -> Self {
+    fn from_u32(x: u32) -> Self {
         x as u32
     }
     fn as_u32(&self) -> u32 {
-       *self as u32
+        *self as u32
     }
 }
 
@@ -115,7 +127,7 @@ const REGION_MASK: [u32; 8] = [
     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, // KUSEG: 2048MB,
     0x7fffffff, // KSEG0: 512MB,
     0x1fffffff, // KSEG1: 512MB,
-    0xffffffff, 0xffffffff,// KSEG2: 1024MB,
+    0xffffffff, 0xffffffff, // KSEG2: 1024MB,
 ];
 pub fn mask_region(addr: u32) -> u32 {
     let index = (addr >> 29) as usize;
@@ -123,14 +135,41 @@ pub fn mask_region(addr: u32) -> u32 {
 }
 
 impl System {
-    pub fn new(cpu: Dynarec, bios: Bios, ram: Ram, scratchpad: Scratchpad, dma: Dma, spu: Spu, irqctl: InterruptController,
-        scheduler: Scheduler, timers: Timers, cdrom: CDRom, sio: Sio, mdec: Mdec, gpu: Gpu, block_cache: BlockCache) -> System {
-    
+    pub fn new(
+        cpu: Dynarec,
+        bios: Bios,
+        ram: Ram,
+        scratchpad: Scratchpad,
+        dma: Dma,
+        spu: Spu,
+        irqctl: InterruptController,
+        scheduler: Scheduler,
+        timers: Timers,
+        cdrom: CDRom,
+        sio: Sio,
+        mdec: Mdec,
+        gpu: Gpu,
+        block_cache: BlockCache,
+    ) -> System {
         let block_cache = Arc::new(Mutex::new(block_cache));
-        System { cpu, bios, ram, scratchpad, dma, spu, irqctl, scheduler, timers, cdrom, sio, mdec,
-        gpu, block_cache}
+        System {
+            cpu,
+            bios,
+            ram,
+            scratchpad,
+            dma,
+            spu,
+            irqctl,
+            scheduler,
+            timers,
+            cdrom,
+            sio,
+            mdec,
+            gpu,
+            block_cache,
+        }
     }
-    pub fn load<T:Addressable>(&mut self, addr: u32) -> T {
+    pub fn load<T: Addressable>(&mut self, addr: u32) -> T {
         // println!("self addr: 0x{:X}", self as *const System as u64);
         let address = mask_region(addr);
         if !address.is_multiple_of(T::width() as u32) {
@@ -141,7 +180,7 @@ impl System {
         }
         if let Some(offset) = map::GPU.contains(address) {
             // return gpu::load(self, offset);
-            return  self.gpu.load(offset)
+            return self.gpu.load(offset);
         }
         if let Some(_) = map::SPU.contains(address) {
             // return crate::spu::load(&self.spu, addr);
@@ -200,7 +239,7 @@ impl System {
         // T::from_u32(0x0)
     }
 
-    pub fn store<T:Addressable>(&mut self, addr: u32, value: T) {
+    pub fn store<T: Addressable>(&mut self, addr: u32, value: T) {
         let address = mask_region(addr);
         if !address.is_multiple_of(T::width() as u32) {
             panic!("unaligned store{:?} address: {:08x}", T::width(), address)
@@ -271,7 +310,7 @@ impl System {
         }
         if let Some(_) = map::EXPANSION_1.contains(address) {
             println!("Unhandled write to expansion_1 register {:x}", addr);
-            return ;
+            return;
         }
         if let Some(_) = map::EXPANSION_2.contains(address) {
             println!("Unhandled write to expansion_2 register {:x}", addr);
@@ -280,11 +319,11 @@ impl System {
         // if address == 0x1f00e1ec {
         //     return;
         // }
-        
+
         panic!("Unhandled store{:?} address: {:08x}", T::width(), address)
     }
 
-    pub fn dma_reg<T:Addressable>(&self, offset: u32) -> T {
+    pub fn dma_reg<T: Addressable>(&self, offset: u32) -> T {
         // if T::width() != AccessWidth::Word {
         //     println!("Unhandled {:?} DMA load", T::width())
         // }
@@ -299,22 +338,20 @@ impl System {
                     0 => channel.base(),
                     4 => channel.block_control(),
                     8 => channel.control(),
-                    _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset)
+                    _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset),
                 }
+            }
+            7 => match minor {
+                0 => self.dma.control(),
+                4 => self.dma.interrupt(),
+                _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset),
             },
-            7 => {
-                match minor {
-                    0 => self.dma.control(),
-                    4 => self.dma.interrupt(),
-                    _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset)
-                }
-            },
-            _ => panic!("Unhandled DMA read at {:x} offset", offset)
+            _ => panic!("Unhandled DMA read at {:x} offset", offset),
         };
         T::from_u32(r >> (align * 8))
     }
 
-    pub fn set_dma_reg<T:Addressable>(&mut self, offset: u32, val: T) {
+    pub fn set_dma_reg<T: Addressable>(&mut self, offset: u32, val: T) {
         // if T::width() != AccessWidth::Word {
         //     panic!("Unhandled {:?} DMA store", T::width())
         // }
@@ -332,23 +369,19 @@ impl System {
                     0 => channel.set_base(value),
                     4 => channel.set_block_control(value),
                     8 => channel.set_control(value),
-                    _ => panic!("Unhandled DMA read at {:x} offset", offset)
+                    _ => panic!("Unhandled DMA read at {:x} offset", offset),
                 }
-                if channel.active() {
-                    Some(port)
-                } else {
-                    None
-                }
-            },
+                if channel.active() { Some(port) } else { None }
+            }
             7 => {
                 match minor {
                     0 => self.dma.set_control(value),
                     4 => crate::dma::Dma::set_interrupt(self, value),
-                    _ => panic!("Unhandled DMA read at {:x} offset", offset)
+                    _ => panic!("Unhandled DMA read at {:x} offset", offset),
                 }
                 None
-            },
-            _ => panic!("Unhandled DMA read at {:x} offset", offset)
+            }
+            _ => panic!("Unhandled DMA read at {:x} offset", offset),
         };
         if let Some(port) = active_port {
             self.do_dma(port)
@@ -358,13 +391,13 @@ impl System {
     pub fn do_dma(&mut self, port: Port) {
         match self.dma.channel(port).sync() {
             Sync::LinkedList => self.do_dma_linked_list(port),
-            _ => self.do_dma_block(port)
+            _ => self.do_dma_block(port),
         }
     }
     pub fn do_dma_block(&mut self, port: Port) {
         let channel = self.dma.channel(port);
 
-        let increment  = match channel.step() {
+        let increment = match channel.step() {
             Step::Increment => 4,
             Step::Decrement => -4i32 as u32,
         };
@@ -373,7 +406,7 @@ impl System {
         // transfer size in words
         let mut remsz = match channel.transfer_size() {
             Some(n) => n,
-            None => panic!("Couldn't figure DMA block transfer size")
+            None => panic!("Couldn't figure DMA block transfer size"),
         };
 
         while remsz > 0 {
@@ -386,43 +419,35 @@ impl System {
                             // gpu::store(self, 0, src_word);
                             self.gpu.gp0(src_word);
                             // println!("GPU data: {:08x}", src_word);
-                        },
+                        }
                         Port::Spu => {
                             self.spu.ram_write::<4>(src_word);
                             // println!("SPU data: {:08x}", src_word);
-                        },
+                        }
                         Port::MdecIn => {
                             self.mdec.store(0, src_word);
                         }
-                        _ => panic!("Unhandled DMA destination port {}", port as u8)
+                        _ => panic!("Unhandled DMA destination port {}", port as u8),
                     }
-                },
+                }
                 Direction::ToRam => {
                     let src_word = match port {
                         Port::Otc => match remsz {
-                            1 => 0xffffff, // end of table marker
+                            1 => 0xffffff,                        // end of table marker
                             _ => addr.wrapping_sub(4) & 0x1fffff, // pointer to the prev entry
                         },
                         Port::Gpu => {
                             // gpu::load(self, 0)
                             self.gpu.read()
-                        },
-                        Port::CdRom => {
-                            self.cdrom.load::<u32>(2)
-                        },
-                        Port::MdecOut => {
-                            self.mdec.load(0)
-                        },
-                        Port::Spu => {
-                            self.spu.ram_read::<4>()
                         }
-                        _ => panic!("Unhandled DMA source port {}", port as u8)
+                        Port::CdRom => self.cdrom.load::<u32>(2),
+                        Port::MdecOut => self.mdec.load(0),
+                        Port::Spu => self.spu.ram_read::<4>(),
+                        _ => panic!("Unhandled DMA source port {}", port as u8),
                     };
                     Ram::store::<u32>(self, cur_addr, src_word);
                 }
             };
-
-
 
             addr = addr.wrapping_add(increment);
             remsz -= 1;
@@ -468,17 +493,21 @@ impl System {
 
 pub extern "C" fn store_word(system_ptr: *mut System, addr: u32, val: u32) {
     let system = unsafe { system_ptr.as_mut().expect("ok") };
+    let addr = addr.saturating_sub(0x10000);
     // println!("store word: addr: {:X}, val: {:X}", addr, val);
     System::store(system, addr, val);
 }
 
 pub extern "C" fn store_half_word(system_ptr: *mut System, addr: u32, val: u16) {
+    println!("are we here??");
     let system = unsafe { system_ptr.as_mut().expect("ok") };
+    let addr = addr.saturating_sub(0x10000);
     System::store(system, addr, val);
 }
 
 pub extern "C" fn store_byte(system_ptr: *mut System, addr: u32, val: u8) {
     let system = unsafe { system_ptr.as_mut().expect("ok") };
+    let addr = addr.saturating_sub(0x10000);
     System::store(system, addr, val);
 }
 
@@ -492,30 +521,26 @@ pub extern "C" fn load_word(system_ptr: *mut System, addr: u32) -> u32 {
     //     let ptr = (addr + 0x10000) as *const u32;
     //     unsafe {
     //         return *ptr;
-        // }
-    // } else {
-        // println!("yepp!");
-        unsafe {
-            let addr = addr.saturating_sub(0x10000);
-            let system_ptr = SYSTEM_ADDR as *mut System;
-            let system = system_ptr.as_mut().expect("ok") ;
-            System::load(system, addr as u32)
-        }
     // }
-    
-
+    // } else {
+    // println!("yepp!");
+    unsafe {
+        let addr = addr.saturating_sub(0x10000);
+        let system_ptr = SYSTEM_ADDR as *mut System;
+        let system = system_ptr.as_mut().expect("ok");
+        System::load(system, addr as u32)
+    }
+    // }
 }
 
-
-
 pub extern "C" fn load_half_word(system_ptr: *mut System, addr: u32) -> u32 {
-            let addr = addr.saturating_sub(0x10000);
+    let addr = addr.saturating_sub(0x10000);
     let system = unsafe { system_ptr.as_mut().expect("ok") };
     System::load::<u16>(system, addr) as u32
 }
 
 pub extern "C" fn load_byte(system_ptr: *mut System, addr: u32) -> u32 {
-            let addr = addr.saturating_sub(0x10000);
+    let addr = addr.saturating_sub(0x10000);
     let system = unsafe { system_ptr.as_mut().expect("ok") };
     System::load::<u8>(system, addr) as u32
 }

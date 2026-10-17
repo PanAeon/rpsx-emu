@@ -12,11 +12,13 @@ use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use cranelift::codegen::ir::{BlockCall, FuncRef, MachMemFlags};
 use cranelift::codegen::verifier::verify_function;
 
-use iced_x86::{Code, Decoder, DecoderOptions, Encoder, Instruction};
+use iced_x86::{Code, Decoder, DecoderOptions, Encoder, GasFormatter, Instruction, Formatter};
 use nix::poll::{PollFd, PollFlags, poll};
 
 use libc::truncate;
 use target_lexicon::PointerWidth;
+
+use crate::system::store_half_word;
 
 // use crate::system::{load_word};
 
@@ -26,11 +28,13 @@ use target_lexicon::PointerWidth;
 #[allow(static_mut_refs)]
 pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut std::ffi::c_void) {
     unsafe {
+         let store_half_word_addr = store_half_word as *const u8 as u64;
         // let load_word_addr = load_word as *const u8 as u64;
         //FASTMEM_LOAD32_ADDR = load_word_fast as *const u8 as u64;
         let si = (&mut *si) as &mut libc::siginfo_t;
         // println!("caught segfault at address 0x{:X}", si.si_addr() as u64);
         // println!("caught segfault at address {:?}", si.si_addr());
+        // si.si_status()
 
         let mut uctx = (&mut *(ctx as *mut libc::ucontext_t)) as &mut libc::ucontext_t;
         let rip = uctx.uc_mcontext.gregs[libc::REG_RIP as usize];
@@ -62,6 +66,13 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
 
             std::process::exit(1);
         }
+        // TODO: totally unvverified if it works..
+        if (uctx.uc_mcontext.gregs[libc::REG_ERR as usize] & 0x2) != 0 {
+            println!("caught fastmem write fault!");
+            println!("caught fastmem write fault!");
+            println!("caught fastmem write fault!");
+            // std::process::exit(1);
+        }
 
         // uctx.uc_mcontext.gregs[libc::REG_RSI as usize] -= 0x10_000;
         // restore caller stack
@@ -88,7 +99,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         // now unprotect the instruction...
         unprotect_instr(instr_addr).expect("ok");
         // decode the instruction and the next one
-        let bytes = std::slice::from_raw_parts_mut(instr_addr as *mut u8, 64 );
+        let bytes = std::slice::from_raw_parts_mut(instr_addr as *mut u8, 64);
         let mut instruction = iced_x86::Instruction::default();
         let mut decoder = Decoder::with_ip(64, bytes, instr_addr, DecoderOptions::NONE);
         decoder.decode_out(&mut instruction);
@@ -96,24 +107,47 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         // if instruction.op_code().is_nop() {
         //     println!("3 byte instr not handled now... exiting");
         //     std::process::exit(1);
-        // }  
-        let movq_address = instr_addr - 10;
-        let movq_bytes = std::slice::from_raw_parts(movq_address as *const u8, 64 );
-        let mut decoder = Decoder::with_ip(64, movq_bytes, movq_address, DecoderOptions::NONE);
+        // }
+        let nop_address = instr_addr - 9;
+        let nop_bytes = std::slice::from_raw_parts_mut(nop_address as *mut u8, 64);
+        let mut decoder = Decoder::with_ip(64, nop_bytes, nop_address, DecoderOptions::NONE);
         decoder.decode_out(&mut instruction);
 
-        let reg = instruction.op0_register();
+        if instruction.op_code().is_nop() {
+            println!("^^got store 16");
+            decoder.decode_out(&mut instruction);
+            let reg = instruction.op0_register();
+            // now we need to insert moveabsq $..., %reg
+            let mut encoder = Encoder::new(64);
+            let ins = Instruction::with2(Code::Mov_r64_imm64, reg,store_half_word_addr ).expect("ok");
+            let l1 = encoder.encode(&ins, instr_addr).expect("ok");
+            let ins = Instruction::with1(Code::Call_rm64, reg).expect("ok");
+            let l2 = encoder.encode(&ins, instr_addr).expect("ok");
+            println!("l1: {}, l2: {}, reg: {:?}", l1, l2, reg);
 
-        // println!("got reg: {:?}", reg);
+            let buff = encoder.take_buffer();
+            nop_bytes[0..l1 + l2].copy_from_slice(&buff);
+            print_what_we_have_got(nop_address, nop_bytes);
+            uctx.uc_mcontext.gregs[libc::REG_RIP as usize] = (instr_addr-9) as i64;
+        } else {
+            let movq_address = instr_addr - 10;
+            let movq_bytes = std::slice::from_raw_parts_mut(movq_address as *mut u8, 64);
+            let mut decoder = Decoder::with_ip(64, movq_bytes, movq_address, DecoderOptions::NONE);
+            decoder.decode_out(&mut instruction);
+            let reg = instruction.op0_register();
 
-        // now we need to gen 2 byte callq...
-        let mut encoder = Encoder::new(64);
-        let ins = Instruction::with1(Code::Call_rm64, reg).expect("ok");
-        let len = encoder.encode(&ins, instr_addr).expect("ok");
+            // println!("got reg: {:?}", reg);
 
-        // println!("encoded len: {}", len);
-        let buff = encoder.take_buffer();
-        bytes[0..len].copy_from_slice(&buff);
+            // now we need to gen 2 byte callq...
+            let mut encoder = Encoder::new(64);
+            let ins = Instruction::with1(Code::Call_rm64, reg).expect("ok");
+            let len = encoder.encode(&ins, instr_addr).expect("ok");
+
+            // println!("encoded len: {}", len);
+            let buff = encoder.take_buffer();
+            bytes[0..len].copy_from_slice(&buff);
+        }
+
         // modify the instruction
         // let instr_ptr = instr_addr as *mut u8;
         // let instr_slice = std::slice::from_raw_parts_mut(instr_ptr as *mut u8, 10);
@@ -148,6 +182,47 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
         // std::process::exit(0);
     }
 }
+
+pub fn print_what_we_have_got(addr: u64, bytes: &[u8]) {
+            let mut formatter = GasFormatter::new();
+            formatter.options_mut().set_use_pseudo_ops(false);
+            formatter
+                .options_mut()
+                .set_gas_show_mnemonic_size_suffix(true);
+
+            // Change some options, there are many more
+            formatter.options_mut().set_digit_separator("_");
+            formatter.options_mut().set_first_operand_char_index(10);
+
+            let mut instruction = iced_x86::Instruction::default();
+            let mut decoder = Decoder::with_ip(64, bytes, addr, DecoderOptions::NONE);
+    while decoder.can_decode() {
+                decoder.decode_out(&mut instruction);
+        print_instruction(&instruction, &mut formatter);
+
+    }
+
+}
+
+    pub fn print_instruction(instruction: &iced_x86::Instruction, formatter: &mut GasFormatter) {
+        let mut output = String::new();
+        // println!("{:?}", instruction.code());
+        formatter.format(&instruction, &mut output);
+
+        // Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
+        // print!("{:016X} ", instruction.ip());
+        // let start_index = (instruction.ip() - block.ptr as u64) as usize;
+        // let instr_bytes = &bytes[start_index..start_index + instruction.len()];
+        // for b in instr_bytes.iter() {
+        // print!("{:02X}", b);
+        // }
+        // if instr_bytes.len() < HEXBYTES_COLUMN_BYTE_LENGTH {
+        // for _ in 0..HEXBYTES_COLUMN_BYTE_LENGTH - instr_bytes.len() {
+        // print!("  ");
+        // }
+        // }
+        println!(" {}", output);
+    }
 
 pub fn install_segfault_handler() {
     let sa = MaybeUninit::<libc::sigaction>::zeroed();
@@ -211,7 +286,10 @@ fn create_fixed_anon_map(
     }
 }
 
-fn reserve_address_space(start: u64, length: usize) -> Result<*mut std::ffi::c_void, std::io::Error> {
+fn reserve_address_space(
+    start: u64,
+    length: usize,
+) -> Result<*mut std::ffi::c_void, std::io::Error> {
     let prot = libc::PROT_NONE; //libc::PROT_READ | libc::PROT_WRITE;
     let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED;
 
@@ -317,7 +395,7 @@ pub fn create_memory_mappings() -> (&'static mut [u8], &'static mut [u8]) {
     // reserve_address_space(0xA0_010_000,0xBF_C10_000 - 0xA0_010_000).expect("ok"); // TODO: actually reserve address space..
     // reserve_address_space(0xC0_000_000, 1 * GB).expect("ok"); // TODO: actually reserve address space..
 
-    (slice, bios_slice )
+    (slice, bios_slice)
 }
 
 //     let mem_provider = ArenaMemoryProvider::new_with_size(32 * MB).expect("ok");

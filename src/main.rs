@@ -69,12 +69,22 @@ mod fastmem;
 //     table
 // };
 
+use clap::{Parser};
+
+#[derive(Parser, Clone)]
+pub struct Cli {
+    filename: Option<String>,
+    #[arg(long)]
+    softgpu: bool
+}
+
 fn main() {
+    let cli = Cli::parse();
     // for x in FIVE_BIT_TO_8BIT {
     //     println!("{},", (x as f32) / 255.0 )
     // }
     crate::fastmem::install_segfault_handler();
-    run().unwrap();
+    run(cli).unwrap();
     // fastmem_proto::run();
     println!("ok");
 }
@@ -219,7 +229,7 @@ pub struct State {
 }
 
 impl State {
-    async fn new(window: Arc<Window>) -> anyhow::Result<State> {
+    async fn new(window: Arc<Window>, cli: Cli) -> anyhow::Result<State> {
         let size = window.inner_size();
 
         // The instance is a handle to our GPU
@@ -523,7 +533,7 @@ impl State {
         let dma = dma::Dma::new();
         // let gpu = gpu::Gpu::new();
         let spu = spu::Spu::new();
-        let cdrom = CDRom::default();
+        let cdrom = CDRom::new(cli.filename);
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
         let sio = sio::Sio::new();
@@ -532,7 +542,7 @@ impl State {
         scheduler.init();
         let timers = timers::Timers::new();
 
-        let software_render = false;
+        let software_render = cli.softgpu;
         let (sender, receiver, handle) = if software_render {
             renderer::Renderer::create()
         } else {
@@ -1543,13 +1553,15 @@ impl State {
 pub struct App {
     state: Option<State>,
     occluded: bool,
+    cli: Cli
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(cli: Cli) -> Self {
         Self {
             state: None,
             occluded: false,
+            cli
         }
     }
 }
@@ -1563,7 +1575,7 @@ impl ApplicationHandler<State> for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         window.set_title("rpsx-emu");
-        self.state = Some(pollster::block_on(State::new(window)).unwrap());
+        self.state = Some(pollster::block_on(State::new(window, self.cli.clone())).unwrap());
     }
 
     #[allow(unused_mut)]
@@ -1655,11 +1667,11 @@ impl ApplicationHandler<State> for App {
     }
 }
 
-pub fn run() -> anyhow::Result<()> {
+pub fn run(cli: Cli) -> anyhow::Result<()> {
     env_logger::init();
 
     let event_loop = EventLoop::with_user_event().build()?;
-    let mut app = App::new();
+    let mut app = App::new(cli);
     event_loop.run_app(&mut app)?;
     // app.state.unwrap().writer.flush()?;
     // println!("why u not exiting??");

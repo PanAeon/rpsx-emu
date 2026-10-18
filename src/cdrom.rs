@@ -44,12 +44,13 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new() -> Self {
+    pub fn new(path: String) -> Self {
+        // let path = f.unwrap();
         // let path = "/foo/psx/Spyro the Dragon (USA).bin";
         // let path = "/foo/psx/Silent Hill (USA).bin";
         // let path = "/foo/psx/celeste-collection.bin";
         // let path = "/foo/psx/CTR - Crash Team Racing (USA).bin";
-        let path = "/foo/psx/Crash Bandicoot (USA).bin";
+        // let path = "/foo/psx/Crash Bandicoot (USA).bin";
         // let path = "/foo/psx/Metal Gear Solid (USA) (Disc 1).bin";
         // let path = "/foo/psx/Earthworm Jim 2 (Europe) (Track 01).bin";
         // let path = "/foo/psx/Mortal Kombat Trilogy (USA) (v1.1) (Track 01).bin";
@@ -200,8 +201,12 @@ pub struct CDRom {
     // pending_interrupt: Option<(u64, u8, [u8;16], usize)>
 }
 
-impl Default for CDRom {
-    fn default() -> Self {
+
+impl CDRom {
+    pub fn new(file: Option<String>) -> Self {
+        let image = file.map(|path| {
+            Image::new(path)
+        });
         Self {
             status: Status(0),
             hsts: HSTS(0x18),
@@ -212,7 +217,7 @@ impl Default for CDRom {
             results: ArrayVec::default(),
             hinsts: HINTSTS::default(),
             hcpctl: HCHPCTL::default(),
-            disk: Some(Image::new()),
+            disk: image,
             data_buffer: VecDeque::default(),
             audio_muted: false,
             l2l_volume: 0,
@@ -227,9 +232,6 @@ impl Default for CDRom {
             low_res_resamplers: Default::default(),
         }
     }
-}
-
-impl CDRom {
     pub fn store<T:Addressable>(system: &mut System, offset: u32, value: T) {
         let cdrom = &mut system.cdrom;
         let width = T::width() as usize;
@@ -499,6 +501,15 @@ impl CDRom {
             return error_response(&self.status, 0x20, "get id takes no params")
         }
         println!("CDROM get id");
+        if self.disk.is_none() {
+            CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
+                .int5([0x8, 0x40], 0x4A00)
+              // self.pending_interrupt = Some((0x4A00, 0x5, data, 8)); // it works!!!! (no-cd)
+        } else {
+        CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
+            .int2([0x02, 0x00, 0x20, 0x00, b'S', b'C', b'E', b'A'], 
+                AVG_1ST_RESP_GENERIC + AVG_2ND_RESP_GET_ID)
+        }
         // self.set_int(3);
         // self.push_status();
         // then we need to schedule response...
@@ -506,9 +517,6 @@ impl CDRom {
         // data[0] = 0x8;
         // data[1] = 0x40;
         // self.pending_interrupt = Some((0x4A00, 0x5, data, 8)); // it works!!!! (no-cd)
-        CommandResponse::new().int3([self.status.0], AVG_1ST_RESP_GENERIC)
-            .int2([0x02, 0x00, 0x20, 0x00, b'S', b'C', b'E', b'A'], 
-                AVG_1ST_RESP_GENERIC + AVG_2ND_RESP_GET_ID)
 
         // let  data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x41,0,0,0,0,0,0,0,0]; // na
         // let  data = [0x02u8,0x00, 0x20,0x00, 0x53,0x43,0x45,0x45,0,0,0,0,0,0,0,0]; //eu
@@ -672,7 +680,7 @@ impl CDRom {
     }
 
     pub fn read_response(&mut self) -> u8 {
-        let val = self.results.remove(0);
+        let val = if self.results.len() > 0 { self.results.remove(0) } else { 0 };
         if self.results.is_empty() {
             self.hsts.set_result_read_ready(false);
         }

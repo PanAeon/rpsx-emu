@@ -58,7 +58,7 @@ pub extern "C" fn segfault_handler(sig: i32, si: *mut libc::siginfo_t, ctx: *mut
             let addr = addr.wrapping_sub(0x10_000);
             let addr = crate::system::mask_region(addr as u32);
             if (addr as usize) < 2 * MB {
-                println!("caught code protection!");
+                // println!("caught code protection!");
 
                 let system = (&mut *(crate::system::SYSTEM_ADDR as *mut System)) as &mut System;
                 system.block_cache.invalidate_addr(addr);

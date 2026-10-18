@@ -589,7 +589,7 @@ impl Compiler {
 
         bldr.push_delay_load_to_regs();
         if !last_jmp {
-            println!("not last jump, start addr: {:X}, len: {}", addr, xs.len());
+            // println!("not last jump, start addr: {:X}, len: {}", addr, xs.len());
             bldr.save_context();
             bldr.set_pc_imm(addr + (xs.len() as u32 * 4) + 4);
             let cycles = bldr.get_cycles();

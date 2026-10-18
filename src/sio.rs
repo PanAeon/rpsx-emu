@@ -719,10 +719,10 @@ pub enum Button {
     R2,
     L1,
     R1,
-    Triangle,
+    Square,
     Circle,
     Cross,
-    Square,
+    Triangle,
 }
 
 #[repr(C)]

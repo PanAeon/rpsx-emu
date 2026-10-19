@@ -423,12 +423,13 @@ pub struct Memcard {
     #[serde(skip)]
     data: Box<[u8]>, // 0x20000
     #[serde(skip)]
-    file: Option<File>,
+    pub path: String
+    // file: Option<File>,
 }
 
 impl Memcard {
     pub fn new(path: &str) -> Self {
-        let file = File::open(path).expect("Inalid file path for memcard");
+        // let file = File::open(path).expect("Inalid file path for memcard");
         let mut data =  vec![0_u8; 0x20000].into_boxed_slice();
         let filedata = std::fs::read(path).expect("can't read memcard");
         data.copy_from_slice(&filedata);
@@ -444,15 +445,16 @@ impl Memcard {
             end_response: EndResponse::Good,
             directory_not_read: true,
             is_dirty: false,
-            file: Some(file),
+            path: path.to_string(),
+            // file: Some(file),
             data,
         }
     }
 
     pub fn read_file_data(&mut self) {
-        let data =  vec![0_u8; 0x20000].into_boxed_slice();
-        // let filedata = std::fs::read(path).expect("can't read memcard");
-        self.data = data;
+        // let data =  vec![0_u8; 0x20000].into_boxed_slice();
+        let filedata = std::fs::read(&self.path).expect("can't read memcard");
+        self.data = filedata.into_boxed_slice();
     }
 
     pub fn send_and_receive_byte(&mut self, data: u8) -> u8 {
@@ -786,5 +788,16 @@ impl GamepadMode {
         // }
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
+    }
+}
+
+pub fn save_memcards(system: &mut std::pin::Pin<Box<System>>) {
+    if system.sio.memcard1.is_dirty {
+        std::fs::write(&system.sio.memcard1.path, &system.sio.memcard1.data).expect("ok");
+        system.sio.memcard1.is_dirty = false;
+    }
+    if system.sio.memcard2.is_dirty {
+        std::fs::write(&system.sio.memcard2.path, &system.sio.memcard2.data).expect("ok");
+        system.sio.memcard2.is_dirty = false;
     }
 }

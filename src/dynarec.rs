@@ -300,7 +300,10 @@ fn create_compiler_thread(
 
             let block = compiler.compile_block(pc, block);
             compiler.patch_block(&block);
-            code_sender.send(BlockMsg { block }).expect("ok");
+            match code_sender.send(BlockMsg { block }) {
+                Ok(()) => {},
+                Err(_) => return
+            }
             // if let Some(idx) = idx {
             //     bc.insert_block_at(idx, pc, block);
             // } else {
@@ -614,7 +617,7 @@ impl Compiler {
         };
         if !last_jmp {
             // println!("{}", self.ctx.func.display());
-            println!("last command is not jump");
+            // println!("last command is not jump");
         }
         //
         let id = self

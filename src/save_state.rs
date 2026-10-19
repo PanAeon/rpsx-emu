@@ -56,11 +56,16 @@ pub fn load_state(_idx: u32, system: &mut System) {
     system.timers = timers;
     let cddata = system.cdrom.disk.take().unwrap();
     system.cdrom = cdrom;
-    system.cdrom.disk.as_mut().unwrap().file = cddata.file;
+    system.cdrom.disk.as_mut().unwrap().tracks = cddata.tracks;
     system.cdrom.disk.as_mut().unwrap().cache = cddata.cache;
+    system.cdrom.disk.as_mut().unwrap().serial = cddata.serial;
     // system.cdrom.disk.as_mut().unwrap().data = cddata.data;
+    let p1 = system.sio.memcard1.path.clone();
+    let p2 = system.sio.memcard1.path.clone();
     system.sio = sio;
-    system.sio.memcard1.read_file_data(); // TODO: actually read it...
+    system.sio.memcard1.path = p1;
+    system.sio.memcard1.read_file_data();
+    system.sio.memcard2.path = p2;
     system.sio.memcard2.read_file_data();
     system.mdec = mdec;
     let sender = system.gpu.renderer_sender.take();

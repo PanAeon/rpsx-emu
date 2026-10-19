@@ -1,29 +1,30 @@
 use std::{fs::File, io::{Read, Seek}, num::NonZero, sync::{Arc, Condvar, Mutex}, thread};
 
+use crate::cdrom::Track;
+
 // My take on https://github.com/simias/rustation-ng/blob/main/src/psx/cd/disc/cache.rs
 
 
 pub struct CdCache {
     reader: Arc<(Mutex<Reader>, Condvar)>,
     handle: Option<thread::JoinHandle<()>>,
-    file: File
+    tracks: Vec<Track>
 }
 
 impl CdCache {
-    pub fn new(file: File) -> Self {
-        let reader = Arc::new((Mutex::new(Reader::new()), Condvar::new()));
+    pub fn new(tracks: Vec<Track>) -> Self {
+        let reader = Arc::new((Mutex::new(Reader::new(tracks.clone())), Condvar::new()));
 
         let thread_reader = reader.clone();
-        let thread_file = file.try_clone().unwrap();
 
         let handle = std::thread::spawn(move || {
-            run_prefetcher(thread_file, thread_reader);
+            run_prefetcher( thread_reader);
         });
 
         CdCache {
             reader,
             handle: Some(handle),
-            file
+            tracks
         }
     }
 
@@ -65,20 +66,49 @@ pub struct Reader {
     prefetch_remaining: u32,
     prefetch_next: usize,
     quit: bool,
+    tracks: Vec<Track>,
+    files: Vec<Option<File>>,
 }
 
 impl Reader {
-    pub fn new() -> Self {
+    pub fn new(tracks: Vec<Track>) -> Self {
+        let mut files = Vec::with_capacity(tracks.capacity());
+        for _ in &tracks {
+            files.push(None);
+        }
         Reader {
             quit: false,
             prefetch_remaining: 0,
             prefetch_next: 0,
             sectors: lru::LruCache::new(NonZero::new(CACHE_CAPACITY).unwrap()),
+            tracks,
+            files
         }
+    }
+    pub fn read_sector(&mut self, pos: usize, buff: &mut [u8]) {
+        // let track_idx = last_track.indexes.iter().find(|x| x.id != 0).unwrap();
+        // first find track...
+        let track = self.tracks.iter().find(|x| {
+          let track_idx = x.indexes.iter().find(|x| x.id != 0).unwrap();
+          let end = track_idx.lba + x.len;
+          end >= pos
+        }).expect("ok");
+        let maybefile = &mut self.files[track.id as usize - 1];
+        let f = if maybefile.is_none() {
+            maybefile.insert(File::open(&track.filename).expect("ok"))
+        } else {
+            maybefile.as_mut().unwrap()
+        };
+        
+        let track_idx = track.indexes.iter().find(|x| x.id != 0).unwrap();
+        let pos = pos - track_idx.lba;
+        f.seek(std::io::SeekFrom::Start(pos as u64)).expect("ok");
+        f.read_exact(buff).expect("ok");// can cause problems on last sector?
+            
     }
 }
 
-fn run_prefetcher(mut file: File, reader: Arc<(Mutex<Reader>, Condvar)>) {
+fn run_prefetcher( reader: Arc<(Mutex<Reader>, Condvar)>) {
     let (reader_mutex, cond) = &*reader;
     loop {
         let mut reader = reader_mutex.lock().unwrap();
@@ -100,20 +130,22 @@ fn run_prefetcher(mut file: File, reader: Arc<(Mutex<Reader>, Condvar)>) {
             continue;
         }
 
-        drop(reader);
+        // drop(reader);
 
         // read sector...
-        file.seek(std::io::SeekFrom::Start(pos as u64)).expect("ok");
+        // file.seek(std::io::SeekFrom::Start(pos as u64)).expect("ok");
+        // file.read_exact(&mut buff).expect("ok");// can cause problems on last sector?
+
+
+        // let mut reader = reader_mutex.lock().unwrap();
         let mut buff = [0u8;0x930];
-        file.read_exact(&mut buff).expect("ok");// can cause problems on last sector?
-
-
-        let mut reader = reader_mutex.lock().unwrap();
+        reader.read_sector(pos, &mut buff);
         reader.sectors.put(pos, buff);
 
         cond.notify_one();
     }
 }
+
 
 const PREFETCH_READAHEAD_SECTORS: u32 = 75;
 

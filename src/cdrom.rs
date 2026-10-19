@@ -7,9 +7,10 @@ use arrayvec::ArrayVec;
 
 use crate::cd_cache::CdCache;
 use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
+use crate::iso9660;
 use crate::{system::{Addressable, System}, scheduler::Event};
 
-const SECTOR_SIZE: usize = 0x930;
+pub const SECTOR_SIZE: usize = 0x930;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrackType {
@@ -17,17 +18,21 @@ pub enum TrackType {
     Mode2352,
 }
 
-#[derive( PartialEq, Eq, Serialize, Deserialize)]
+#[derive( PartialEq, Eq, Serialize, Deserialize, Debug, Clone)]
 pub struct TrackIndex {
     pub id: u8,
     pub lba: usize,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Track {
     pub id: u8,
     pub track_type: TrackType,
-    pub indexes: Vec<TrackIndex>
+    pub indexes: Vec<TrackIndex>,
+    #[serde(skip)]
+    pub filename: String,
+    #[serde(skip)]
+    pub len: usize
 
 }
 
@@ -36,11 +41,13 @@ pub struct Image {
     read_head: usize,
     // #[serde(skip)]
     // pub data: Box<[u8]>,
-    tracks: Vec<Track>,
+    pub tracks: Vec<Track>,
+    // #[serde(skip)]
+    // pub file: Option<File>,
     #[serde(skip)]
-    pub file: Option<File>,
+    pub cache: Option<CdCache>,
     #[serde(skip)]
-    pub cache: Option<CdCache>
+    pub serial: Option<String>
 }
 
 impl Image {
@@ -56,10 +63,10 @@ impl Image {
         // let path = "/foo/psx/Mortal Kombat Trilogy (USA) (v1.1) (Track 01).bin";
         // let path = "/foo/psx/Final Fantasy VII (USA) (Disc 1).bin";
         // let path = "/foo/psx/Mega Man X4 (USA).bin";
-        let file = match File::open(path) {
-            Ok(f) => f,
-            Err(_) => panic!("can't read file")
-        };
+        // let file = match File::open(path) {
+        //     Ok(f) => f,
+        //     Err(_) => panic!("can't read file")
+        // };
         // let mut data: Vec<u8> = vec![0u8; 2 * 75 * SECTOR_SIZE];
         // let mut data: Vec<u8> = vec![];
         // match file.read_to_end(&mut data) {
@@ -67,16 +74,42 @@ impl Image {
         //     Err(_) => panic!("file read error")
         // };
         // file.read_to_end(&mut data);
+
+        let tracks = crate::cue::parse_cue(&path);
+        let mut cache = CdCache::new(tracks.clone());
+
+        // Okay
+        //
+        // let mut iso = iso9660::open_image(&mut cache);
+        
+
+        // iso.entries.iter().for_each(|e| {
+        //     println!(">>>>>> {} {}", String::from_utf8(e.name().to_vec()).expect("ok"), e.is_dir());
+        // });
+
+        // iso.ls();
+
+        // println!(".....");
+        let serial = extract_serial_number(&mut cache);
+        let serial = String::from_utf8(serial.0.to_vec()).expect("ok");
+        println!("serial number: {}", serial);
+        // std::process::exit(0);
+
+            // tracks: vec![Track {
+            //     id: 0,
+            //     track_type: TrackType::Mode2352,
+            //     indexes: vec![TrackIndex { id: 1, lba: 0}],
+            //     filename: "".to_string()
+            // }],
+        //
+        //
         Self {
             read_head: 0,
-            file: Some(file.try_clone().unwrap()),
-            cache: Some(CdCache::new(file)),
+            // file: Some(file),
+            cache: Some(cache),
             // data: data.into_boxed_slice(),
-            tracks: vec![Track {
-                id: 0,
-                track_type: TrackType::Mode2352,
-                indexes: vec![TrackIndex { id: 1, lba: 0}]
-            }]
+            tracks,
+            serial: Some(serial)
         }
     }
 
@@ -119,7 +152,11 @@ impl Image {
     }
 
     pub fn last_track_end(&self) -> (u8, u8, u8) {
-        let length = self.file.as_ref().unwrap().metadata().unwrap().len();
+        let last_track = self.tracks.last().unwrap();
+        let track_idx = last_track.indexes.iter().find(|x| x.id != 0).unwrap();
+        // should we add prelude?
+        let length = 2 * 75 * SECTOR_SIZE + last_track.len + track_idx.lba;
+        // let length = self.file.as_ref().unwrap().metadata().unwrap().len();
         self.mm_ss_ff(length as usize)
         // self.mm_ss_ff(self.data.len())
     }
@@ -303,6 +340,7 @@ impl CDRom {
             0x00 => cdrom.cmd_unused(),
             0x01 => cdrom.cmd_nop(),
             0x02 => cdrom.cmd_setloc(),
+            0x03 => cdrom.cmd_play(),
             0x06 => cdrom.cmd_readn(),
             0x08 => cdrom.cmd_stop(),
             0x09 => cdrom.cmd_pause(),
@@ -458,6 +496,22 @@ impl CDRom {
         CommandResponse::new()
             .int3([self.status.0], AVG_1ST_RESP_GENERIC)
             .int1( AVG_1ST_RESP_GENERIC + self.mode.speed().transform(AVG_RATE_INT1))
+    }
+    pub fn cmd_play(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            let track = from_bcd(self.parameters[0]).expect("ok");
+            println!("play set loc");
+        };
+            
+        // TODO: play not implemented
+        
+        println!("CDROM play!!");
+
+        self.status.set_read(true);
+        self.status.set_play(true);
+        CommandResponse::new()
+            .int3([self.status.0], AVG_1ST_RESP_GENERIC)
+            // .int1( AVG_1ST_RESP_GENERIC + self.mode.speed().transform(AVG_RATE_INT1))
     }
 
     pub fn cmd_reads(&mut self) -> CommandResponse {
@@ -1089,3 +1143,153 @@ const fn to_bcd(val: u8) -> Option<u8> {
 
     Some((tens << 4) | ones)
 }
+
+
+/// Disc serial number
+#[derive(serde::Serialize, serde::Deserialize, Copy, Clone, PartialEq, Eq)]
+pub struct SerialNumber([u8; 10]);
+
+impl SerialNumber {
+    /// Extract a serial number from a standard PlayStation binary
+    /// name of the form "aaaa_ddd.dd"
+    fn from_bin_name(bin: &[u8]) -> SerialNumber {
+        if bin.len() != 11 {
+            panic!("wrong bin len");
+        }
+
+        // Ridge Racer (NA) uses "SCUS-943.00"
+        if bin[4] != b'_' && bin[4] != b'-' {
+            // This will fail for the few "lightspan educational" discs since they have a serial
+            // number looking like "LSP-123456". Those games are fairly obscure and some of them
+            // seem to have weird and nonstandards SYSTEM.CNF anyway.
+            panic!("no serial");
+        }
+
+        let mut serial = [0u8; 10];
+
+        fn to_upper(b: u8) -> u8 {
+            if b.is_ascii_lowercase() {
+                b - b'a' + b'A'
+            } else {
+                b
+            }
+        }
+
+        serial[0] = to_upper(bin[0]);
+        serial[1] = to_upper(bin[1]);
+        serial[2] = to_upper(bin[2]);
+        serial[3] = to_upper(bin[3]);
+        serial[4] = b'-';
+        serial[5] = bin[5];
+        serial[6] = bin[6];
+        serial[7] = bin[7];
+        serial[8] = bin[9];
+        serial[9] = bin[10];
+
+        SerialNumber(serial)
+    }
+
+    pub fn region(&self) -> Option<Region> {
+        match &self.0[0..4] {
+            b"SCPS" | b"SLPS" | b"SLPM" | b"PAPX" => Some(Region::Japan),
+            b"SCUS" | b"SLUS" | b"LSP-" => Some(Region::NorthAmerica),
+            b"SCES" | b"SCED" | b"SLES" | b"SLED" => Some(Region::Europe),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    /// Japan (NTSC): SCEI
+    Japan,
+    /// North America (NTSC): SCEA
+    NorthAmerica,
+    /// Europe (PAL): SCEE
+    Europe,
+}
+
+impl Region {
+    // Returns the video standard normally used for the given region
+    // pub fn video_standard(self) -> VideoStandard {
+    //     match self {
+    //         Region::Japan => VideoStandard::Ntsc,
+    //         Region::NorthAmerica => VideoStandard::Ntsc,
+    //         Region::Europe => VideoStandard::Pal,
+    //     }
+    // }
+}
+
+
+
+/// Attempt to extract the serial number of the disc. All officially
+/// licensed PlayStation game should have a serial number.
+fn extract_serial_number(image: &mut CdCache) -> SerialNumber {
+    let system_cnf = read_system_cnf(image);
+
+    parse_serial_number_from_system_cnf(&system_cnf)
+}
+
+fn parse_serial_number_from_system_cnf(system_cnf: &[u8]) -> SerialNumber {
+    // Now we need to parse the SYSTEM.CNF file to get the content of the "BOOT" line
+    let mut boot_path = None;
+
+    for line in system_cnf.split(|&b| b == b'\n' || b == b'\r') {
+        let words: Vec<_> = line
+            .split(|&b| b == b' ' || b == b'\t' || b == b'=')
+            .filter(|w| !w.is_empty())
+            .collect();
+
+        if words.len() == 2 && words[0] == b"BOOT" {
+            boot_path = Some(words[1]);
+            break;
+        }
+    }
+
+    let boot_path = match boot_path {
+        Some(b) => b,
+        None => {
+            panic!("Couldn't find BOOT line in SYSTEM.CNF");
+            // return Err(PsxError::NoSerialNumber);
+        }
+    };
+
+    // boot_path should look like "cdrom:\FOO\BAR\...\aaaa_ddd.dd;1"
+    //
+    // Most (but not all) paths ends with a ";1", so get rid of it here
+    let boot_path = boot_path.split(|&b| b == b';').next().unwrap();
+
+    // boot_path should look like "cdrom:\FOO\BAR\...\aaaa_ddd.dd"
+    let bin_name = boot_path
+        .split(|&b| b == b':' || b == b'\\')
+        .next_back()
+        .unwrap();
+
+    let serial = SerialNumber::from_bin_name(bin_name);
+
+
+    serial
+}
+
+fn read_system_cnf(image: &mut CdCache) -> Vec<u8> {
+    let dir = iso9660::open_image(image);
+
+    let system_cnf = dir.entry_by_name(b"SYSTEM.CNF;1").expect("system.cnf found");
+
+    // SYSTEM.CNF should be a small text file, 1MB should be way more
+    // than necessary
+    let len = system_cnf.extent_len();
+
+    if len > 1024 * 1024 {
+        let desc = format!("SYSTEM.CNF is too big: {}B", len);
+        return panic!("bad disc format");
+    }
+
+    let system_cnf = system_cnf.read_file(image).expect("ok");
+
+    // let text = String::from_utf8(system_cnf.clone()).expect("ok");
+    // println!("system.cnf: \n{}", text);
+
+    system_cnf
+}
+

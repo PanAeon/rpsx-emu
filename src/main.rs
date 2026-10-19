@@ -59,6 +59,8 @@ mod dynarec;
 mod interpreter;
 mod save_state;
 mod fastmem;
+mod iso9660;
+mod cue;
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
 //     let mut i = 0;
@@ -84,7 +86,11 @@ fn main() {
     //     println!("{},", (x as f32) / 255.0 )
     // }
     crate::fastmem::install_segfault_handler();
+    // let res = crate::cue::parse_cue("/foo/psx/Mortal Kombat Trilogy (USA) (v1.1).cue");
+    // println!("{:?}", res);
+
     run(cli).unwrap();
+
     // fastmem_proto::run();
     println!("ok");
 }
@@ -1058,6 +1064,7 @@ impl State {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ExitVSync).expect("ok");
                         self.system.gpu.exit_vsync();
                         timers::Timers::exit_vsync(&mut self.system);
+                        sio::save_memcards(&mut self.system);
                         // let (w, h) = self.cpu.system.gpu_ctrl_receiver.recv().expect("ok");
                         // self.update_vertex_buffer_if_needed(w, h, false);
                         if self.audio_sender.len() > 5 * 735 {

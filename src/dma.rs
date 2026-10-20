@@ -94,18 +94,21 @@ impl Dma {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Channel {
-    enable: bool,
-    direction: Direction,
-    step: Step,
-    sync: Sync,
-    trigger: bool,
-    chop: bool,
-    chop_dma_sz: u8,
-    chop_cpu_sz: u8,
+    pub enable: bool,
+    pub direction: Direction,
+    pub step: Step,
+    pub sync: Sync,
+    pub trigger: bool,
+    pub chop: bool,
+    pub chop_dma_sz: u8,
+    pub chop_cpu_sz: u8,
     dummy: u8,
-    base: u32,
-    block_size: u16,
-    block_count: u16
+    pub base: u32,
+    pub block_size: u16,
+    pub block_count: u16,
+    pub clock_counter: u64,
+    pub remaining_words: u16,
+    pub curr_addr: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -121,7 +124,7 @@ pub enum Sync {
     LinkedList = 2,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 pub enum Step {
     Increment = 0,
     Decrement = 1
@@ -142,7 +145,10 @@ impl Channel {
             dummy: 0,
             base: 0,
             block_size: 0,
-            block_count: 0
+            block_count: 0,
+            clock_counter: 0,
+            remaining_words: 0,
+            curr_addr: 0,
         }
     }
     pub fn base(&self) -> u32 {
@@ -230,7 +236,7 @@ impl Channel {
 
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Port {
     MdecIn = 0,
     MdecOut = 1,

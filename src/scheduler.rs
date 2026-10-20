@@ -26,6 +26,7 @@ pub enum Event {
     CDRomResultIrq(ResponseType),
     SerialSend,
     DsrOff,
+    Dma,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -106,6 +107,7 @@ impl Scheduler {
         self.schedule(Event::HBlankStart, LINE_DURATION - HBLANK_DURATION, Some(LINE_DURATION));
         self.schedule(Event::HBlankEnd, LINE_DURATION, Some(LINE_DURATION));
         self.schedule(Event::SpuTick, 768, Some(768));
+        self.schedule(Event::Dma, 128, Some(128));
     }
 
 }

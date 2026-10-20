@@ -24,6 +24,9 @@ use cranelift::codegen::verifier::verify_function;
 
 use target_lexicon::PointerWidth;
 
+const CODE_SIZE: usize = 32 * 1024 * 1024;
+const WATERLINE: u64 =  6553; // 80% assuming 4k function
+
 const REG_HI: u32 = 32;
 const REG_LO: u32 = 33;
 const REG_PC: u32 = 34;
@@ -280,13 +283,16 @@ fn create_compiler_thread(
     // let mut in_flight: HashSet<u32> = std::collections::HashSet::new();
     let handle = std::thread::spawn(move || {
         let mut compiler = Compiler::new(regs_ptr, system_ptr, gte_ptr);
-        compiler.init();
         let core_ids = core_affinity::get_core_ids().unwrap();
         let res = core_affinity::set_for_current(core_ids[2]);
         if res {
             println!("compiler thread pinned to 2");
         }
         loop {
+
+            if compiler.num_functions >= WATERLINE {
+            }
+
             let msg = match receiver.recv() {
                 Ok(msg) => msg,
                 Err(_) => return,
@@ -300,6 +306,7 @@ fn create_compiler_thread(
 
             let block = compiler.compile_block(pc, block);
             compiler.patch_block(&block);
+            compiler.num_functions += 1;
             match code_sender.send(BlockMsg { block }) {
                 Ok(()) => {},
                 Err(_) => return
@@ -334,6 +341,8 @@ struct Compiler {
     module: JITModule,
 
     constants: Constants,
+
+    num_functions: u64
 }
 
 impl Compiler {
@@ -349,7 +358,7 @@ impl Compiler {
             .unwrap();
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
-        let provider = Box::new(ArenaMemoryProvider::new_with_size(64 * 1024 * 1024).expect("ok"));
+        let provider = Box::new(ArenaMemoryProvider::new_with_size(CODE_SIZE).expect("ok"));
         builder.memory_provider(provider);
 
         builder.symbol("store_word", store_word as *const u8);
@@ -506,15 +515,10 @@ impl Compiler {
                 gte_set_data,
                 gte_set_control,
             },
+            num_functions: 0,
         }
     }
 
-    pub fn init(&mut self) {
-        // let slow_load_word = self.compile_slowmem32_load();
-        // let fast_load_word = self.compile_fastmem32_load();
-        // self.constants.fast_load_word = fast_load_word;
-        // self.constants.slow_load_word = slow_load_word;
-    }
     pub fn compile_block(&mut self, addr: u32, xs: Vec<Instruction>) -> block_cache::Block {
         // woot?
         // if addr == 0x80000080 {

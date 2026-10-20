@@ -1,11 +1,13 @@
-
 use serde::Serialize;
 
 use crate::{
     bios::Bios,
     block_cache::BlockCache,
     cdrom::CDRom,
-    dma::{Direction, Dma, Port, Step, Sync},
+    dma::{
+        Direction::{self, FromRam},
+        Dma, Port, Step, Sync,
+    },
     dynarec::Dynarec,
     gpu::Gpu,
     irq::InterruptController,
@@ -243,7 +245,7 @@ impl System {
             panic!("unaligned store{:?} address: {:08x}", T::width(), address)
         }
         if let Some(offset) = map::RAM.contains(address) {
-            return Ram::store(self, offset, value);
+            return self.ram.store( offset, value);
         }
         if let Some(offset) = map::GPU.contains(address) {
             // gpu::store(self, offset, value);
@@ -359,17 +361,17 @@ impl System {
         let value = value << (align * 8);
         let major = (offset & 0x70) >> 4;
         let minor = offset & 0xf;
-        let active_port = match major {
+        match major {
             0..7 => {
                 let port = Port::from_index(major as u8);
                 let channel = self.dma.channel_mut(port);
                 match minor {
                     0 => channel.set_base(value),
                     4 => channel.set_block_control(value),
-                    8 => channel.set_control(value),
+                    8 => self.set_channel_control(port, value),
                     _ => panic!("Unhandled DMA read at {:x} offset", offset),
                 }
-                if channel.active() { Some(port) } else { None }
+                // if channel.active() { Some(port) } else { None }
             }
             7 => {
                 match minor {
@@ -377,23 +379,73 @@ impl System {
                     4 => crate::dma::Dma::set_interrupt(self, value),
                     _ => panic!("Unhandled DMA read at {:x} offset", offset),
                 }
-                None
+                // None
             }
             _ => panic!("Unhandled DMA read at {:x} offset", offset),
         };
-        if let Some(port) = active_port {
-            self.do_dma(port)
+        // if let Some(port) = active_port {
+        //     self.do_dma(port, 64)
+        // }
+    }
+
+    pub fn set_channel_control(&mut self, port: Port, value: u32) {
+        let mut ctrl = ChannelControl(value);
+        if port == Port::Otc {
+            ctrl.0 &= 0x51_000_000;
+            ctrl.0 |= 2;
+        }
+        let channel = self.dma.channel_mut(port);
+        let was_enabled = channel.enable;
+        let is_enabled = ctrl.is_enabled();
+        if was_enabled ^ is_enabled {
+            // Channel was started or stopped
+            if is_enabled {
+                channel.set_control(ctrl.0);
+                self.start_dma(port);
+            } else {
+                channel.enable = false;
+                self.run_channel(port, 128 * 16);
+                self.dma.channel_mut(port).set_control(ctrl.0);
+                // channel.set_control(ctrl.0);
+            }
+        } else {
+            channel.set_control(ctrl.0);
+            // psx.dma[port].control = ctrl;
         }
     }
 
-    pub fn do_dma(&mut self, port: Port) {
-        match self.dma.channel(port).sync() {
-            Sync::LinkedList => self.do_dma_linked_list(port),
-            _ => self.do_dma_block(port),
-        }
+    pub fn dma_event(system: &mut System) {
+        // continue where we left off
+        // println!("dma!");
+        system.run_channel(Port::MdecIn, 128); // actually ellapsed
+        system.run_channel(Port::MdecOut, 128); // actually ellapsed
+        system.run_channel(Port::Gpu, 128); // actually ellapsed
+        system.run_channel(Port::CdRom, 128); // actually ellapsed
+        system.run_channel(Port::Spu, 128); // actually ellapsed
+        system.run_channel(Port::Pio, 128); // actually ellapsed
+        system.run_channel(Port::Otc, 128); // actually ellapsed
+
     }
-    pub fn do_dma_block(&mut self, port: Port) {
+
+    pub fn start_dma(&mut self, port: Port) {
+        let channel = self.dma.channel_mut(port);
+        channel.remaining_words = 0;
+        channel.clock_counter = 0;
+        // continue where we left off
+        self.run_channel(port, 64);
+    }
+
+    // pub fn do_dma(&mut self, port: Port, cycles: u64) {
+    // match self.dma.channel(port).sync() {
+    //     Sync::LinkedList => self.do_dma_linked_list(port, cycles),
+    //     self.do_dma_block(port, cycles)
+    // }
+    // }
+    pub fn run_channel(&mut self, port: Port, cycles: u64) {
+        self.dma.channel_mut(port).clock_counter += cycles;
         let channel = self.dma.channel(port);
+        let direction = channel.direction();
+        let sync_mode = channel.sync();
 
         let increment = match channel.step() {
             Step::Increment => 4,
@@ -401,15 +453,152 @@ impl System {
         };
         let mut addr = channel.base();
 
+        while self.dma.channel_mut(port).clock_counter > 0 {
+            let mut do_copy = true;
+            let channel = self.dma.channel(port);
+
+            if channel.remaining_words == 0 {
+                if !channel.enable {
+                    break;
+                }
+                // if !can_run(psx, port, control.is_from_ram()) {
+                //     // The device is not ready
+                //     break;
+                // }
+
+                // Initialize RAM pointer
+                self.dma.channel_mut(port).curr_addr = channel.base;
+                // psx.dma[port].cur_address = psx.dma[port].base;
+                let cur_addr = channel.base;
+
+                match sync_mode {
+                    Sync::Manual => {
+                        self.dma.channel_mut(port).remaining_words = channel.block_size;
+                    }
+                    Sync::Request => {
+                        let channel = self.dma.channel_mut(port);
+                        channel.remaining_words = channel.block_size;
+
+                        channel.block_count -= 1;
+
+                        // XXX From mednafen, only GPU timings are implemented so far
+                        if port == Port::Gpu {
+                            channel.clock_counter -= 7;
+                        }
+                    }
+                    Sync::LinkedList => {
+                        let overflow = cur_addr & 0x80_0000 != 0;
+
+                        if overflow {
+                            unimplemented!();
+                        }
+                        let channel = self.dma.channel_mut(port);
+
+                        let header: u32 = self.ram.load::<u32>(cur_addr & 0x1f_fffc);
+                        channel.curr_addr = (cur_addr + 4) & 0xff_ffff;
+                        channel.base = header & 0xff_ffff;
+
+                        let remw = (header >> 24) as u16;
+                        channel.remaining_words = remw;
+
+                        // Timings from mednafen
+                        channel.clock_counter -= if remw > 0 { 15 } else { 10 };
+
+                        // Mednafen skips the copy in this case because `remaining_words` might be 0
+                        // and that wouldn't work correctly because in other situations
+                        // `remaining_words` == 0 is the same as setting it to 0x1_0000 (i.e. it wraps
+                        // around).
+                        do_copy = false;
+                    }
+                }
+            } else if channel.chop {
+                self.dma.channel_mut(port).curr_addr = channel.base;
+                self.dma.channel_mut(port).remaining_words = channel.block_size;
+            }
+
+            if do_copy {
+                let cur_addr = self.dma.channel_mut(port).curr_addr & 0x1f_fffc;
+                let channel = self.dma.channel(port);
+
+                let overflow = cur_addr & 0x80_0000 != 0;
+                if overflow {
+                    unimplemented!("DMA address overflow");
+                }
+
+                let delay = if channel.direction == FromRam {
+                    let v = self.ram.load::<u32>(cur_addr);
+                    self.port_store(port, v)
+                } else {
+                    let (v, offset, read_delay) = self.port_load(port);
+                    self.ram.store::<u32>((cur_addr.wrapping_add(offset)) & 0x1f_fffc, v);
+                    read_delay
+                };
+                
+                self.dma.channel_mut(port).clock_counter -= delay;
+
+                self.dma.channel_mut(port).curr_addr = 0xff_ffff
+                    & if channel.step == Step::Decrement {
+                      self.dma.channel_mut(port).curr_addr.wrapping_sub(4)
+                    } else {
+                        self.dma.channel_mut(port).curr_addr.wrapping_add(4)
+                    };
+
+                self.dma.channel_mut(port).clock_counter -= 1;
+                self.dma.channel_mut(port).remaining_words -= 1;
+            }
+
+            if channel.chop {
+                let channel = self.dma.channel_mut(port);
+
+                channel.base = channel.curr_addr;
+                channel.block_size = channel.remaining_words;
+            }
+
+            if self.dma.channel(port).remaining_words == 0 {
+                if !channel.enable {
+                    break;
+                }
+
+                let end_of_dma = match sync_mode {
+                    Sync::Manual => {
+                        // We do the transfer all at once, we're done
+                        true
+                    }
+                    Sync::Request => {
+                        let channel = self.dma.channel_mut(port);
+
+                        channel.base = channel.curr_addr;
+
+                        channel.block_count == 0
+                    }
+                    Sync::LinkedList => {
+                        // Check for end-of-list marker
+                        self.dma.channel_mut(port).base == 0xff_ffff
+                    }
+                };
+
+                if end_of_dma {
+                    Dma::done(self, port);
+                    // let irq = psx.dma.end_of_dma(port);
+                    // irq::set_level(psx, irq::Interrupt::Dma, irq.is_active());
+                }
+            }
+        }
+
+        
+    if self.dma.channel_mut(port).clock_counter > 0 {
+        self.dma.channel_mut(port).clock_counter = 0;
+    }
+
         // transfer size in words
-        let mut remsz = match channel.transfer_size() {
+        /*let mut remsz = match channel.transfer_size() {
             Some(n) => n,
             None => panic!("Couldn't figure DMA block transfer size"),
         };
 
         while remsz > 0 {
             let cur_addr = addr & 0x1ffffc;
-            match channel.direction() {
+            match direction {
                 Direction::FromRam => {
                     let src_word = self.ram.load::<u32>(cur_addr);
                     match port {
@@ -450,9 +639,86 @@ impl System {
             addr = addr.wrapping_add(increment);
             remsz -= 1;
         }
-        Dma::done(self, port);
+        Dma::done(self, port);*/
     }
-    pub fn do_dma_linked_list(&mut self, port: Port) {
+
+    pub fn port_store(&mut self, port: Port, v: u32) -> u64 {
+        match port {
+            Port::MdecIn => {
+                self.mdec.store(0, v);
+                0
+            }
+            Port::Gpu => {
+                self.gpu.gp0(v);
+                0
+            }
+            Port::Spu => {
+                self.spu.ram_write::<4>(v);
+                47
+            }
+            _ => unimplemented!("DMA port store"),
+        }
+    }
+    pub fn port_load(&mut self, port: Port) -> (u32, u32, u64) {
+        let mut offset = 0;
+        let mut delay = 0;
+
+        let v = match port {
+            Port::Otc => {
+                let channel = self.dma.channel(port);
+
+                if channel.remaining_words == 1 {
+                    // Last entry contains the end of table marker
+                    0xff_ffff
+                } else {
+                    // Pointer to the previous entry
+                    channel.curr_addr.wrapping_sub(4) & 0x1f_ffff
+                }
+            }
+            // XXX latency taken from mednafen
+            Port::CdRom => {
+                delay = 8;
+                // println!("dma load from cd");
+                self.cdrom.load::<u32>(2)
+                // cd::dma_load(psx)
+            }
+            Port::Spu => self.spu.ram_read::<4>(),
+            Port::MdecOut => {
+                let v = self.mdec.load::<u32>(0);
+                // offset = off;
+                v
+            }
+            Port::Gpu => self.gpu.read(),
+            _ => unimplemented!("DMA port load {:?}", port),
+        };
+
+        (v, offset, delay)
+    }
+
+    // Check if the device targeted by `port` can either be read from of written to
+    // fn can_run(&mut self, port: Port, write: bool) -> bool {
+    //     if write {
+    //         match port {
+    //             Port::Spu => true,
+    //             Port::Gpu => gpu::dma_can_write(psx),
+    //             Port::MDecIn => mdec::dma_can_write(psx),
+    //             _ => unimplemented!("Can write {:?}?", port),
+    //         }
+    //     } else {
+    //         match port {
+    //             Port::Spu => true,
+    //             // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
+    //             // `true`
+    //             Port::Otc => psx.dma[port].control.is_started(),
+    //             // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
+    //             Port::CdRom => true,
+    //             Port::MDecOut => mdec::dma_can_read(psx),
+    //             Port::Gpu => true,
+    //             _ => unimplemented!("Can read {:?}?", port),
+    //         }
+    //     }
+    // }
+    /*pub fn do_dma_linked_list(&mut self, port: Port, cycles: u64) {
         let channel = self.dma.channel_mut(port);
         let mut addr = channel.base() & 0x1ffffc;
 
@@ -486,7 +752,75 @@ impl System {
 
         Dma::done(self, port);
         // channel.done();
+    }*/
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Copy, Clone)]
+struct ChannelControl(u32);
+
+impl ChannelControl {
+    fn new(v: u32) -> ChannelControl {
+        ChannelControl(v)
     }
+
+    fn get(self) -> u32 {
+        self.0
+    }
+
+    /// Returns true if the 'enable' bit is set
+    fn is_enabled(self) -> bool {
+        self.0 & (1 << 24) != 0
+    }
+
+    /// Clear the enable bit
+    fn disable(&mut self) {
+        self.0 &= !(1 << 24);
+    }
+
+    /// Returns true if the 'start' bit is set
+    fn is_started(self) -> bool {
+        self.0 & (1 << 28) != 0
+    }
+
+    /// Returns true if transfer is from RAM to device, false otherwise
+    fn is_from_ram(self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    fn sync_mode(self) -> SyncMode {
+        match (self.0 >> 9) & 3 {
+            0 => SyncMode::Manual,
+            1 => SyncMode::Request,
+            2 => SyncMode::LinkedList,
+            _ => unimplemented!("Unknown DMA sync mode"),
+        }
+    }
+
+    fn is_chopped(self) -> bool {
+        self.0 & (1 << 8) != 0
+    }
+
+    fn is_backwards(self) -> bool {
+        self.0 & (1 << 1) != 0
+    }
+
+    /// Called when the channel is stopped
+    fn stop(&mut self) {
+        // Clear enabled bit
+        self.0 &= !(1 << 24);
+        // Clear start/trigger bit
+        self.0 &= !(1 << 28);
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone, Copy, Debug)]
+pub enum SyncMode {
+    /// Transfer starts when the CPU writes to the Trigger bit and transfers everything at once
+    Manual = 0,
+    /// Sync blocks to DMA requests
+    Request = 1,
+    /// Used to transfer GPU command lists
+    LinkedList = 2,
 }
 
 pub extern "C" fn store_word(system_ptr: *mut System, addr: u32, val: u32) {

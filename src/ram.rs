@@ -27,14 +27,13 @@ impl Ram {
         T::from_u32(u32::from_le_bytes(buffer))
     }
 
-    pub fn store<T:Addressable>(system: &mut System, address: u32, value: T) {
-        let ram = &mut system.ram;
+    pub fn store<T:Addressable>(&mut self, address: u32, value: T) {
         let width = T::width() as usize;
         let addr = address as usize;
         let addr = addr & 0x1f_ffff;
         let bytes = value.as_u32().to_le_bytes();
 
-        ram.data[addr..addr+width].copy_from_slice(&bytes[..width]);
+        self.data[addr..addr+width].copy_from_slice(&bytes[..width]);
     }
 }
 

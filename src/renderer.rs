@@ -1094,6 +1094,7 @@ impl Renderer {
         }
     }
 
+    // affected by blit settings... but ... what .. it's not this
     pub fn vram2vram_blit(&mut self, src: Vertex, dst: Vertex, size: Vertex) {
         let width = size.x as usize;
         let height = size.y as usize;

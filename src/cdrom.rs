@@ -129,6 +129,15 @@ impl Image {
         }
     }
 
+    pub fn current_sector(&mut self) -> Vec<u8> {
+        let start = self.read_head;
+        if start < 2 * 75 * SECTOR_SIZE {
+            vec!(0x0;SECTOR_SIZE)
+        } else {
+            self.cache.as_mut().unwrap().read_sector(start - 2 * 75 * SECTOR_SIZE).to_vec()
+        }
+    }
+
     pub fn reset_read_head(&mut self) {
         self.read_head = SECTOR_SIZE * 75 * 2;
     }
@@ -168,6 +177,23 @@ impl Image {
         let mins = secs / 60;
         let secs = mins % 60;
         (mins as u8, secs as u8, sect as u8)
+    }
+    // INT3(amm,ass,asect,mode,file,channel,sm,ci)
+    pub fn get_current_sector_info(&mut self) -> [u8;8] {
+        // let (amm, ass, asect) = self.mm_ss_ff(self.read_head);
+
+        let sector = self.current_sector();
+
+        let amm = sector[0xC];
+        let ass = sector[0xD];
+        let asect = sector[0xE];
+        let sector_mode = sector[0xF];
+        let file = sector[0x10];
+        let channel = sector[0x11];
+        let submode = sector[0x12];
+        let ci = sector[0x13];
+        // let is_realtime_audio = (submode & 0x44) == 0x44;
+        [amm, ass, asect, sector_mode, file, channel, submode, ci]
     }
 
     pub fn current_position_info(&self) -> [u8;8] {
@@ -348,6 +374,7 @@ impl CDRom {
             0x0c => cdrom.cmd_demute(),
             0x0e => cdrom.cmd_setmode(),
             0x0d => cdrom.cmd_set_filter(),
+            0x10 => cdrom.get_locl(),
             0x11 => cdrom.get_locp(),
             0x14 => cdrom.cmd_gettd(),
             0x15 => cdrom.cmd_seekl(),
@@ -484,6 +511,21 @@ impl CDRom {
         CommandResponse::new()
             .int3(disk.current_position_info().
                 map(|x| to_bcd(x).expect("track position is valid bcd")), AVG_1ST_RESP_GENERIC)
+    }
+
+    // Retrieves 4-byte sector header, plus 4-byte subheader of the current sector
+    pub fn get_locl(&mut self) -> CommandResponse {
+        if !self.parameters.is_empty() {
+            return error_response(&self.status, 0x20, "get_locp doesn't takes parameters")
+        }
+        println!("CDROM get_locl!!");
+
+        let disk = self.disk.as_mut().expect("get_locl inserted disk");
+
+        CommandResponse::new()
+            .int3(disk.get_current_sector_info(),
+                // .map(|x| to_bcd(x).expect("track position is valid bcd")), 
+                0xAAA401)
     }
 
     pub fn cmd_readn(&mut self) -> CommandResponse {
@@ -754,6 +796,7 @@ impl CDRom {
         });
         if self.data_buffer.is_empty() {
             self.hsts.set_data_request(false);
+            // self.hsts.set_result_read_ready(false);
         }
         data
     }

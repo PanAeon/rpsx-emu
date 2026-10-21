@@ -61,6 +61,7 @@ mod save_state;
 mod fastmem;
 mod iso9660;
 mod cue;
+mod presenter;
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
 //     let mut i = 0;

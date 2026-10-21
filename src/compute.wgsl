@@ -102,27 +102,6 @@ fn get_transparency(v: Vertex) -> u32 {
 @group(0) @binding(2) var<storage, read> uniforms: Uniforms;
 @group(0) @binding(3) var<storage, read_write> bins_buffer: array<u32>;
 
-// fn draw_triangle(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i32>) {
-//     // let part = get_partition(id);
-//     // let triangle_bounds = get_bounds(get_pos(v1), get_pos(v2), get_pos(v3));
-//     // let bounds = intersect(part, triangle_bounds);
-//
-//     for (var y = bounds.y; y <= bounds.w; y++) {
-//         for (var x = bounds.x; x <= bounds.z; x++) {
-//             let lambda = barycentric(get_pos(v1), get_pos(v2), get_pos(v3), x, y);
-//             if lambda.x < 0.0 || lambda.y < 0.0 || lambda.z < 0.0 {
-//                 continue;
-//             }
-//
-//             // let c = pack_color(vec3<f32>(1.0, 1.0, 1.0),false);
-//             let col = interpolate_color(lambda, v1, v2, v3);
-//             let c = pack_color(col, false);
-//             // compose_buffer[1024 * y + x + (1024 * 512 * z)] = c | (1 << 16);
-//             textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(c, 0, 0, 0));
-//             // vram[1024*y + x] = v1.color;
-//         }
-//     }
-// }
 
 fn draw_rectangle(v1: Vertex, v2: Vertex, bounds: vec4<i32>) {
     let is_textured = get_textured(v1);
@@ -318,9 +297,9 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
     let transparency = get_transparency(v1);
 
     // draw only if is top-left
-    // let bias1 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p0, p1, p2));
-    // let bias2 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p1, p2, p0));
-    // let bias3 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p2, p0, p1));
+    let bias1 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p0, p1, p2));
+    let bias2 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p1, p2, p0));
+    let bias3 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p2, p0, p1));
 
     for (var y = bds.y; y <= bds.w; y++) {
         for (var x = bds.x; x <= bds.z; x++) {
@@ -334,6 +313,7 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                 //     continue;
                 // }
                 let lambda = barycentric(p0, p1, p2, x, y);
+                 // if lambda.x > bias2 && lambda.y > bias3 && lambda.z > bias1 {
 
                 let col = interpolate_color(lambda, c0, c1, c2);
 

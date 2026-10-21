@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::{ops::Div};
-use std::fs::File;
 use serde::{Deserialize, Serialize};
 
 use arrayvec::ArrayVec;
@@ -29,9 +28,7 @@ pub struct Track {
     pub id: u8,
     pub track_type: TrackType,
     pub indexes: Vec<TrackIndex>,
-    #[serde(skip)]
     pub filename: String,
-    #[serde(skip)]
     pub len: usize
 
 }
@@ -46,7 +43,6 @@ pub struct Image {
     // pub file: Option<File>,
     #[serde(skip)]
     pub cache: Option<CdCache>,
-    #[serde(skip)]
     pub serial: Option<String>
 }
 
@@ -91,8 +87,13 @@ impl Image {
 
         // println!(".....");
         let serial = extract_serial_number(&mut cache);
-        let serial = String::from_utf8(serial.0.to_vec()).expect("ok");
-        println!("serial number: {}", serial);
+
+        let serial = serial.map(|x|String::from_utf8(x.0.to_vec()).expect("ok"));
+
+        if let Some(serial) = &serial {
+            println!("serial number: {}", serial);
+        }
+
         // std::process::exit(0);
 
             // tracks: vec![Track {
@@ -109,7 +110,7 @@ impl Image {
             cache: Some(cache),
             // data: data.into_boxed_slice(),
             tracks,
-            serial: Some(serial)
+            serial
         }
     }
 
@@ -1195,9 +1196,10 @@ pub struct SerialNumber([u8; 10]);
 impl SerialNumber {
     /// Extract a serial number from a standard PlayStation binary
     /// name of the form "aaaa_ddd.dd"
-    fn from_bin_name(bin: &[u8]) -> SerialNumber {
+    fn from_bin_name(bin: &[u8]) -> Option<SerialNumber> {
         if bin.len() != 11 {
-            panic!("wrong bin len");
+            return None;
+            // panic!("wrong bin len, name: {}", String::from_utf8(bin.to_vec()).expect("ok"));
         }
 
         // Ridge Racer (NA) uses "SCUS-943.00"
@@ -1205,7 +1207,7 @@ impl SerialNumber {
             // This will fail for the few "lightspan educational" discs since they have a serial
             // number looking like "LSP-123456". Those games are fairly obscure and some of them
             // seem to have weird and nonstandards SYSTEM.CNF anyway.
-            panic!("no serial");
+            return None;
         }
 
         let mut serial = [0u8; 10];
@@ -1229,7 +1231,7 @@ impl SerialNumber {
         serial[8] = bin[9];
         serial[9] = bin[10];
 
-        SerialNumber(serial)
+        Some(SerialNumber(serial))
     }
 
     pub fn region(&self) -> Option<Region> {
@@ -1267,13 +1269,13 @@ impl Region {
 
 /// Attempt to extract the serial number of the disc. All officially
 /// licensed PlayStation game should have a serial number.
-fn extract_serial_number(image: &mut CdCache) -> SerialNumber {
+fn extract_serial_number(image: &mut CdCache) -> Option<SerialNumber> {
     let system_cnf = read_system_cnf(image);
 
     parse_serial_number_from_system_cnf(&system_cnf)
 }
 
-fn parse_serial_number_from_system_cnf(system_cnf: &[u8]) -> SerialNumber {
+fn parse_serial_number_from_system_cnf(system_cnf: &[u8]) -> Option<SerialNumber> {
     // Now we need to parse the SYSTEM.CNF file to get the content of the "BOOT" line
     let mut boot_path = None;
 

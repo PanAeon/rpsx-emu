@@ -266,7 +266,6 @@ pub struct ComputeRenderer {
     profiler: GpuProfiler,
     frame_num: usize,
     results: Option<Vec<GpuTimerQueryResult>>,
-    // blit_texture: wgpu::Texture,
     // vram_blit_texture: wgpu::Texture,
     // output_buffer: wgpu::Buffer,
 }
@@ -1052,6 +1051,7 @@ impl ComputeRenderer {
     // TODO: The transfer is affected by Mask setting.
     pub fn vram2vram_blit(&mut self, src: Vertex, dst: Vertex, size: Vertex) {
         self.flush();
+        // println!("blitting");
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1430,9 +1430,12 @@ impl ComputeRenderer {
         &mut self,
         top_left: (u16, u16),
         size: (u16, u16),
-        unaligned_data: &Vec<u32>,
+        unaligned_data: &mut Vec<u32>,
     ) {
-        let unaligned_data: &[u16] = bytemuck::cast_slice(&unaligned_data[0..]);
+        let unaligned_data: &mut [u16] = bytemuck::cast_slice_mut(&mut unaligned_data[0..]);
+        // for d in &mut *unaligned_data {
+        //     *d &=  1 >> 15;
+        // }
         let cols = size.0 as usize;
         let rows = size.1 as usize;
         self.flush();

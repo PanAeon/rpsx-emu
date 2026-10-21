@@ -105,6 +105,27 @@ impl BlockCache {
         &self.blocks[idx as usize]
     }
 
+    pub fn invalidate_all(&mut self) {
+        self.blocks.clear();
+        for c in self.ram.iter_mut() {
+            c.block_idx = None;
+        }
+        for c in self.bios.iter_mut() {
+            c.block_idx = None;
+        }
+        let mut p = 0;
+        for page in &mut self.pages {
+            if page.protected {
+                unprotect_page(p);
+                page.protected = false;
+                page.blocks.clear();
+            } else {
+                page.blocks.clear();
+            }
+            p += 1;
+        }
+    }
+
     pub fn invalidate_addr(&mut self, addr: u32) {
         let page_idx = addr >> 12;
         let page = &mut self.pages[page_idx as usize];
@@ -120,6 +141,8 @@ pub fn is_block_valid(system: &System, block: &Block) -> bool {
     let addr = mask_region(block.addr);
     if let Some(_) = crate::system::map::RAM.contains(addr) {
         let addr = addr as usize;
+        // let addr = addr & 0x1f_ffff;
+        // let end = (system.ram.data.len() - 1).min(addr + block.mem.len())
         let current = &system.ram.data[addr..addr + block.mem.len()];
         &block.mem == current
     } else {
@@ -153,6 +176,7 @@ pub fn insert_block(system: &mut System, addr: u32, block: Block) {
     // protect ram now.. I guess
 
     let addr = mask_region(addr);
+    // let addr = addr & 0x1f_ffff;
     if let Some(_) = crate::system::map::RAM.contains(addr) {
         let first_page = addr >> 12; // */4096;
         let last_page = (addr + block_len) >> 12; // */4096;
@@ -167,4 +191,7 @@ pub fn insert_block(system: &mut System, addr: u32, block: Block) {
 
 fn protect_page(p: usize) {
     crate::fastmem::protect_page(p).expect("page is protected");
+}
+fn unprotect_page(p: usize) {
+    crate::fastmem::unprotect_page(p).expect("page is unprotected");
 }

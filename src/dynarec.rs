@@ -24,8 +24,8 @@ use cranelift::codegen::verifier::verify_function;
 
 use target_lexicon::PointerWidth;
 
-const CODE_SIZE: usize = 32 * 1024 * 1024;
-const WATERLINE: u64 =  6553; // 80% assuming 4k function
+const CODE_SIZE: usize = 128 * 1024 * 1024;
+const WATERLINE: u64 = CODE_SIZE as u64 / (6 * 1024) * 4 / 5; // 80% assuming 6k function
 
 const REG_HI: u32 = 32;
 const REG_LO: u32 = 33;
@@ -143,23 +143,34 @@ impl Dynarec {
                 .sender
                 .as_mut()
                 .unwrap()
-                .send(CompileMsg {
-                    pc: addr,
-                    block: xs.to_vec(),
-                })
+                .send(CompileMsg::CompileBlock((addr, xs.to_vec())))
                 .expect("ok");
         }
     }
 
     pub(crate) fn receive_compiled_blocks(system: &mut System) {
         loop {
-           match system.cpu.receiver.as_mut().unwrap().try_recv() {
-                Ok(BlockMsg {  block, .. }) => {
-                   system.block_cache.in_flight.remove(&block.addr);
-                   crate::block_cache::insert_block(system, block.addr, block);
-                },
+            match system.cpu.receiver.as_mut().unwrap().try_recv() {
+                Ok(BlockMsg::Block(block)) => {
+                    system.block_cache.in_flight.remove(&block.addr);
+                    crate::block_cache::insert_block(system, block.addr, block);
+                }
+                Ok(BlockMsg::RequestGC) => {
+                    system.block_cache.in_flight.clear();
+                    system.block_cache.invalidate_all();
+                    system
+                        .cpu
+                        .sender
+                        .as_mut()
+                        .unwrap()
+                        .send(CompileMsg::ProceedWithGC)
+                        .expect("ok");
+                }
+                // Ok(_) => {
+                //     panic!("wrong msg");
+                // }
                 Err(_) => return,
-           }
+            }
         }
     }
 
@@ -258,22 +269,28 @@ impl Serialize for Dynarec {
     }
 }
 
-pub struct CompileMsg {
-    pc: u32,
-    block: Vec<Instruction>,
+pub enum CompileMsg {
+    CompileBlock((u32, Vec<Instruction>)),
+    ProceedWithGC,
 }
 
-pub struct BlockMsg {
-    block: block_cache::Block,
+pub enum BlockMsg {
+    Block(block_cache::Block),
+    RequestGC,
+    // DoneGC,
 }
+// pub struct CompileMsg {
+//     pc: u32,
+//     block: Vec<Instruction>,
+// }
+
+// pub struct BlockMsg {
+//     block: block_cache::Block,
+// }
 
 fn create_compiler_thread(
     system: &mut System,
-) -> (
-    Sender<CompileMsg>,
-    Receiver<BlockMsg>,
-    JoinHandle<()>,
-) {
+) -> (Sender<CompileMsg>, Receiver<BlockMsg>, JoinHandle<()>) {
     let (sender, receiver) = crossbeam::channel::bounded(32096);
     let (code_sender, code_receiver) = crossbeam::channel::bounded(4096);
     let regs_ptr: u64 = &mut *system.cpu.regs as *mut Registers as u64;
@@ -289,15 +306,36 @@ fn create_compiler_thread(
             println!("compiler thread pinned to 2");
         }
         loop {
-
             if compiler.num_functions >= WATERLINE {
+                // drain the queue first
+                loop {
+                    match receiver.try_recv() {
+                        Ok(..) => {}
+                        Err(..) => break,
+                    }
+                }
+                code_sender.send(BlockMsg::RequestGC).expect("ok");
+                // now wait for proceed
+                loop {
+                    let msg = receiver.recv().expect("ok");
+                    match msg {
+                        CompileMsg::ProceedWithGC => break,
+                        _ => {}
+                    }
+                }
+                println!("GC ... num funcs {}", compiler.num_functions);
+                // just dropping old compiler to free memory
+                compiler = Compiler::new(regs_ptr, system_ptr, gte_ptr);
+                // code_sender.send(BlockMsg::DoneGC).expect("ok");
             }
 
             let msg = match receiver.recv() {
                 Ok(msg) => msg,
                 Err(_) => return,
             };
-            let CompileMsg { pc, block} = msg;
+            let CompileMsg::CompileBlock((pc, block)) = msg else {
+                panic!("unsupported msg");
+            };
 
             // if in_flight.contains(&pc) {
             //     continue;
@@ -307,9 +345,9 @@ fn create_compiler_thread(
             let block = compiler.compile_block(pc, block);
             compiler.patch_block(&block);
             compiler.num_functions += 1;
-            match code_sender.send(BlockMsg { block }) {
-                Ok(()) => {},
-                Err(_) => return
+            match code_sender.send(BlockMsg::Block(block)) {
+                Ok(()) => {}
+                Err(_) => return,
             }
             // if let Some(idx) = idx {
             //     bc.insert_block_at(idx, pc, block);
@@ -342,7 +380,7 @@ struct Compiler {
 
     constants: Constants,
 
-    num_functions: u64
+    num_functions: u64,
 }
 
 impl Compiler {
@@ -635,7 +673,14 @@ impl Compiler {
         // cannot finish relocations until all functions to be called are
         // defined. For this toy demo for now, we'll just finalize the
         // function below.
-        self.module.define_function(id, &mut self.ctx).expect("OK");
+        let result = self.module.define_function(id, &mut self.ctx);
+        match result {
+            Ok(_) => {}
+            Err(err) => {
+                println!("num functions: {}", self.num_functions);
+                panic!("define_function error: {}", err);
+            }
+        };
 
         // Now that compilation is finished, we can clear out the context state.
         self.module.clear_context(&mut self.ctx);
@@ -955,12 +1000,7 @@ impl<'a> BlockBuilder<'a> {
                 0x27 => self.compile_nor(instr),
                 0x2A => self.compile_slt(instr),
                 0x2B => self.compile_sltu(instr),
-                _ => panic!(
-                    "Unhandled secondary opcode: {:02X}, instr: {:X} addr: {:X}",
-                    instr.secondary_opcode(),
-                    instr.0,
-                    self.get_current_pc()
-                ),
+                _ => self.compile_illegal(instr),
             },
             0x01 => self.compile_bxx(instr),
             0x02 => self.compile_j(instr),
@@ -1171,12 +1211,7 @@ impl<'a> BlockBuilder<'a> {
                     self.regs.insert(instr.rs());
                     self.regs.insert(instr.rd());
                 }
-                _ => panic!(
-                    "Unhandled secondary opcode: {:02X}, instr: {:X} addr: {:X}",
-                    instr.secondary_opcode(),
-                    instr.0,
-                    self.get_current_pc()
-                ),
+                _ =>  {}
             },
             0x01 => {
                 //self.compile_bxx(instr),
@@ -1335,12 +1370,7 @@ impl<'a> BlockBuilder<'a> {
                 self.get_exception_regs();
                 self.regs.insert(REG_SR);
             }
-            _ => panic!(
-                "Unhandled instruction: {:08X}, opcode: {:02X}, address: {:X}",
-                instr.0,
-                instr.opcode(),
-                self.get_current_pc()
-            ),
+            _ =>  {}
         }
     }
 
@@ -3420,6 +3450,11 @@ impl<'a> BlockBuilder<'a> {
         self.compile_exception(Exception::SysCall, None);
     }
 
+    fn compile_illegal(&mut self, _: Instruction) {
+        self.compile_delayed_load(true);
+        self.compile_exception(Exception::IllegalInstruction, None);
+    }
+
     fn compile_cop0(&mut self, instr: Instruction) {
         match instr.cop_opcode() {
             0b00000 => self.compile_mfc0(instr),
@@ -3925,7 +3960,6 @@ pub extern "C" fn gte_set_control(gte_ptr: *mut Gte, reg: u8, val: u32) {
     let gte = unsafe { gte_ptr.as_mut().expect("ok") };
     gte.set_control(reg, val)
 }
-
 
 pub enum MemAccess {
     Load,

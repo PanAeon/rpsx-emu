@@ -263,6 +263,101 @@ fn test_edge_top_left(ai: vec2i, bi: vec2i, x: i32, y: i32) -> bool {
     return false;
 }
 
+// Returns distance from point P to line segment A-B
+fn sdSegment(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+fn draw_line_sdf(v0: Vertex, v1: Vertex, bounds: vec4<i32>) {
+    let p0 = get_pos(v0);
+    let p1 = get_pos(v1);
+    let thickness = 0.5;
+    for (var y = bounds.y; y <= bounds.w; y++) {
+        for (var x = bounds.x; x <= bounds.z; x++) {
+            let dist = sdSegment(vec2f(vec2(x, y)), vec2f(p0), vec2f(p1));
+            // let intensity = 1.0 - smoothstep(thickness, thickness + 0.002, dist);
+
+
+            if dist <= 0.1 {
+                let color = pack_color(vec3(1.0, 1.0, 1.0), false);
+                textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(color, 0, 0, 0));
+            }
+        }
+    }
+}
+fn draw_line(v0: Vertex, v1: Vertex, bounds: vec4<i32>) {
+    let p0 = get_pos(v0);
+    let p1 = get_pos(v1);
+
+    let x0 = min(min(p0.x, p1.x), bounds.z);
+    let y0 = min(min(p0.y, p1.y), bounds.w);
+    let x1 = max(max(p0.x, p1.x), bounds.x);
+    let y1 = max(max(p0.y, p1.y), bounds.y);
+
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    let dx = abs(x1 - x0);
+    let dy = -abs(y1 - y0);
+
+    let sx = select(-1, 1, x0 < x1);
+    let sy = select(-1, -1, y0 < y1);
+
+    var err = dx + dy;
+
+        // let mut err = dx + dy;
+        var x = x0;
+        var y = y0;
+
+    let color = pack_color(vec3(1.0, 1.0, 1.0), false);
+
+        loop {
+            // let vram_addr = 2 * (y * 1024 + x) as usize;
+            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(color, 0, 0, 0));
+
+
+            // self.vram_write_color(vram_addr, pixel, ctx);
+            // let [lsb, msb] = pixel.to_le_bytes();
+
+            // self.vram[vram_addr] = lsb;
+            // self.vram[vram_addr + 1] = msb;
+
+            let e2 = 2 * err;
+            if e2 >= dy {
+                if x == x1 {
+                    break;
+                }
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                if y == y1 {
+                    break;
+                }
+                err += dx;
+                y += sy;
+            }
+        }
+
+
+}
+
+fn draw_triangle_wireframe(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i32>) {
+    draw_line(v1, v2, bounds);
+    draw_line(v2, v3, bounds);
+    draw_line(v3, v1, bounds);
+}
+
+fn draw_triangle_wireframe_sdf(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i32>) {
+    draw_line_sdf(v1, v2, bounds);
+    draw_line_sdf(v2, v3, bounds);
+    draw_line_sdf(v3, v1, bounds);
+}
+
 fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i32>) {
     let p0 = get_pos(v1);
     let p1 = get_pos(v2);
@@ -297,9 +392,9 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
     let transparency = get_transparency(v1);
 
     // draw only if is top-left
-    let bias1 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p0, p1, p2));
-    let bias2 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p1, p2, p0));
-    let bias3 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p2, p0, p1));
+    // let bias1 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p0, p1, p2));
+    // let bias2 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p1, p2, p0));
+    // let bias3 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p2, p0, p1));
 
     for (var y = bds.y; y <= bds.w; y++) {
         for (var x = bds.x; x <= bds.z; x++) {
@@ -377,7 +472,7 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                     let pixel = pack_color(c.xyz, c.w > 0.5 || force_set_mask_bit);
                     if preserve_masked_pixels {
                         let prev = read_16bit(vec2(x, y));
-                        if ((prev >> 15) & 0x1) != 1 {
+                        if (prev & 0x8000) != 1 {
                             textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
@@ -403,7 +498,7 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                     let pixel = pack_color(c.xyz, force_set_mask_bit);
                     if preserve_masked_pixels {
                         let prev = read_16bit(vec2(x, y));
-                        if ((prev >> 15) & 0x1) != 1 {
+                        if ((prev) & 0x8000) != 1 {
                             textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
@@ -732,7 +827,7 @@ fn draw_triangle_shaded_textured(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec
     var edge2 = edge_function(start, p1, p2);
     var edge3 = edge_function(start, p2, p0);
 
-    let bias1 = i32(!is_top_left(p0, p1, p2)); // could be precomputed
+    let bias1 = i32(!is_top_left(p0, p1, p2));
     let bias2 = i32(!is_top_left(p1, p2, p0));
     let bias3 = i32(!is_top_left(p2, p0, p1));
 
@@ -780,7 +875,7 @@ fn draw_triangle_shaded_textured(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec
         var v_num = v_row;
 
         for (var x = bds.x; x <= bds.z; x++) {
-            if e1 >= bias1 && e2 >= bias2 && e3 >= bias3 {
+            if e1 > bias1 && e2 > bias2 && e3 > bias3 {
 
                 let col = vec3<f32>(
                     f32(r_num / sum),
@@ -1153,11 +1248,11 @@ fn main(
         var v1 = vertex_buffer[vert_idx + 0u];
         var v2 = vertex_buffer[vert_idx + 1u];
         var v3 = vertex_buffer[vert_idx + 2u];
-        // draw_triangle_shaded_textured(v1, v2, v3, bounds);
         // if is_rectangle(v1) {
         // draw_rectangle(v1, v2, bounds);
         // } else {
         draw_triangle_barycentric(v1, v2, v3, bounds);
+        // draw_triangle_wireframe(v1, v2, v3, bounds);
         // draw_triangle_shaded_textured( v1, v2, v3, bounds);
         // }
     }
@@ -1360,8 +1455,8 @@ fn quick_fill(
     let x = i32(workgroup_id.x * 8 + local_invocation_id.x);
     let y = i32(workgroup_id.y * 8 + local_invocation_id.y);
 
-    if x >= uniforms.drawing_area_left && x <= uniforms.drawing_area_right &&
-       y >= uniforms.drawing_area_top && y <= uniforms.drawing_area_bottom {
+    if x >= uniforms.drawing_area_left && x < uniforms.drawing_area_right &&
+       y >= uniforms.drawing_area_top && y < uniforms.drawing_area_bottom {
         textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(uniforms.fill_color, 0, 0, 0));
     }
 }

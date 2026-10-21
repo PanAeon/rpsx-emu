@@ -1,12 +1,25 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
     cdrom::CDRom, dma::Dma, dynarec::{Registers}, gpu::Gpu, gte::Gte, irq::InterruptController, mdec::Mdec, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, system::System, timers::Timers,
 };
-// use serde::de::Deserializer;
 
-pub fn save_state(_idx: u32, system: &mut System) {
-    let save_dir = "/home/vitalii/.config/rpsx-emu/saves";
+pub fn save_state(idx: u32, system: &mut System) {
+    let mut path = PathBuf::from("/home/vitalii/.config/rpsx-emu/saves");
+
+    let Some(serial) = system.cdrom.disk.as_ref().map(|x| x.serial.clone()).flatten() else {
+        println!("Saves for games with no serial are not supported yet.");
+        return;
+    };
+
+    path.push(serial);
+    std::fs::create_dir_all(&path).expect("ok");
+    let filename = format!("{}.save", idx);
+    path.push(filename);
+
+
 
     let mut fb = flexbuffers::FlexbufferSerializer::new();
 
@@ -16,17 +29,29 @@ pub fn save_state(_idx: u32, system: &mut System) {
 
     let fbuf = fb.view();
 
-    let filename = save_dir.to_string() + "/1.save";
+    // let filename = save_dir + "/1.save";
 
-    std::fs::write(&filename, fbuf).expect("ok");
+    std::fs::write(&path, fbuf).expect("ok");
 
     println!("save successful");
 }
 
-pub fn load_state(_idx: u32, system: &mut System) {
-    let save_dir = "/home/vitalii/.config/rpsx-emu/saves";
-    let filename = save_dir.to_string() + "/1.save";
-    let data = std::fs::read(filename).expect("ok");
+pub fn load_state(idx: u32, system: &mut System) {
+    let mut path = PathBuf::from("/home/vitalii/.config/rpsx-emu/saves");
+    let Some(serial) = system.cdrom.disk.as_ref().map(|x| x.serial.clone()).flatten() else {
+        println!("Loads for games with no serial are not supported yet.");
+        return;
+    };
+    path.push(serial);
+    std::fs::create_dir_all(&path).expect("ok");
+    let filename = format!("{}.save", idx);
+    path.push(filename);
+
+    if !std::fs::exists(&path).expect("ok") {
+        println!("save {} not found", idx);
+    }
+
+    let data = std::fs::read(path).expect("ok");
 
     let reader = flexbuffers::Reader::get_root(data.as_slice()).expect("ok");
     let state = SystemState::deserialize(reader).expect("ok");
@@ -56,9 +81,9 @@ pub fn load_state(_idx: u32, system: &mut System) {
     system.timers = timers;
     let cddata = system.cdrom.disk.take().unwrap();
     system.cdrom = cdrom;
-    system.cdrom.disk.as_mut().unwrap().tracks = cddata.tracks;
+    // system.cdrom.disk.as_mut().unwrap().tracks = cddata.tracks;
     system.cdrom.disk.as_mut().unwrap().cache = cddata.cache;
-    system.cdrom.disk.as_mut().unwrap().serial = cddata.serial;
+    // system.cdrom.disk.as_mut().unwrap().serial = cddata.serial;
     // system.cdrom.disk.as_mut().unwrap().data = cddata.data;
     let p1 = system.sio.memcard1.path.clone();
     let p2 = system.sio.memcard1.path.clone();

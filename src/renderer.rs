@@ -56,6 +56,7 @@ pub enum RendererMsg {
         src: Vertex,
         dst: Vertex,
         size: Vertex,
+        ctx: RenderingContext,
     },
     RenderFB {
         framebuffer: Arc<Mutex<Vec<u32>>>,
@@ -66,6 +67,7 @@ pub enum RendererMsg {
         top_left: (u16, u16),
         size: (u16, u16),
         data: Vec<u32>,
+        ctx: RenderingContext,
     },
     VramToCpuCopy {
         top_left: (u16, u16),
@@ -342,7 +344,7 @@ impl Renderer {
                         _ => unreachable!("wrong combo"),
                     },
                     RendererMsg::FillRect { v, side, c, .. } => renderer.fill_rect(*v, *side, *c),
-                    RendererMsg::Vram2VramBlit { src, dst, size } => {
+                    RendererMsg::Vram2VramBlit { src, dst, size , ctx } => {
                         renderer.vram2vram_blit(*src, *dst, *size)
                     }
                     RendererMsg::RenderFB {
@@ -367,6 +369,7 @@ impl Renderer {
                         top_left,
                         size,
                         data,
+                        ctx,
                     } => renderer.cpu_to_vram_copy(*top_left, *size, data),
                     RendererMsg::VramToCpuCopy { top_left, size } => {
                         let data = renderer.vram_to_cpu_copy(*top_left, *size);
@@ -1427,6 +1430,7 @@ impl Texture {
             0 => TextureDepth::T4Bit,
             1 => TextureDepth::T8Bit,
             2 => TextureDepth::T15Bit,
+            3 => TextureDepth::T4Bit,
             n => unreachable!("Unhandled texture depth: {n}"),
         };
         Texture {

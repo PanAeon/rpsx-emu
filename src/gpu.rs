@@ -318,6 +318,7 @@ impl Gpu {
             self.gp0_command.clear();
         }
         self.gp0_words_remaining -= 1;
+                let ctx = self.rendering_ctx();
         match &mut self.gp0_mode {
             Gp0Mode::Command => {
                 self.gp0_command.push_word(val);
@@ -338,6 +339,7 @@ impl Gpu {
                             top_left: *top_left,
                             size: *resolution,
                             data: data.clone(),
+                            ctx,
                         })
                         .expect("ok");
                     self.gp0_mode = Gp0Mode::Command;
@@ -778,8 +780,9 @@ impl Gpu {
         let dst = Self::gp0_vertex(self.gp0_command[2]);
         let size = Self::gp0_vertex(self.gp0_command[3]);
 
+        let ctx = self.rendering_ctx();
         self.renderer_sender.as_mut().unwrap()
-            .send(RendererMsg::Vram2VramBlit { src, dst, size })
+            .send(RendererMsg::Vram2VramBlit { src, dst, size, ctx})
             .expect("ok");
     }
 
@@ -832,11 +835,13 @@ impl Gpu {
         let vram: &[u32] = bytemuck::cast_slice(&self.vram);
         let mut data = vec![];
         data.extend_from_slice(vram);
+                let ctx = self.rendering_ctx();
         self.renderer_sender.as_mut().unwrap()
             .send(RendererMsg::CpuToVramCopy {
                 top_left: (0, 0),
                 size: (1024, 512),
                 data: data,
+                ctx
             })
             .expect("ok");
     }
@@ -956,7 +961,9 @@ impl Gpu {
             0x06 => self.gp1_display_horizontal_range(val),
             0x07 => self.gp1_display_vertical_range(val),
             0x08 => self.gp1_display_mode(val),
+            0x09 => {println!("gp1 0x09 ignored")},
             0x10 => self.gp1_get_gpu_info(val),
+            0x20 => {println!("0x20 gp1 ignored")}
             _ => panic!("Unhandled GP1 command {:08X} opcode: {:02X}", val, opcode),
         }
     }

@@ -78,7 +78,9 @@ use clap::{Parser};
 pub struct Cli {
     filename: Option<String>,
     #[arg(long)]
-    softgpu: bool
+    softgpu: bool,
+    #[arg(long)]
+    sideload: bool
 }
 
 fn main() {
@@ -233,6 +235,7 @@ pub struct State {
     display_vram: bool,
     software_render: bool,
     sideload_exe: Option<String>,
+    ctrl_pressed: bool,
 }
 
 impl State {
@@ -540,7 +543,7 @@ impl State {
         let dma = dma::Dma::new();
         // let gpu = gpu::Gpu::new();
         let spu = spu::Spu::new();
-        let cdrom = CDRom::new(cli.filename);
+        let cdrom = CDRom::new(if cli.sideload {None} else {cli.filename.clone()});
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
         let sio = sio::Sio::new();
@@ -677,8 +680,8 @@ impl State {
             sx: 0,
             sy: 0,
             display_depth: DisplayDepth::D15Bits, // writer,
-            sideload_exe: None,
-            // sideload_exe: Some("/foo/psxtest_cpu.exe".to_string())
+            sideload_exe: cli.sideload.then(|| cli.filename.expect("sideload binary to be present")),
+            ctrl_pressed: false,
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -1403,14 +1406,49 @@ impl State {
         _event_loop: &ActiveEventLoop,
         code: KeyCode,
         key_state: ElementState,
-        logical_key: Key,
+        _logical_key: Key,
         _repeat: bool,
     ) {
+        if code == KeyCode::ControlLeft || code == KeyCode::ControlRight {
+            self.ctrl_pressed = key_state.is_pressed(); 
+        }
         match (code, key_state.is_pressed()) {
             (KeyCode::Space, false) => self.paused = !self.paused,
             (KeyCode::KeyV, false) => self.display_vram = !self.display_vram,
             (KeyCode::Digit1, false) => {
-                save_state(1, &mut self.system);
+                if self.ctrl_pressed {
+                   load_state(1, &mut self.system); 
+                } else {
+                    save_state(1, &mut self.system);
+                }
+            }
+            (KeyCode::Digit2, false) => {
+                if self.ctrl_pressed {
+                   load_state(2, &mut self.system); 
+                } else {
+                    save_state(2, &mut self.system);
+                }
+            }
+            (KeyCode::Digit3, false) => {
+                if self.ctrl_pressed {
+                   load_state(3, &mut self.system); 
+                } else {
+                    save_state(3, &mut self.system);
+                }
+            }
+            (KeyCode::Digit4, false) => {
+                if self.ctrl_pressed {
+                   load_state(4, &mut self.system); 
+                } else {
+                    save_state(4, &mut self.system);
+                }
+            }
+            (KeyCode::Digit5, false) => {
+                if self.ctrl_pressed {
+                   load_state(5, &mut self.system); 
+                } else {
+                    save_state(5, &mut self.system);
+                }
             }
             (KeyCode::Enter, false) => {
                 load_state(1, &mut self.system);
@@ -1451,12 +1489,12 @@ impl State {
             // }
             // (KeyCode::Escape, true) => event_loop.exit(),
             _ => {
-                match logical_key.to_text() {
-                    Some(_str) => {
-                        // self.game_state.last_input = Some((String::from(str), repeat));
-                    }
-                    _ => {}
-                }
+                // match logical_key.to_text() {
+                //     Some(_str) => {
+                //         // self.game_state.last_input = Some((String::from(str), repeat));
+                //     }
+                //     _ => {}
+                // }
                 // self.camera_controller.handle_key(code, is_pressed);
             }
         }

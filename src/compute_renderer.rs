@@ -389,8 +389,8 @@ impl ComputeRenderer {
                         );
                     }
                     RendererMsg::FillRect { v, side, c } => renderer.fill_rect(*v, *side, *c),
-                    RendererMsg::Vram2VramBlit { src, dst, size } => {
-                        renderer.vram2vram_blit(*src, *dst, *size)
+                    RendererMsg::Vram2VramBlit { src, dst, size , ctx} => {
+                        renderer.vram2vram_blit(*src, *dst, *size, ctx)
                     }
                     RendererMsg::RenderFB {
                         framebuffer,
@@ -414,7 +414,8 @@ impl ComputeRenderer {
                         top_left,
                         size,
                         data,
-                    } => renderer.cpu_to_vram_copy(*top_left, *size, data),
+                        ctx,
+                    } => renderer.cpu_to_vram_copy(*top_left, *size, data, ctx),
                     RendererMsg::VramToCpuCopy { top_left, size } => {
                         let data = renderer.vram_to_cpu_copy(*top_left, *size);
                         match to_gpu_sender.send(RendererResponse::VramToCpuData { data }) {
@@ -823,6 +824,7 @@ impl ComputeRenderer {
         flags.set_force_set_mask_bit(ctx.force_set_mask_bit);
         flags.set_preserve_masked_pixels(ctx.preserve_masked_pixels);
 
+         // println!("render triangle, textured: {} a: {}x{}, , b: {}x{}, c: {}x{}", textured, vs[0].x, vs[0].y, vs[1].x, vs[1].y, vs[2].x, vs[2].y);
         let v0 = Vert {
             position: [vs[0].x as i16, vs[0].y as i16],
             color: [colors[0].r, colors[0].g, colors[0].b],
@@ -924,8 +926,9 @@ impl ComputeRenderer {
         // }
 
         
-        /*flags.set_is_rectangle(true);
-                let v0 = (Vert {
+        /*
+        flags.set_is_rectangle(true);
+                let v0 = Vert {
                     position: [v.x as i16, v.y as i16],
                     uv,
                     color: [color.r, color.g, color.b],
@@ -936,8 +939,8 @@ impl ComputeRenderer {
                     // _pad: 0,
                     texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
                     texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-                });
-                let v1 = (Vert {
+                };
+                let v1 = Vert {
                     position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
                     uv: [uv[0], (uv[1] + tex_size_y)],
                     color: [color.r, color.g, color.b],
@@ -947,8 +950,8 @@ impl ComputeRenderer {
                     texpage_base,
                     texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
                     texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-                });
-                let v2 = (Vert {
+                };
+                let v2 = Vert {
                     position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
                     uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
                     color: [color.r, color.g, color.b],
@@ -959,11 +962,11 @@ impl ComputeRenderer {
                     // _pad: 0,
                     texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
                     texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-                });
+                };
                 self.ensure_vertex_room(3);
                 self.vertices.extend_from_slice(&[v0, v1, v2]);
-*/
-        
+
+       */ 
 
         let v0 = Vert {
             position: [v.x as i16, v.y as i16],
@@ -1045,12 +1048,17 @@ impl ComputeRenderer {
         self.ensure_vertex_room(3);
         self.vertices.extend_from_slice(&[v3, v4, v5]);
         // self.vertices.extend_from_slice(&[v4, v3, v5]);
+
         
     }
 
     // TODO: The transfer is affected by Mask setting.
-    pub fn vram2vram_blit(&mut self, src: Vertex, dst: Vertex, size: Vertex) {
+    pub fn vram2vram_blit(&mut self, src: Vertex, dst: Vertex, size: Vertex, ctx: &RenderingContext) {
         self.flush();
+        println!("vram 2 vram blit");
+        // if ctx.preserve_masked_pixels {
+        //     return;
+        // }
         // println!("blitting");
         let mut encoder = self
             .device
@@ -1356,6 +1364,7 @@ impl ComputeRenderer {
     pub fn quick_fill(&mut self, top_left: (u16, u16), bottom_right: (u16, u16), color: Colour) {
         let c = color.to_le_bytes();
         let c: u16 = u16::from_le_bytes(c);
+
         self.flush();
         self.queue.write_buffer(
             &self.uniforms_buffer,
@@ -1431,10 +1440,14 @@ impl ComputeRenderer {
         top_left: (u16, u16),
         size: (u16, u16),
         unaligned_data: &mut Vec<u32>,
+        ctx: &RenderingContext
     ) {
+        let size = (size.0, size.1);
         let unaligned_data: &mut [u16] = bytemuck::cast_slice_mut(&mut unaligned_data[0..]);
-        // for d in &mut *unaligned_data {
-        //     *d &=  1 >> 15;
+        // if ctx.force_set_mask_bit {
+        //     for d in &mut *unaligned_data {
+        //         *d |=  1 >> 15;
+        //     }
         // }
         let cols = size.0 as usize;
         let rows = size.1 as usize;
@@ -1602,12 +1615,13 @@ impl ComputeRenderer {
 }
 
 fn ensure_vertex_order(v0: Vert, v1: Vert, v2: Vert) -> (Vert, Vert, Vert) {
-    let cross_product_z = (v2.position[0] - v0.position[0]) * (v1.position[1] - v0.position[1])
-        - (v1.position[0] - v0.position[0]) * (v2.position[1] - v0.position[1]);
+    let cross_product_z: i64 = (v2.position[0] as i64 - v0.position[0] as i64) * (v1.position[1] as i64 - v0.position[1] as i64)
+        - (v1.position[0] as i64 - v0.position[0] as i64) * (v2.position[1] as i64 - v0.position[1] as i64);
 
+    // println!("cross product: {}", cross_product_z);
     // let cross_product_z =
     //     (v1.position[0] as i32 - v0.position[0] as i32) * (v2.position[1] as i32 - v0.position[1] as i32) - (v1.position[1] as i32 - v0.position[1] as i32) * (v2.position[0] as i32 - v0.position[0] as i32);
-    if cross_product_z < 0 {
+    if cross_product_z <= 0 {
         (v0, v1, v2)
     } else {
         (v1, v0, v2)

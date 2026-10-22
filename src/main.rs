@@ -1,5 +1,6 @@
 
 use cpal::traits::StreamTrait;
+use gilrs::Axis;
 use wgpu_profiler::GpuProfiler;
 // use env_logger::fmt::style::Color;
 use std::io::Read;
@@ -1583,9 +1584,28 @@ impl State {
                     gilrs::Button::RightTrigger => {
                         prev_buttons |= 0x1 << (crate::sio::Button::R1 as usize);
                     }
+                    gilrs::Button::Mode => {
+                        println!("mode!");
+                        let prev = self.system.sio.gamepad1.mode.get();
+                        self.system.sio.gamepad1.set_analog_mode(!prev);
+                    }
                     _ => {} // ignore..
                 },
-                gilrs::EventType::AxisChanged(_axis, _value, _) => {}
+                gilrs::EventType::AxisChanged(axis, value, _) => {
+                    let axes = &mut self.system.sio.gamepad1.joystick_axes;
+                    let byte = value.mul_add(127.5, 127.5) as u8;
+                    if axis == Axis::LeftStickX {
+                        axes[2] = byte;
+                    } else if axis == Axis::LeftStickY {
+                        axes[1] = byte;
+                    } else if axis == Axis::RightStickX {
+                        axes[0] = byte;
+                    } else if axis == Axis::RightStickY {
+                        axes[3] = byte; // correct
+                    }
+                    // self.system.sio.gamepad1.set_stick_axis(left, right);
+                    
+                }
                 gilrs::EventType::Connected => {}
                 gilrs::EventType::Disconnected => {}
                 _ => {} //println!("gamepad evvent ignored {:?} ", event)

@@ -332,7 +332,7 @@ pub enum State {
 #[derive(Serialize, Deserialize)]
 pub struct Gamepad {
     state: GamepadState,
-    mode: GamepadMode,
+    pub mode: GamepadMode,
     in_ack: bool,
     pub digital_switches: u16,
     pub joystick_axes: [u8; 4],
@@ -380,9 +380,17 @@ impl Gamepad {
         self.state = GamepadState::Init;
     }
 
-    // pub fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
-    //     self.joystick_axes = [right.0, right.1, left.0, left.1];
-    // }
+    pub fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
+        self.joystick_axes = [right.0, right.1, left.0, left.1];
+    }
+
+    pub fn set_analog_mode(&mut self, is_analog: bool) {
+        if self.mode.get() == is_analog {
+            return;
+        }
+        self.mode.set(is_analog);
+        self.reset();
+    }
 
     pub fn set_buttons(&mut self, buttons: u16) {
         self.digital_switches = buttons;
@@ -767,6 +775,20 @@ impl GamepadMode {
         match self {
             Self::Digital => 0x5A41_u16.to_le_bytes(),
             Self::Analog => 0x5A73_u16.to_le_bytes(),
+        }
+    }
+    pub fn set(&mut self, in_analog: bool) {
+        *self = if in_analog {
+            Self::Analog
+        } else {
+            Self::Digital
+        };
+    }
+
+    pub fn get(self) -> bool {
+        match self {
+            Self::Digital => false,
+            Self::Analog => true,
         }
     }
 

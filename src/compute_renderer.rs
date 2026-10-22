@@ -461,6 +461,7 @@ impl ComputeRenderer {
     pub fn flush(&mut self) {
         if !self.vertices.is_empty() {
             {
+                
                 let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
                 let mut width_bin_x = width / 128;
                 if width_bin_x * 128 < width {
@@ -469,8 +470,12 @@ impl ComputeRenderer {
 
                 let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1 + 1;
                 let mut width_bin_y = height / 64;
-                if width_bin_y * 64 < (height) {
+                if width_bin_y * 64 < height {
                     width_bin_y += 1;
+                }
+                if width_bin_x == 0 || width_bin_y == 0 {
+                    self.vertices.clear();
+                    return;
                 }
 
                 let mut bin_sizes = [0u32; 128 * 64];
@@ -1055,7 +1060,7 @@ impl ComputeRenderer {
     // TODO: The transfer is affected by Mask setting.
     pub fn vram2vram_blit(&mut self, src: Vertex, dst: Vertex, size: Vertex, ctx: &RenderingContext) {
         self.flush();
-        println!("vram 2 vram blit");
+        // println!("vram 2 vram blit");
         // if ctx.preserve_masked_pixels {
         //     return;
         // }

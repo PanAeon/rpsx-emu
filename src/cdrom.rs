@@ -595,6 +595,7 @@ impl CDRom {
 
     pub fn cmd_getid(&mut self) -> CommandResponse {
         if !self.parameters.is_empty() {
+            println!("WARN: getid extra params");
             return error_response(&self.status, 0x20, "get id takes no params")
         }
         println!("CDROM get id");
@@ -832,9 +833,10 @@ impl CDRom {
 
         if sector_mode == 2 {
 
-            if self.mode.xa_filter() &&  (file != self.filter_file || channel != self.filter_channel) {
-                return false;
-            }
+            if (self.mode.xa_filter() &&  (file != self.filter_file || channel != self.filter_channel)) || 
+            (self.mode.xa_filter() && is_realtime_audio) {
+                // is data
+            } else {
 
             if self.mode.xa_adpcm() && is_realtime_audio {
                 let audio_header = cdxa::AudioHeader(sector[0x13]);
@@ -857,10 +859,11 @@ impl CDRom {
                 self.audio_buffer.extend(audio_samples);
                 return true;
             }
+        }
 
-            if self.mode.xa_filter() && is_realtime_audio {
-                return false;
-            }
+            // if self.mode.xa_filter() && is_realtime_audio {
+            //     return false;
+            // }
 
         }
 

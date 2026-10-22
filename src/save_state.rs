@@ -49,6 +49,7 @@ pub fn load_state(idx: u32, system: &mut System) {
 
     if !std::fs::exists(&path).expect("ok") {
         println!("save {} not found", idx);
+        return;
     }
 
     let data = std::fs::read(path).expect("ok");

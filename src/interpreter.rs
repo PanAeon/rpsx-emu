@@ -228,11 +228,11 @@ impl Interpreter {
 
     pub fn op_illegal(&mut self, instr: Instruction, regs: &mut Registers) {
         self.delayed_load(regs);
-        println!(
-            "Illegal instruction: {:X}, opcode: {:02X}",
-            instr.0,
-            instr.opcode()
-        );
+        // println!(
+        //     "Illegal instruction: {:X}, opcode: {:02X}",
+        //     instr.0,
+        //     instr.opcode()
+        // );
         self.exception(Exception::IllegalInstruction, regs);
     }
 

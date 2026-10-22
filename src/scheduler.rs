@@ -1,6 +1,6 @@
 use arrayvec::ArrayVec;
 
-use crate::cdrom::ResponseType;
+use crate::{cdrom::ResponseType, scheduler::Event::CDRomResultIrq};
 use serde::{Deserialize, Serialize};
 
 pub const LINE_DURATION: u64 = 2172;
@@ -27,6 +27,15 @@ pub enum Event {
     SerialSend,
     DsrOff,
     Dma,
+}
+
+impl Event {
+    pub fn is_cdrom(&self) -> bool {
+        match self {
+            CDRomResultIrq(_) => true,
+            _ => false
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,13 +94,15 @@ impl Scheduler {
     pub fn unschedule(&mut self, event: &Event) {
         self.tasks.retain(|x| x.event != *event);
     }
+    // pub fn unschedule2(&mut self, event: &Event) {
+    //     self.tasks.retain(|x| x.event != *event || x.event.is_cdrom());
+    // }
 
     pub fn schedule(&mut self, event: Event, cycles: u64, repeat: Option<u64>) {
         self.unschedule(&event);
 
         let cycle = self.cycle + cycles;
 
-        // TODO: check that this is correct
         let pos = self.tasks.iter().position(|e| e.cycle > cycle)
             .unwrap_or(self.tasks.len());
         self.tasks.insert(pos, Task { cycle, event, repeat });

@@ -1033,12 +1033,13 @@ impl<'a> BlockBuilder<'a> {
             0x2E => self.compile_swr(instr),
             0x32 => self.compile_lwc2(instr),
             0x3A => self.compile_swc2(instr),
-            _ => panic!(
-                "Unhandled instruction: {:08X}, opcode: {:02X}, address: {:X}",
-                instr.0,
-                instr.opcode(),
-                self.get_current_pc()
-            ),
+            _  => self.compile_illegal(instr),
+            // _ => panic!(
+            //     "Unhandled instruction: {:08X}, opcode: {:02X}, address: {:X}",
+            //     instr.0,
+            //     instr.opcode(),
+            //     self.get_current_pc()
+            // ),
         }
     }
 

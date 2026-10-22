@@ -56,8 +56,8 @@ impl Instruction {
     pub fn is_unconditional_jump(&self) -> bool {
         let code = self.opcode();
 
-        // j, jal
-        if code == 0x02 || code == 0x03 {
+        // j, jal, illegal
+        if code == 0x02 || code == 0x03 || code == 0x2F {
             return true;
         }
 
@@ -69,6 +69,8 @@ impl Instruction {
 
         false
     }
+
+
     pub fn is_conditional_jump(&self) -> bool {
         let code = self.opcode();
         // bxx, beq, bne, blez, bgtz

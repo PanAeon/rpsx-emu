@@ -56,8 +56,11 @@ impl Instruction {
     pub fn is_unconditional_jump(&self) -> bool {
         let code = self.opcode();
 
-        // j, jal, illegal
-        if code == 0x02 || code == 0x03 || code == 0x2F {
+        if self.is_illegal() {
+            return true;
+        }
+        // j, jal, 
+        if code == 0x02 || code == 0x03{
             return true;
         }
 
@@ -68,6 +71,84 @@ impl Instruction {
         }
 
         false
+    }
+
+    fn is_illegal(&self) -> bool {
+        match self.opcode() {
+            0x00 => match self.secondary_opcode() {
+                0x00 => false,
+                0x02 => false,
+                0x03 => false,
+                0x04 => false,
+                0x06 => false,
+                0x07 => false,
+                0x08 => false,
+                0x09 => false,
+                0x0C => false,
+                0x0D => false,
+                0x10 => false,
+                0x11 => false,
+                0x12 => false,
+                0x13 => false,
+                0x18 => false,
+                0x19 => false,
+                0x1A => false,
+                0x1B => false,
+                0x20 => false,
+                0x21 => false,
+                0x22 => false,
+                0x23 => false,
+                0x24 => false,
+                0x25 => false,
+                0x26 => false,
+                0x27 => false,
+                0x2A => false,
+                0x2B => false,
+                _    => true, // TODO: bltz/bgez undocumented dupes
+            },
+            0x01 => false,
+            0x02 => false,
+            0x03 => false,
+            0x04 => false,
+            0x05 => false,
+            0x06 => false,
+            0x07 => false,
+            0x08 => false,
+            0x09 => false,
+            0x0A => false,
+            0x0B => false,
+            0x0C => false,
+            0x0D => false,
+            0x0E => false,
+            0x0F => false,
+            0x10 => false,
+            0x11 => false,
+            0x12 => false,
+            0x13 => false,
+            0x20 => false,
+            0x21 => false,
+            0x22 => false,
+            0x23 => false,
+            0x24 => false,
+            0x25 => false,
+            0x26 => false,
+            0x28 => false,
+            0x29 => false,
+            0x2a => false,
+            0x2b => false,
+            0x2e => false,
+            0x30 => true, //self.op_lwc0(instr),
+            0x31 => true, //self.op_lwc1(instr),
+            0x32 => false,
+            0x33 => true, //self.op_lwc3(instr),
+            0x38 => true, //self.op_swc0(instr),
+            0x39 => true, //self.op_swc1(instr),
+            0x3A => false, //self.op_swc2(instr),
+            0x3B => true, //self.op_swc3(instr),
+            // _ => panic!("Unhandled instruction: {:08X}, opcode: {:02X}", instr, instr.opcode())
+            _ => true,
+        }
+
     }
 
 

@@ -660,7 +660,7 @@ impl System {
         }
     }
     pub fn port_load(&mut self, port: Port) -> (u32, u32, u64) {
-        let mut offset = 0;
+        let offset = 0;
         let mut delay = 0;
 
         let v = match port {
@@ -678,7 +678,6 @@ impl System {
             // XXX latency taken from mednafen
             Port::CdRom => {
                 delay = 8;
-                // println!("dma load from cd");
                 self.cdrom.load::<u32>(2)
                 // cd::dma_load(psx)
             }

@@ -1,6 +1,6 @@
 use arrayvec::ArrayVec;
 
-use crate::{cdrom::ResponseType, scheduler::Event::CDRomResultIrq};
+use crate::{ scheduler::Event::CDRomResultIrq};
 use serde::{Deserialize, Serialize};
 
 pub const LINE_DURATION: u64 = 2172;
@@ -23,7 +23,7 @@ pub enum Event {
     HBlankEnd,
     SpuTick,
     Timer(TimerInterrupt),
-    CDRomResultIrq(ResponseType),
+    CDRomResultIrq(u8),
     SerialSend,
     DsrOff,
     Dma,

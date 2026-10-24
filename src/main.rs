@@ -1088,7 +1088,7 @@ impl State {
                         timers::Timers::exit_hsync(&mut self.system);
                     }
                     scheduler::Event::CDRomResultIrq(resp) => {
-                        cdrom::CDRom::process_response(&mut self.system, resp);
+                        // cdrom::CDRom::process_response(&mut self.system, resp);
                     }
                     scheduler::Event::Timer(i) => {
                         timers::Timers::process_interrupt(&mut self.system, i)
@@ -1166,6 +1166,7 @@ impl State {
             //     // self.interpreter.check_for_tty_output();
             // }
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
+            cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
             self.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {

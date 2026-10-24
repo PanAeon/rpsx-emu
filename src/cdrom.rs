@@ -136,7 +136,7 @@ impl Image {
 
     pub fn advance_sector(&mut self) -> Vec<u8> {
         let start = self.read_head;
-        println!("cdrom debug: advance_sector {}", start/SECTOR_SIZE);
+        // println!("cdrom debug: advance_sector {}", start/SECTOR_SIZE);
         self.read_head += SECTOR_SIZE;
         if start < 2 * 75 * SECTOR_SIZE {
             vec![0x0; SECTOR_SIZE]
@@ -383,7 +383,7 @@ impl CDRom {
             return self.read_sector_data::<T>();
         }
         if width != 1 {
-            panic!(
+            println!(
                 "cdrom load width other than 1 byte not impl, got: {:?}",
                 T::width()
             );
@@ -528,7 +528,7 @@ impl CDRom {
             // 0x00 => self.cmd_unused(),
             0x01 => Self::cmd_nop(system),
             0x02 => Self::cmd_setloc(system),
-            // 0x03 => Self::cmd_play(system),
+            0x03 => Self::cmd_nop(system), // cmd play
             0x06 => Self::cmd_readn(system),
             0x08 => Self::cmd_stop(system),
             0x09 => Self::cmd_pause(system),
@@ -592,7 +592,7 @@ impl CDRom {
         // let mask = cdrom.irq_mask.int_enable();
         // println!("pending: {:b}, mask: {:b}", pending, mask);
         if cdrom.irq_pending.0 & cdrom.irq_mask.0 != 0 {
-            println!("setting irq ({})", it);
+            // println!("setting irq ({})", it);
             system.irqctl.status.set_cdrom(true);
         }
     }
@@ -660,9 +660,9 @@ impl CDRom {
                     return;
                 }
                 let cdrom = &mut system.cdrom;
-                let mm = from_bcd(cdrom.cmd_params.pop().unwrap()).expect("ok");
-                let ss = from_bcd(cdrom.cmd_params.pop().unwrap()).expect("ok");
                 let ff = from_bcd(cdrom.cmd_params.pop().unwrap()).expect("ok");
+                let ss = from_bcd(cdrom.cmd_params.pop().unwrap()).expect("ok");
+                let mm = from_bcd(cdrom.cmd_params.pop().unwrap()).expect("ok");
                 println!("cdrom debug: setloc amm: {mm} ass: {ss} asect: {ff}");
 
                 cdrom.seekloc = Some(pos_to_sectors(mm, ss, ff));
@@ -796,8 +796,8 @@ impl CDRom {
                     return;
                 }
                 let cdrom = &mut system.cdrom;
-                let file = cdrom.cmd_params.pop().unwrap();
                 let channel = cdrom.cmd_params.pop().unwrap();
+                let file = cdrom.cmd_params.pop().unwrap();
 
                 println!("DEBUG CDROM: setfilter 0x{:X}, 0x{:X}", file, channel);
                 cdrom.filter_file = file;
@@ -1073,7 +1073,7 @@ impl CDRom {
             }
             CmdState::Resp2 => {
                 if cdrom.disk.is_some() {
-                    println!(">>got licensed");
+                    // println!(">>got licensed");
                     cdrom.push_result_slice(&CDROM_GETID_LICENSED);
                     Self::set_interrupt(system, 2);
                 } else {
@@ -1127,6 +1127,7 @@ impl CDRom {
             CmdState::Resp1 => {
                 println!("DEBUG CDROM: cmd_init");
                 cdrom.push_result_byte(cdrom.stat.0);
+                cdrom.cmd_delay = CDROM_INIT_DELAY_CYCLES;
                 cdrom.cmd_state = CmdState::Resp2;
                 Self::set_interrupt(system, 3);
             }
@@ -1471,12 +1472,15 @@ impl CDRom {
             let file = sector[0x10];
             let channel = sector[0x11];
             let submode = sector[0x12];
-            let is_realtime_audio = (submode & 0x44) == 0x44;
+
+            // let is_realtime_audio = (submode & 0x44) == 0x44;
             let is_form2 = submode & (1 << 5) != 0;
+            let is_audio = submode & (1 << 2) != 0;
+            let is_realtime = submode & (1 << 6) != 0;
         if !is_form2 {
             return false;
         }
-        if !is_realtime_audio {
+        if !is_realtime || !is_audio {
             return false;
         }
         if self.mode.xa_filter() {
@@ -1505,7 +1509,7 @@ impl CDRom {
             if sector_mode == 2 {
                 if (self.mode.xa_filter()
                     && (file != self.filter_file || channel != self.filter_channel))
-                    || (self.mode.xa_filter() && is_realtime_audio)
+                    || (self.mode.xa_filter() && !is_realtime_audio)
                 {
                     // is data
                 } else {

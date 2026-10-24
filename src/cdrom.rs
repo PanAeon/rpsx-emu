@@ -121,7 +121,7 @@ impl Image {
 
     pub fn advance_sector(&mut self) -> Vec<u8> {
         let start = self.read_head;
-        println!("cdrom debug: advance_sector {}", start/SECTOR_SIZE);
+        // println!("cdrom debug: advance_sector {}", start/SECTOR_SIZE);
         self.read_head += SECTOR_SIZE;
         if start < 2 * 75 * SECTOR_SIZE {
             vec!(0x0;SECTOR_SIZE)

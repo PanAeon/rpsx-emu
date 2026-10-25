@@ -235,6 +235,7 @@ impl System {
         //     return T::from_u32(0);
         // }
         println!("Unhandled load{:?} address: {:08x}", T::width(), address);
+        println!("pc is 0x{:X}", self.cpu.regs.pc);
         panic!("Unhandled load{:?} address: {:08x}", T::width(), address);
         // T::from_u32(0x0)
     }
@@ -461,10 +462,10 @@ impl System {
                 if !channel.enable {
                     break;
                 }
-                // if !can_run(psx, port, control.is_from_ram()) {
+                if !self.can_run(port, direction  == Direction::FromRam) {
                 //     // The device is not ready
-                //     break;
-                // }
+                    break;
+                }
 
                 // Initialize RAM pointer
                 self.dma.channel_mut(port).curr_addr = channel.base;
@@ -696,28 +697,28 @@ impl System {
     }
 
     // Check if the device targeted by `port` can either be read from of written to
-    // fn can_run(&mut self, port: Port, write: bool) -> bool {
-    //     if write {
-    //         match port {
-    //             Port::Spu => true,
-    //             Port::Gpu => gpu::dma_can_write(psx),
-    //             Port::MDecIn => mdec::dma_can_write(psx),
-    //             _ => unimplemented!("Can write {:?}?", port),
-    //         }
-    //     } else {
-    //         match port {
-    //             Port::Spu => true,
-    //             // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
-    //             // `true`
-    //             Port::Otc => psx.dma[port].control.is_started(),
-    //             // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
-    //             Port::CdRom => true,
-    //             Port::MDecOut => mdec::dma_can_read(psx),
-    //             Port::Gpu => true,
-    //             _ => unimplemented!("Can read {:?}?", port),
-    //         }
-    //     }
-    // }
+    fn can_run(&mut self, port: Port, write: bool) -> bool {
+        if write {
+            match port {
+                Port::Spu => true,
+                Port::Gpu => true, //gpu::dma_can_write(psx),
+                Port::MdecIn => self.mdec.dma_can_write(),
+                _ => unimplemented!("Can write {:?}?", port),
+            }
+        } else {
+            match port {
+                Port::Spu => true,
+                // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
+                // `true`
+                Port::Otc => true, //psx.dma[port].control.is_started(),
+                // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
+                Port::CdRom => true,
+                Port::MdecOut => self.mdec.dma_can_read(),
+                Port::Gpu => true,
+                _ => unimplemented!("Can read {:?}?", port),
+            }
+        }
+    }
     /*pub fn do_dma_linked_list(&mut self, port: Port, cycles: u64) {
         let channel = self.dma.channel_mut(port);
         let mut addr = channel.base() & 0x1ffffc;

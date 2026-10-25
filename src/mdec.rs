@@ -61,6 +61,16 @@ impl Mdec {
         }
     }
 
+    pub fn dma_can_write(&self) -> bool {
+        return true;
+       // self.control.enable_data_in() && self.output_fifo.is_empty()
+    }
+
+    pub fn dma_can_read(&self) -> bool {
+        return true;
+        // self.control.enable_data_out() && !self.output_fifo.is_empty()
+    }
+
     pub fn get_status(&mut self) -> u32 {
         // self.status.set_parameter_words_remaining(self.command_remaining.wrapping_sub(1) as u32);
         // self.status.set_data_in_fifo_full(false);

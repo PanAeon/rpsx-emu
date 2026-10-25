@@ -1,23 +1,9 @@
 use serde::Serialize;
 
 use crate::{
-    bios::Bios,
-    block_cache::BlockCache,
-    cdrom::CDRom,
-    dma::{
-        Direction::{self, FromRam},
-        Dma, Port, Step, Sync,
-    },
-    dynarec::Dynarec,
-    gpu::Gpu,
-    irq::InterruptController,
-    mdec::Mdec,
-    ram::Ram,
-    scheduler::Scheduler,
-    scratchpad::Scratchpad,
-    sio::Sio,
-    spu::Spu,
-    timers::Timers,
+    bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{
+        self, Direction, Dma, Port, Step, Sync,
+    }, dynarec::Dynarec, gpu::Gpu, irq::InterruptController, mdec::{self, Mdec}, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers,
 };
 
 pub mod map {
@@ -461,10 +447,10 @@ impl System {
                 if !channel.enable {
                     break;
                 }
-                // if !can_run(psx, port, control.is_from_ram()) {
+                if !self.can_run( port, direction == dma::Direction::FromRam) {
                 //     // The device is not ready
-                //     break;
-                // }
+                    break;
+                }
 
                 // Initialize RAM pointer
                 self.dma.channel_mut(port).curr_addr = channel.base;
@@ -525,7 +511,7 @@ impl System {
                     unimplemented!("DMA address overflow");
                 }
 
-                let delay = if channel.direction == FromRam {
+                let delay = if channel.direction == Direction::FromRam {
                     let v = self.ram.load::<u32>(cur_addr);
                     self.port_store(port, v)
                 } else {
@@ -695,28 +681,28 @@ impl System {
     }
 
     // Check if the device targeted by `port` can either be read from of written to
-    // fn can_run(&mut self, port: Port, write: bool) -> bool {
-    //     if write {
-    //         match port {
-    //             Port::Spu => true,
-    //             Port::Gpu => gpu::dma_can_write(psx),
-    //             Port::MDecIn => mdec::dma_can_write(psx),
-    //             _ => unimplemented!("Can write {:?}?", port),
-    //         }
-    //     } else {
-    //         match port {
-    //             Port::Spu => true,
-    //             // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
-    //             // `true`
-    //             Port::Otc => psx.dma[port].control.is_started(),
-    //             // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
-    //             Port::CdRom => true,
-    //             Port::MDecOut => mdec::dma_can_read(psx),
-    //             Port::Gpu => true,
-    //             _ => unimplemented!("Can read {:?}?", port),
-    //         }
-    //     }
-    // }
+    fn can_run(&mut self, port: Port, write: bool) -> bool {
+        if write {
+            match port {
+                Port::Spu => true,
+                Port::Gpu => true, //gpu::dma_can_write(psx),
+                Port::MdecIn => self.mdec.dma_can_write(),
+                _ => unimplemented!("Can write {:?}?", port),
+            }
+        } else {
+            match port {
+                Port::Spu => true,
+                // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
+                // `true`
+                Port::Otc => true, //psx.dma[port].control.is_started(),
+                // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
+                Port::CdRom => true,
+                Port::MdecOut => self.mdec.dma_can_read(),
+                Port::Gpu => true,
+                _ => unimplemented!("Can read {:?}?", port),
+            }
+        }
+    }
     /*pub fn do_dma_linked_list(&mut self, port: Port, cycles: u64) {
         let channel = self.dma.channel_mut(port);
         let mut addr = channel.base() & 0x1ffffc;

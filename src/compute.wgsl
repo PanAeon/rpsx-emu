@@ -453,7 +453,7 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
 
                     // if semi_trans && c.w > 0.5 {
                     if semi_trans && c.w > 0.5 {
-                        let prev = readExistingColor(vec2(x, y));
+                        let prev = readExistingColorCached(vec2(x, y), bounds);
                         c = blend_with_background(c, prev, transparency);
                     }
 
@@ -471,17 +471,19 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
 
                     let pixel = pack_color(c.xyz, c.w > 0.5 || force_set_mask_bit);
                     if preserve_masked_pixels {
-                        let prev = read_16bit(vec2(x, y));
+                        let prev = read_16bit_cached(vec2(x, y), bounds);
                         if (prev & 0x8000) != 1 {
-                            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                            cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                            // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
-                        textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                        // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                     }
                 } else {
                     var c = vec4<f32>(col, 0.0);
                     if semi_trans {
-                        let prev = readExistingColor(vec2(x, y));
+                        let prev = readExistingColorCached(vec2(x, y), bounds);
                         c = blend_with_background(c, prev, transparency);
                     }
                     if dither {
@@ -497,12 +499,14 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                     }
                     let pixel = pack_color(c.xyz, force_set_mask_bit);
                     if preserve_masked_pixels {
-                        let prev = read_16bit(vec2(x, y));
+                        let prev = read_16bit_cached(vec2(x, y), bounds);
                         if ((prev) & 0x8000) != 1 {
-                            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                            cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                            // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
-                        textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                        // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                     }
                 }
             }
@@ -830,6 +834,9 @@ fn draw_triangle_shaded_textured(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec
     let bias1 = i32(!is_top_left(p0, p1, p2));
     let bias2 = i32(!is_top_left(p1, p2, p0));
     let bias3 = i32(!is_top_left(p2, p0, p1));
+    // let bias1 = i32(!is_top_left(p1, p2, p2));
+    // let bias2 = i32(!is_top_left(p2, p0, p0));
+    // let bias3 = i32(!is_top_left(p0, p1, p1));
 
     let r_dx = edge2.y * i32(c0.r) + edge3.y * i32(c1.r) + edge1.y * i32(c2.r);
     let g_dx = edge2.y * i32(c0.g) + edge3.y * i32(c1.g) + edge1.y * i32(c2.g);
@@ -875,7 +882,7 @@ fn draw_triangle_shaded_textured(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec
         var v_num = v_row;
 
         for (var x = bds.x; x <= bds.z; x++) {
-            if e1 > bias1 && e2 > bias2 && e3 > bias3 {
+            if e1 >= bias1 && e2 >= bias2 && e3 >= bias3 {
 
                 let col = vec3<f32>(
                     f32(r_num / sum),
@@ -916,58 +923,62 @@ fn draw_triangle_shaded_textured(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec
                         c = vec4<f32>(vec3<f32>(color_uint) / 255.0, c.w);
                     }
 
-                    // if dither {
-                    //     c *= 255;
-                    //     var dither_pos: vec2<i32>;
-                    //     dither_pos = vec2(x, y) % 4;
-                    //     var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
-                    //     c.x += f32(dither_value);
-                    //     c.y += f32(dither_value);
-                    //     c.z += f32(dither_value);
-                    //     c = clamp(c, vec4(0), vec4(0xff));
-                    //     c /= 255;
-                    // }
+                    if dither {
+                        c *= 255;
+                        var dither_pos: vec2<i32>;
+                        dither_pos = vec2(x, y) % 4;
+                        var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
+                        c.x += f32(dither_value);
+                        c.y += f32(dither_value);
+                        c.z += f32(dither_value);
+                        c = clamp(c, vec4(0), vec4(0xff));
+                        c /= 255;
+                    }
 
                     // if semi_trans && c.w > 0.5 {
                     if semi_trans && c.w > 0.5 {
-                        let prev = readExistingColor(vec2(x, y));
+                        let prev = readExistingColorCached(vec2(x, y), bounds);
                         c = blend_with_background(c, prev, transparency);
                     }
 
                     let pixel = pack_color(c.xyz, c.w > 0.5 || force_set_mask_bit);
                     if preserve_masked_pixels {
-                        let prev = read_16bit(vec2(x, y));
+                        let prev = read_16bit_cached(vec2(x, y), bounds);
                         if ((prev >> 15) & 0x1) != 1 {
-                            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                            cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                            // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
-                        textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                        // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                     }
                 } else {
                     var c = vec4<f32>(col, 0.0);
-                    // if dither {
-                    //     c *= 255;
-                    //     var dither_pos: vec2<i32>;
-                    //     dither_pos = vec2(x, y) % 4;
-                    //     var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
-                    //     c.x += f32(dither_value);
-                    //     c.y += f32(dither_value);
-                    //     c.z += f32(dither_value);
-                    //     c = clamp(c, vec4(0), vec4(0xff));
-                    //     c /= 255;
-                    // }
+                    if dither {
+                        c *= 255;
+                        var dither_pos: vec2<i32>;
+                        dither_pos = vec2(x, y) % 4;
+                        var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
+                        c.x += f32(dither_value);
+                        c.y += f32(dither_value);
+                        c.z += f32(dither_value);
+                        c = clamp(c, vec4(0), vec4(0xff));
+                        c /= 255;
+                    }
                     if semi_trans {
-                        let prev = readExistingColor(vec2(x, y));
+                        let prev = readExistingColorCached(vec2(x, y), bounds);
                         c = blend_with_background(c, prev, transparency);
                     }
                     let pixel = pack_color(c.xyz, force_set_mask_bit);
                     if preserve_masked_pixels {
-                        let prev = read_16bit(vec2(x, y));
+                        let prev = read_16bit_cached(vec2(x, y), bounds);
                         if ((prev >> 15) & 0x1) != 1 {
-                            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                            cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                            // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
-                        textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                        // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                     }
                 }
             }
@@ -1005,6 +1016,9 @@ fn get_texel(v: Vertex, uv: vec2<i32>) -> u32 {
     return 0;
 }
 
+fn read_16bit_cached(v: vec2<i32>, bounds: vec4<i32>) -> u32 {
+    return cache[(v.y - bounds.y) * 8 + v.x - bounds.x];
+}
 fn read_16bit(coord: vec2<i32>) -> u32 {
     var packed = textureLoad(vram_t, coord).r;
     return packed;
@@ -1038,6 +1052,11 @@ fn unpack_color(v: u32) -> vec4<f32> {
         FIVE_BIT_TO_8Bit[b],
         f32(a)
     );
+}
+
+fn readExistingColorCached(v: vec2<i32>, bounds: vec4<i32>) -> vec4<f32> {
+    let color=   cache[(v.y - bounds.y) * 8 + v.x - bounds.x];
+    return unpack_color(color);
 }
 fn readExistingColor(v: vec2<i32>) -> vec4<f32> {
     let color = read_16bit(v);
@@ -1204,6 +1223,8 @@ fn intersect(a: vec4<i32>, b: vec4<i32>) -> vec4<i32> {
     return vec4<i32>(cx, cy, dx, dy);
 }
 
+var<private> cache: array<u32, 64>;
+
 @compute @workgroup_size(8,8,1)
 fn main(
     @builtin(local_invocation_id) local_invocation_id: vec3<u32>, // actual ids of threads...
@@ -1228,6 +1249,14 @@ fn main(
     // }
     let bin = vec2(workgroup_id.x * 8, workgroup_id.y * 8) + local_invocation_id.xy;
     let bounds = get_partition(bin);
+
+    for (var j: i32 = bounds.y; j <= bounds.w; j++) {
+        for (var i: i32 = bounds.x; i <= bounds.z; i++) {
+            var packed = textureLoad(vram_t, vec2(i,j)).r;
+            cache[(j - bounds.y) * 8 + i - bounds.x] = packed;
+        }
+    }
+
 
     let bin_idx = (bin.y * 128 + bin.x);
     let num_vertices = bins_buffer[bin_idx];
@@ -1255,6 +1284,13 @@ fn main(
         // draw_triangle_wireframe(v1, v2, v3, bounds);
         // draw_triangle_shaded_textured( v1, v2, v3, bounds);
         // }
+    }
+
+    for (var j: i32 = bounds.y; j <= bounds.w; j++) {
+        for (var i: i32 = bounds.x; i <= bounds.z; i++) {
+            let packed = cache[(j - bounds.y) * 8 + i - bounds.x];
+            textureStore(vram_t, vec2(i,j), vec4(packed,0,0,0));
+        }
     }
 
     // now we have local_invocation_id.xy to play with...

@@ -34,6 +34,19 @@ impl Dma {
         self.control = value;
     }
 
+    pub fn master_enabled(&self, port: Port) -> bool {
+        let dpcr = Control(self.control);
+        match port {
+            Port::MdecIn => dpcr.mdecin_enabled(),
+            Port::MdecOut => dpcr.mdecout_enabled(),
+            Port::Gpu => dpcr.gpu_enabled(),
+            Port::CdRom => dpcr.cdrom_enabled(),
+            Port::Spu => dpcr.spu_enabled(),
+            Port::Pio => dpcr.pio_enabled(),
+            Port::Otc => dpcr.otc_enabled(),
+        }
+    }
+
     pub fn irq(&self) -> bool {
         let channel_irq = self.channel_irq_flags & self.channel_irq_enable;
         self.force_irq || (self.irq_enable && channel_irq != 0)
@@ -260,4 +273,41 @@ impl Port {
             n => panic!("Unknown dma port {n}")
         }
     }
+}
+/*
+  0-2   DMA0, MDECin  Priority      (0..7; 0=Highest, 7=Lowest)
+  3     DMA0, MDECin  Master Enable (0=Disable, 1=Enable)
+  4-6   DMA1, MDECout Priority      (0..7; 0=Highest, 7=Lowest)
+  7     DMA1, MDECout Master Enable (0=Disable, 1=Enable)
+  8-10  DMA2, GPU     Priority      (0..7; 0=Highest, 7=Lowest)
+  11    DMA2, GPU     Master Enable (0=Disable, 1=Enable)
+  12-14 DMA3, CDROM   Priority      (0..7; 0=Highest, 7=Lowest)
+  15    DMA3, CDROM   Master Enable (0=Disable, 1=Enable)
+  16-18 DMA4, SPU     Priority      (0..7; 0=Highest, 7=Lowest)
+  19    DMA4, SPU     Master Enable (0=Disable, 1=Enable)
+  20-22 DMA5, PIO     Priority      (0..7; 0=Highest, 7=Lowest)
+  23    DMA5, PIO     Master Enable (0=Disable, 1=Enable)
+  24-26 DMA6, OTC     Priority      (0..7; 0=Highest, 7=Lowest)
+  27    DMA6, OTC     Master Enable (0=Disable, 1=Enable)
+  28-30 CPU memory access priority  (0..7; 0=Highest, 7=Lowest)
+  31    No effect, should be CPU memory access enable (R/W)
+*/
+bitfield::bitfield! {
+    #[derive(Default, Serialize, Deserialize)]
+    struct Control(u32);
+    mdecin_prio,    _ : 0,2;
+    mdecin_enabled, _: 3;
+    mdecout_prio, _:4,6;
+    mdecout_enabled, _: 7;
+    gpu_prio, _: 8,10;
+    gpu_enabled, _: 11;
+    cdrom_prio, _: 12,14;
+    cdrom_enabled, _: 15;
+    spu_prio, _: 16,18;
+    spu_enabled, _: 19;
+    pio_prio, _: 20,22;
+    pio_enabled, _: 23;
+    otc_prio, _: 24,26;
+    otc_enabled, _: 27;
+    mem_access_prio, _: 28,30;
 }

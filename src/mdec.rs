@@ -61,11 +61,19 @@ impl Mdec {
         }
     }
 
-    pub fn dma_can_read(&self) -> bool {
-        self.control.enable_data_out() && !self.output_fifo.is_empty()
-    }
+    // pub fn dma_can_read(&self) -> bool {
+    //     self.control.enable_data_out() && !self.output_fifo.is_empty()
+    // }
+    // pub fn dma_can_write(&self) -> bool {
+        // self.control.enable_data_in() && self.output_fifo.is_empty()
     pub fn dma_can_write(&self) -> bool {
-        self.control.enable_data_in() && self.output_fifo.is_empty()
+        return true;
+       // self.control.enable_data_in() && self.output_fifo.is_empty()
+    }
+
+    pub fn dma_can_read(&self) -> bool {
+        return true;
+        // self.control.enable_data_out() && !self.output_fifo.is_empty()
     }
 
     pub fn get_status(&mut self) -> u32 {

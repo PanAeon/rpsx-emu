@@ -221,6 +221,7 @@ impl System {
         //     return T::from_u32(0);
         // }
         println!("Unhandled load{:?} address: {:08x}", T::width(), address);
+        println!("pc is 0x{:X}", self.cpu.regs.pc);
         panic!("Unhandled load{:?} address: {:08x}", T::width(), address);
         // T::from_u32(0x0)
     }
@@ -403,13 +404,13 @@ impl System {
     pub fn dma_event(system: &mut System) {
         // continue where we left off
         // println!("dma!");
-        system.run_channel(Port::MdecIn, 128); // actually ellapsed
-        system.run_channel(Port::MdecOut, 128); // actually ellapsed
-        system.run_channel(Port::Gpu, 128); // actually ellapsed
-        system.run_channel(Port::CdRom, 128); // actually ellapsed
-        system.run_channel(Port::Spu, 128); // actually ellapsed
-        system.run_channel(Port::Pio, 128); // actually ellapsed
-        system.run_channel(Port::Otc, 128); // actually ellapsed
+        system.run_channel(Port::Otc, 64); // actually ellapsed
+        system.run_channel(Port::Pio, 64); // actually ellapsed
+        system.run_channel(Port::CdRom, 64); // actually ellapsed
+        system.run_channel(Port::Gpu, 64); // actually ellapsed
+        system.run_channel(Port::Spu, 64); // actually ellapsed
+        system.run_channel(Port::MdecIn, 64); // actually ellapsed
+        system.run_channel(Port::MdecOut, 64); // actually ellapsed
 
     }
 
@@ -433,11 +434,11 @@ impl System {
         let direction = channel.direction();
         let sync_mode = channel.sync();
 
-        let increment = match channel.step() {
-            Step::Increment => 4,
-            Step::Decrement => -4i32 as u32,
-        };
-        let mut addr = channel.base();
+        // let increment = match channel.step() {
+        //     Step::Increment => 4,
+        //     Step::Decrement => -4i32 as u32,
+        // };
+        // let addr = channel.base();
 
         while self.dma.channel_mut(port).clock_counter > 0 {
             let mut do_copy = true;
@@ -447,7 +448,10 @@ impl System {
                 if !channel.enable {
                     break;
                 }
-                if !self.can_run( port, direction == dma::Direction::FromRam) {
+                if !self.dma.master_enabled(port) {
+                    break;
+                }
+                if !self.can_run(port, direction  == Direction::FromRam) {
                 //     // The device is not ready
                     break;
                 }

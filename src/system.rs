@@ -462,6 +462,9 @@ impl System {
                 if !channel.enable {
                     break;
                 }
+                if !self.dma.master_enabled(port) {
+                    break;
+                }
                 if !self.can_run(port, direction  == Direction::FromRam) {
                 //     // The device is not ready
                     break;

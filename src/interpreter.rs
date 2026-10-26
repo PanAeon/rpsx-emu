@@ -805,9 +805,10 @@ impl Interpreter {
             0b00100 => self.op_mtc0(instr, regs),
             0b10000 => self.op_rfe(instr, regs),
             _ => panic!(
-                "Unhandled cop0 instruction:  {:02X} ({:b})",
+                "Unhandled cop0 instruction:  {:02X} ({:b}), pc: {:x}",
                 instr.cop_opcode(),
-                instr.cop_opcode()
+                instr.cop_opcode(),
+                regs.pc
             ),
         }
     }
@@ -892,7 +893,7 @@ impl Interpreter {
             13 => regs.cause,
             14 => regs.epc,
             15 => 0x00000002, // Processor ID
-            x => panic!("unhandled read from the cop0r{} register", x),
+            x => panic!("unhandled read from the cop0r{} register, pc: {}", x, regs.pc),
         };
         self.delayed_load_chain(instr.rt(), v, regs);
     }
@@ -921,7 +922,7 @@ impl Interpreter {
     // Return from exception
     pub fn op_rfe(&mut self, instr: Instruction, regs: &mut Registers) {
         if instr.0 & 0x3f != 0b010000 {
-            panic!("Invalid cop0 instruction {:x}", instr.0);
+            panic!("Invalid cop0 instruction {:x}, pc: {:x}", instr.0, regs.pc);
         }
         self.delayed_load(regs);
         let mode = regs.sr & 0x3f;

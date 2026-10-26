@@ -81,7 +81,9 @@ pub struct Cli {
     #[arg(long)]
     softgpu: bool,
     #[arg(long)]
-    sideload: bool
+    sideload: bool,
+    #[arg(long)]
+    profilegpu: bool
 }
 
 fn main() {
@@ -562,6 +564,7 @@ impl State {
                 queue.clone(),
                 config.format,
                 render_texture.clone(),
+                cli.profilegpu
             )
         };
         let gpu = gpu::Gpu::new(sender, receiver, handle);
@@ -1003,8 +1006,8 @@ impl State {
     fn update(&mut self, _event_loop: &ActiveEventLoop) {
         self.update_gamepad();
         if self.paused {
-            // println!("current pc: 0x{:X}", self.cpu.pc);
-            // self.cpu.system.irqctl.status.set_sio(true);
+            println!("current pc: 0x{:X}", self.system.cpu.regs.pc);
+            self.system.irqctl.status.set_dma(false);
             // self.cpu.system.irqctl.status.set_ctl_mem(true);
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;

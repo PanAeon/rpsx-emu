@@ -7,10 +7,10 @@ use std::{
 use wgpu_profiler::*;
 
 use crossbeam::channel::{Receiver, Sender};
-use wgpu::{util::DeviceExt};
+use wgpu::util::DeviceExt;
 
 use crate::{
-    gpu::{Colour, DisplayDepth, TextureDepth, Vertex },
+    gpu::{Colour, DisplayDepth, TextureDepth, Vertex},
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
 
@@ -266,6 +266,7 @@ pub struct ComputeRenderer {
     profiler: GpuProfiler,
     frame_num: usize,
     results: Option<Vec<GpuTimerQueryResult>>,
+    profilegpu: bool,
     // vram_blit_texture: wgpu::Texture,
     // output_buffer: wgpu::Buffer,
 }
@@ -276,6 +277,7 @@ impl ComputeRenderer {
         queue: wgpu::Queue,
         _display_format: wgpu::TextureFormat,
         render_texture: wgpu::Texture,
+        profilegpu: bool,
     ) -> (
         Sender<RendererMsg>,
         Receiver<RendererResponse>,
@@ -317,6 +319,7 @@ impl ComputeRenderer {
                 profiler,
                 frame_num: 0,
                 results: None,
+                profilegpu,
             };
             let core_ids = core_affinity::get_core_ids().unwrap();
             let res = core_affinity::set_for_current(core_ids[1]);
@@ -389,9 +392,12 @@ impl ComputeRenderer {
                         );
                     }
                     RendererMsg::FillRect { v, side, c } => renderer.fill_rect(*v, *side, *c),
-                    RendererMsg::Vram2VramBlit { src, dst, size , ctx} => {
-                        renderer.vram2vram_blit(*src, *dst, *size, ctx)
-                    }
+                    RendererMsg::Vram2VramBlit {
+                        src,
+                        dst,
+                        size,
+                        ctx,
+                    } => renderer.vram2vram_blit(*src, *dst, *size, ctx),
                     RendererMsg::RenderFB {
                         framebuffer,
                         full_ram,
@@ -461,7 +467,6 @@ impl ComputeRenderer {
     pub fn flush(&mut self) {
         if !self.vertices.is_empty() {
             {
-                
                 let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
                 let mut width_bin_x = width / 128;
                 if width_bin_x * 128 < width {
@@ -482,10 +487,14 @@ impl ComputeRenderer {
                 let mut indices = [0u32; 128 * 64];
                 for (_, vs) in self.vertices.chunks_exact(3).enumerate() {
                     let (min_x, min_y, max_x, max_y) = self.get_triangle_bounds(vs);
-                    let min_x = (min_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
-                    let max_x = (max_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
-                    let min_y = (min_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
-                    let max_y = (max_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
+                    let min_x =
+                        (min_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
+                    let max_x =
+                        (max_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
+                    let min_y =
+                        (min_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
+                    let max_y =
+                        (max_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
 
                     let start_bin_x = min(127, min_x as u16 / width_bin_x);
                     let end_bin_x = min(127, (max_x as u16) / width_bin_x);
@@ -516,10 +525,14 @@ impl ComputeRenderer {
                 let mut bins = vec![0u32; len as usize]; //Vec::<u32>::with_capacity(len as usize);
                 for (i, vs) in self.vertices.chunks_exact(3).enumerate() {
                     let (min_x, min_y, max_x, max_y) = self.get_triangle_bounds(vs);
-                    let min_x = (min_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
-                    let max_x = (max_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
-                    let min_y = (min_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
-                    let max_y = (max_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
+                    let min_x =
+                        (min_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
+                    let max_x =
+                        (max_x - self.drawing_area_top_left.0 as i16).clamp(0, width as i16);
+                    let min_y =
+                        (min_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
+                    let max_y =
+                        (max_y - self.drawing_area_top_left.1 as i16).clamp(0, height as i16);
 
                     let start_bin_x = min(127, min_x as u16 / width_bin_x);
                     let end_bin_x = min(127, (max_x as u16) / width_bin_x);
@@ -803,8 +816,7 @@ impl ComputeRenderer {
         let min_y = cmp::min(vs[0].y, cmp::min(vs[1].y, vs[2].y));
         let max_y = cmp::max(vs[0].y, cmp::max(vs[1].y, vs[2].y));
 
-        let Some(_) = self.clip_rect(min_x, min_y, max_x, max_y, ctx)
-        else {
+        let Some(_) = self.clip_rect(min_x, min_y, max_x, max_y, ctx) else {
             return;
         };
         // println!("render triangle: a: {},{} b: {},{} c: {},{}; color: {} {} {}", vs[0].x, vs[0].y,vs[1].x, vs[1].y,vs[2].x, vs[2].y, colors[0].r, colors[0].g, colors[0].b);
@@ -829,7 +841,7 @@ impl ComputeRenderer {
         flags.set_force_set_mask_bit(ctx.force_set_mask_bit);
         flags.set_preserve_masked_pixels(ctx.preserve_masked_pixels);
 
-         // println!("render triangle, textured: {} a: {}x{}, , b: {}x{}, c: {}x{}", textured, vs[0].x, vs[0].y, vs[1].x, vs[1].y, vs[2].x, vs[2].y);
+        // println!("render triangle, textured: {} a: {}x{}, , b: {}x{}, c: {}x{}", textured, vs[0].x, vs[0].y, vs[1].x, vs[1].y, vs[2].x, vs[2].y);
         let v0 = Vert {
             position: [vs[0].x as i16, vs[0].y as i16],
             color: [colors[0].r, colors[0].g, colors[0].b],
@@ -888,9 +900,7 @@ impl ComputeRenderer {
         v.y += ctx.drawing_y_offset as i32;
         // let side = Vertex {x: 127, y: 127};
 
-        let Some(_) =
-            self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
-        else {
+        let Some(_) = self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx) else {
             return;
         };
         // let side = Vertex {x: side.x , y: side.y - 1};
@@ -930,48 +940,47 @@ impl ComputeRenderer {
         // println!("self: {} {} {} {}", self.drawing_area_top_left.0, self.drawing_area_top_left.1, self.drawing_area_bottom_right.0, self.drawing_area_bottom_right.1);
         // }
 
-        
         /*
-        flags.set_is_rectangle(true);
-                let v0 = Vert {
-                    position: [v.x as i16, v.y as i16],
-                    uv,
-                    color: [color.r, color.g, color.b],
-                    texture_depth,
-                    flags: flags.0,
-                    clut,
-                    texpage_base,
-                    // _pad: 0,
-                    texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
-                    texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-                };
-                let v1 = Vert {
-                    position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
-                    uv: [uv[0], (uv[1] + tex_size_y)],
-                    color: [color.r, color.g, color.b],
-                    texture_depth,
-                    flags: flags.0,
-                    clut,
-                    texpage_base,
-                    texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
-                    texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-                };
-                let v2 = Vert {
-                    position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
-                    uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
-                    color: [color.r, color.g, color.b],
-                    texture_depth,
-                    flags: flags.0,
-                    clut,
-                    texpage_base,
-                    // _pad: 0,
-                    texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
-                    texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-                };
-                self.ensure_vertex_room(3);
-                self.vertices.extend_from_slice(&[v0, v1, v2]);
+         flags.set_is_rectangle(true);
+                 let v0 = Vert {
+                     position: [v.x as i16, v.y as i16],
+                     uv,
+                     color: [color.r, color.g, color.b],
+                     texture_depth,
+                     flags: flags.0,
+                     clut,
+                     texpage_base,
+                     // _pad: 0,
+                     texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+                     texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+                 };
+                 let v1 = Vert {
+                     position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
+                     uv: [uv[0], (uv[1] + tex_size_y)],
+                     color: [color.r, color.g, color.b],
+                     texture_depth,
+                     flags: flags.0,
+                     clut,
+                     texpage_base,
+                     texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+                     texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+                 };
+                 let v2 = Vert {
+                     position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
+                     uv: [(uv[0] + tex_size_x), (uv[1] + tex_size_y)],
+                     color: [color.r, color.g, color.b],
+                     texture_depth,
+                     flags: flags.0,
+                     clut,
+                     texpage_base,
+                     // _pad: 0,
+                     texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
+                     texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+                 };
+                 self.ensure_vertex_room(3);
+                 self.vertices.extend_from_slice(&[v0, v1, v2]);
 
-       */ 
+        */
 
         let v0 = Vert {
             position: [v.x as i16, v.y as i16],
@@ -1053,12 +1062,16 @@ impl ComputeRenderer {
         self.ensure_vertex_room(3);
         self.vertices.extend_from_slice(&[v3, v4, v5]);
         // self.vertices.extend_from_slice(&[v4, v3, v5]);
-
-        
     }
 
     // TODO: The transfer is affected by Mask setting.
-    pub fn vram2vram_blit(&mut self, src: Vertex, dst: Vertex, size: Vertex, ctx: &RenderingContext) {
+    pub fn vram2vram_blit(
+        &mut self,
+        src: Vertex,
+        dst: Vertex,
+        size: Vertex,
+        ctx: &RenderingContext,
+    ) {
         self.flush();
         // println!("vram 2 vram blit");
         // if ctx.preserve_masked_pixels {
@@ -1272,9 +1285,11 @@ impl ComputeRenderer {
             .process_finished_frame(self.queue.get_timestamp_period());
 
         self.update_results(results);
-        if self.frame_num == 60 {
-            self.print_profiling_results();
-            self.frame_num = 0;
+        if self.profilegpu {
+            if self.frame_num == 60 {
+                self.print_profiling_results();
+                self.frame_num = 0;
+            }
         }
 
         self.frame_num += 1;
@@ -1445,7 +1460,7 @@ impl ComputeRenderer {
         top_left: (u16, u16),
         size: (u16, u16),
         unaligned_data: &mut Vec<u32>,
-        ctx: &RenderingContext
+        ctx: &RenderingContext,
     ) {
         let size = (size.0, size.1);
         let unaligned_data: &mut [u16] = bytemuck::cast_slice_mut(&mut unaligned_data[0..]);
@@ -1620,8 +1635,10 @@ impl ComputeRenderer {
 }
 
 fn ensure_vertex_order(v0: Vert, v1: Vert, v2: Vert) -> (Vert, Vert, Vert) {
-    let cross_product_z: i64 = (v2.position[0] as i64 - v0.position[0] as i64) * (v1.position[1] as i64 - v0.position[1] as i64)
-        - (v1.position[0] as i64 - v0.position[0] as i64) * (v2.position[1] as i64 - v0.position[1] as i64);
+    let cross_product_z: i64 = (v2.position[0] as i64 - v0.position[0] as i64)
+        * (v1.position[1] as i64 - v0.position[1] as i64)
+        - (v1.position[0] as i64 - v0.position[0] as i64)
+            * (v2.position[1] as i64 - v0.position[1] as i64);
 
     // println!("cross product: {}", cross_product_z);
     // let cross_product_z =

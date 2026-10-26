@@ -418,13 +418,13 @@ impl System {
     pub fn dma_event(system: &mut System) {
         // continue where we left off
         // println!("dma!");
-        system.run_channel(Port::MdecIn, 128); // actually ellapsed
-        system.run_channel(Port::MdecOut, 128); // actually ellapsed
         system.run_channel(Port::Gpu, 128); // actually ellapsed
-        system.run_channel(Port::CdRom, 128); // actually ellapsed
         system.run_channel(Port::Spu, 128); // actually ellapsed
         system.run_channel(Port::Pio, 128); // actually ellapsed
         system.run_channel(Port::Otc, 128); // actually ellapsed
+        system.run_channel(Port::CdRom, 128); // actually ellapsed
+        system.run_channel(Port::MdecOut, 128); // actually ellapsed
+        system.run_channel(Port::MdecIn, 128); // actually ellapsed
 
     }
 

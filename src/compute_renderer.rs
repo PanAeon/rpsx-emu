@@ -1272,10 +1272,10 @@ impl ComputeRenderer {
             .process_finished_frame(self.queue.get_timestamp_period());
 
         self.update_results(results);
-        // if self.frame_num == 60 {
-        //     self.print_profiling_results();
-        //     self.frame_num = 0;
-        // }
+        if self.frame_num == 60 {
+            self.print_profiling_results();
+            self.frame_num = 0;
+        }
 
         self.frame_num += 1;
 

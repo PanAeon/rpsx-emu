@@ -593,7 +593,7 @@ impl CDRom {
         // println!("pending: {:b}, mask: {:b}", pending, mask);
         if cdrom.irq_pending.0 & cdrom.irq_mask.0 != 0 {
             // println!("setting irq ({})", it);
-            system.irqctl.status.set_cdrom(true);
+            system.irqctl.set_cdrom();
         }
     }
 

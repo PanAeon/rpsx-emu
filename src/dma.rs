@@ -9,9 +9,9 @@ pub struct Dma {
 }
 
 pub fn load<T: Addressable>(system: &mut System, offset: u32) -> T {
-    // if T::width() != AccessWidth::Word {
-    //     println!("Unhandled {:?} DMA load", T::width())
-    // }
+    if T::width() != AccessWidth::Word {
+        println!("Unhandled {:?} DMA load", T::width())
+    }
     let align = offset & 3;
     let offset = offset & !3;
     let major = (offset & 0x70) >> 4;
@@ -58,6 +58,7 @@ pub fn store<T: Addressable>(system: &mut System, offset: u32, val: T) {
                 }
                 8 => {
                     println!("channel ctrl, channel: {}, ctrl: {:?}", major, ChanControl(val.as_u32()));
+                    println!("0b{:b}", val.as_u32());
                     channel.ctrl.0 = partial_write(channel.ctrl.0, offset, val);
                     match port {
                         Port::MdecIn => do_mdec_in(system),
@@ -131,7 +132,7 @@ fn set_channel_irq(system: &mut System, port: Port, is_full_transfer: bool) {
         system.dma.dicr.update_master_irq();
 
         if system.dma.dicr.master_irq() {
-            system.irqctl.status.set_dma(true);
+            system.irqctl.set_dma();
         }
     }
 }
@@ -200,9 +201,11 @@ fn do_gpu(system: &mut System) {
         return;
     }
     match chan.ctrl.sync_mode() {
-        Sync::Manual => panic!("manual sync not implemented"),
-        Sync::Request => do_gpu_sync_mode_slice(system),
-        Sync::LinkedList => todo!(),
+        Sync::Burst => {
+            panic!("burst for gpu is not supported");
+        },
+        Sync::Slice => do_gpu_sync_mode_slice(system),
+        Sync::LinkedList => do_gpu_sync_mode_linked_list(system),
     }
 }
 
@@ -240,6 +243,28 @@ pub fn do_gpu_sync_mode_slice(system: &mut System) {
         }
     };
 
+    let chan = system.dma.channel_mut(Port::Gpu);
+    chan.ctrl.reset_active();
+    set_channel_irq(system, Port::Gpu, true);
+}
+
+pub fn do_gpu_sync_mode_linked_list(system: &mut System) {
+    let chan = system.dma.channel(Port::Gpu);
+
+    let mut addr = chan.maddr & 0x1ffffc;
+    while addr != 0xffffff {
+        let hdr = system.load::<u32>(addr);
+        let word_count = hdr >> 24;
+
+        for i in 0..word_count {
+            let data_addr = addr + 4 * (i + 1);
+            let v = system.load::<u32>(data_addr);
+            system.gpu.gp0(v);
+        }
+
+        set_channel_irq(system, Port::Gpu, false);
+        addr = hdr & 0xffffff;
+    }
     let chan = system.dma.channel_mut(Port::Gpu);
     chan.ctrl.reset_active();
     set_channel_irq(system, Port::Gpu, true);
@@ -395,8 +420,8 @@ impl Channel {
 
     pub fn block_count(&self) -> u32 {
         match self.ctrl.sync_mode() {
-            Sync::Manual => 1,
-            Sync::Request => self.block.count as u32,
+            Sync::Burst => 1,
+            Sync::Slice => self.block.count as u32,
             Sync::LinkedList => 0,
         }
     }
@@ -534,16 +559,16 @@ impl From<Direction> for u8 {
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub enum Sync {
-    Manual = 0,  // burst
-    Request = 1, // slice
+    Burst = 0,  // burst
+    Slice = 1, // slice
     LinkedList = 2,
 }
 
 impl From<u8> for Sync {
     fn from(value: u8) -> Self {
         match value {
-            0 => Self::Manual,
-            1 => Self::Request,
+            0 => Self::Burst,
+            1 => Self::Slice,
             2 => Self::LinkedList,
             _ => unreachable!("got unreachable value: 0x{:x}", value),
         }
@@ -553,8 +578,8 @@ impl From<u8> for Sync {
 impl From<Sync> for u8 {
     fn from(value: Sync) -> Self {
         match value {
-            Sync::Manual => 0,
-            Sync::Request => 1,
+            Sync::Burst => 0,
+            Sync::Slice => 1,
             Sync::LinkedList => 2,
         }
     }

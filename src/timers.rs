@@ -310,9 +310,9 @@ impl Timers {
 
         if set_irq {
             match irq.which {
-                0 => system.irqctl.status.set_tmr0(true),
-                1 => system.irqctl.status.set_tmr1(true),
-                2 => system.irqctl.status.set_tmr2(true),
+                0 => system.irqctl.set_tmr0(),
+                1 => system.irqctl.set_tmr1(),
+                2 => system.irqctl.set_tmr2(),
                 _ => unreachable!("there're only three timers")
             }
         }

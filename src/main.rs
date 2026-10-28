@@ -1062,7 +1062,7 @@ impl State {
                             .render_fb(self.framebuffer.clone(), self.display_vram);
                         self.update_vertex_buffer_if_needed(w, h, sx, sy, depth, false);
                         // if self.cpu.system.gpu.interrupt == false {
-                        self.system.irqctl.status.set_vblank(true);
+                        self.system.irqctl.set_vblank();
                         // }
                         timers::Timers::enter_vsync(&mut self.system);
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");

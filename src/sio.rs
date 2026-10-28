@@ -234,7 +234,7 @@ impl Sio {
     }
 
     pub fn process_serial_send(system: &mut System) {
-        system.irqctl.status.set_ctl_mem(true);
+        system.irqctl.set_ctl_mem();
         system.sio.status.set_interrupt_request(true);
     }
 

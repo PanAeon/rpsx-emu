@@ -353,31 +353,43 @@ impl System {
     }
 
     pub fn set_dma_reg<T: Addressable>(&mut self, offset: u32, val: T) {
-        // if T::width() != AccessWidth::Word {
-        //     panic!("Unhandled {:?} DMA store", T::width())
-        // }
         let align = offset & 3;
-        let offset = offset & !3;
+        let offs = offset & !3;
         let value = val.as_u32();
         let value = value << (align * 8);
-        let major = (offset & 0x70) >> 4;
-        let minor = offset & 0xf;
+        let major = (offs & 0x70) >> 4;
+        let minor = offs & 0xf;
+        // if T::width() != AccessWidth::Word && major == 7{
+        //     panic!("Unhandled {:?} DMA store, major: {}, minor: {}", T::width(), major, minor)
+        // }
         match major {
             0..7 => {
                 let port = Port::from_index(major as u8);
                 let channel = self.dma.channel_mut(port);
                 match minor {
-                    0 => channel.set_base(value),
-                    4 => channel.set_block_control(value),
-                    8 => self.set_channel_control(port, value),
+                    0 => channel.set_base(
+                        Self::partial_write(channel.base, offset, val)),
+                    4 => channel.set_block_control(Self::partial_write(channel.block_control(), offset, val)),
+                    8 => {
+                        let ctrl = channel.control();
+                        self.set_channel_control(port, 
+                          Self::partial_write(ctrl, offset, val));},
                     _ => panic!("Unhandled DMA read at {:x} offset", offset),
                 }
                 // if channel.active() { Some(port) } else { None }
             }
             7 => {
                 match minor {
-                    0 => self.dma.set_control(value),
-                    4 => crate::dma::Dma::set_interrupt(self, value),
+                    0 => {
+                        let ctrl = self.dma.control();
+                        self.dma.set_control(
+                          Self::partial_write(ctrl, offset, val));
+                    },
+                    4 => {
+                        let interrupt = self.dma.interrupt();
+                        crate::dma::Dma::set_interrupt(self,
+                        Self::partial_write(interrupt, offset, val))
+                    },
                     _ => panic!("Unhandled DMA read at {:x} offset", offset),
                 }
                 // None
@@ -387,6 +399,24 @@ impl System {
         // if let Some(port) = active_port {
         //     self.do_dma(port, 64)
         // }
+    }
+
+    pub fn partial_write<T:Addressable>(base: u32, addr: u32, value: T) -> u32 {
+        match T::width() {
+            AccessWidth::Byte => {
+                let align = addr & 3;
+                let shift = align * 8;
+                let mask = 0xff_u32 << shift;
+                (base & !mask) | (value.as_u32() << shift)
+            },
+            AccessWidth::Halfword => {
+                let align = addr & 2;
+                let shift = align * 8;
+                let mask = 0xffff_u32 << shift;
+                (base & !mask) | (value.as_u32() << shift)
+            },
+            AccessWidth::Word => value.as_u32(),
+        }
     }
 
     pub fn set_channel_control(&mut self, port: Port, value: u32) {

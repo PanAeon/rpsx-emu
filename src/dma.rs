@@ -130,7 +130,7 @@ pub enum Direction {
     FromRam = 1
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub enum Sync {
     Manual = 0,
     Request = 1,

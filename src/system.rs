@@ -373,7 +373,12 @@ impl System {
                     8 => {
                         let ctrl = channel.control();
                         self.set_channel_control(port, 
-                          Self::partial_write(ctrl, offset, val));},
+                          Self::partial_write(ctrl, offset, val));
+
+                        let channel = self.dma.channel_mut(port);
+                        println!("chan: {}, port: {:?}, ctrl transfer mode: {:?}", major, port, channel.sync);
+                    },
+
                     _ => panic!("Unhandled DMA read at {:x} offset", offset),
                 }
                 // if channel.active() { Some(port) } else { None }

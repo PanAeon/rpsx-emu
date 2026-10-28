@@ -1,4 +1,4 @@
-use crate::system::{Addressable, System};
+use crate::system::{AccessWidth, Addressable, System};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -40,21 +40,25 @@ pub fn store<T: Addressable>(system: &mut System, offset: u32, val: T) {
     // if T::width() != AccessWidth::Word {
     //     panic!("Unhandled {:?} DMA store", T::width())
     // }
-    let align = offset & 3;
-    let offset = offset & !3;
-    let value = val.as_u32();
-    let value = value << (align * 8);
+    // let align = offset & 3;
+    let offs = offset & !3;
+    // let value = val.as_u32();
+    // let value = value << (align * 8);
     let major = (offset & 0x70) >> 4;
-    let minor = offset & 0xf;
+    let minor = offs & 0xf;
     match major {
         0..7 => {
             let port = Port::from_index(major as u8);
             let channel = system.dma.channel_mut(port);
             match minor {
-                0 => channel.maddr = value,
-                4 => channel.set_block_control(value),
+                0 => channel.maddr = partial_write(channel.maddr, offset, val),
+                4 => {
+                    let block = channel.block_control();
+                    channel.set_block_control(partial_write(block, offset, val))
+                }
                 8 => {
-                    channel.ctrl.0 = value;
+                    println!("channel ctrl, channel: {}, ctrl: {:?}", major, ChanControl(val.as_u32()));
+                    channel.ctrl.0 = partial_write(channel.ctrl.0, offset, val);
                     match port {
                         Port::MdecIn => do_mdec_in(system),
                         Port::MdecOut => do_mdec_out(system),
@@ -72,9 +76,9 @@ pub fn store<T: Addressable>(system: &mut System, offset: u32, val: T) {
         }
         7 => {
             match minor {
-                0 => system.dma.dpcr.0 = value,
+                0 => system.dma.dpcr.0 = partial_write(system.dma.dpcr.0, offset, val),
                 4 => {
-                    let mut new_dicr = InterruptReg(value);
+                    let mut new_dicr = InterruptReg(partial_write(system.dma.dicr.0, offset, val));
                     new_dicr.set_irq_flags(system.dma.dicr.irq_flags() & !new_dicr.irq_flags()); // write 1 to clear
                     new_dicr.set_master_irq(system.dma.dicr.master_irq()); // bit 31 is read-only
                     system.dma.dicr = new_dicr;
@@ -90,18 +94,157 @@ pub fn store<T: Addressable>(system: &mut System, offset: u32, val: T) {
     //     self.do_dma(port, 64)
     // }
 }
+pub fn partial_write<T: Addressable>(base: u32, addr: u32, value: T) -> u32 {
+    match T::width() {
+        AccessWidth::Byte => {
+            let align = addr & 3;
+            let shift = align * 8;
+            let mask = 0xff_u32 << shift;
+            (base & !mask) | (value.as_u32() << shift)
+        }
+        AccessWidth::Halfword => {
+            let align = addr & 2;
+            let shift = align * 8;
+            let mask = 0xffff_u32 << shift;
+            (base & !mask) | (value.as_u32() << shift)
+        }
+        AccessWidth::Word => value.as_u32(),
+    }
+}
+fn set_channel_irq(system: &mut System, port: Port, is_full_transfer: bool) {
+    let chan_mask = 1_u32 << port as u8;
+
+    if system.dma.dicr.irq_mask() & chan_mask == 0 {
+        return;
+    }
+    let mode_bit = if is_full_transfer {
+        system.dma.dicr.irq_mode() & chan_mask == 0
+    } else {
+        system.dma.dicr.irq_mode() & chan_mask != 0
+    };
+
+    if mode_bit {
+        system
+            .dma
+            .dicr
+            .set_irq_flags(system.dma.dicr.irq_flags() | chan_mask);
+        system.dma.dicr.update_master_irq();
+
+        if system.dma.dicr.master_irq() {
+            system.irqctl.status.set_dma(true);
+        }
+    }
+}
 
 fn do_mdec_in(system: &mut System) {
-    todo!()
+    let chan = system.dma.channel(Port::MdecIn);
+    if !chan.ctrl.start() {
+        return;
+    }
+    if !system.mdec.dma_can_write() {
+        return;
+    }
+    if !system.dma.dpcr.mdecin_enabled() {
+        return;
+    }
+    let block_size = chan.block_size();
+    let step = chan.addr_step();
+
+    while chan.block.count > 0 {
+        for _ in 0..block_size {
+            let chan = system.dma.channel(Port::MdecIn);
+            let v = system.load::<u32>(chan.maddr);
+            let chan = system.dma.channel_mut(Port::MdecIn);
+            chan.maddr = chan.maddr.wrapping_add(step);
+            system.mdec.store(0, v);
+        }
+        system.dma.channel_mut(Port::MdecIn).block.count -= 1;
+    }
+    let chan = system.dma.channel_mut(Port::MdecIn);
+    chan.ctrl.set_start(false);
+    set_channel_irq(system, Port::MdecIn, true);
 }
 
 fn do_mdec_out(system: &mut System) {
-    todo!()
+    let chan = system.dma.channel(Port::MdecOut);
+    if !chan.ctrl.start() {
+        return;
+    }
+    if !system.mdec.dma_can_read() {
+        return;
+    }
+    if !system.dma.dpcr.mdecout_enabled() {
+        return;
+    }
+    let block_size = chan.block_size();
+    let step = chan.addr_step();
+
+    while chan.block.count > 0 {
+        for _ in 0..block_size {
+            let chan = system.dma.channel(Port::MdecIn);
+            let v = system.mdec.load::<u32>(0);
+            system.store::<u32>(chan.maddr, v);
+            let chan = system.dma.channel_mut(Port::MdecIn);
+            chan.maddr = chan.maddr.wrapping_add(step);
+        }
+        system.dma.channel_mut(Port::MdecOut).block.count -= 1;
+    }
+    let chan = system.dma.channel_mut(Port::MdecOut);
+    chan.ctrl.set_start(false);
+    set_channel_irq(system, Port::MdecOut, true);
 }
 
 fn do_gpu(system: &mut System) {
-    todo!()
+    let chan = system.dma.channel(Port::Gpu);
+    if !chan.ctrl.is_active() {
+        return;
+    }
+    match chan.ctrl.sync_mode() {
+        Sync::Manual => panic!("manual sync not implemented"),
+        Sync::Request => do_gpu_sync_mode_slice(system),
+        Sync::LinkedList => todo!(),
+    }
 }
+
+pub fn do_gpu_sync_mode_slice(system: &mut System) {
+    let chan = system.dma.channel(Port::Gpu);
+
+    let addr_inc = chan.addr_step();
+    let block_size = chan.block_size();
+    let block_count = chan.block_count();
+
+    match chan.ctrl.direction() {
+        Direction::ToRam => {
+            for _ in 0..block_count {
+                for _ in 0..block_size {
+                    let v = system.gpu.read();
+                    let chan = system.dma.channel(Port::Gpu);
+                    system.store(chan.maddr, v);
+                    let chan = system.dma.channel_mut(Port::Gpu);
+                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
+                }
+                set_channel_irq(system, Port::Gpu, false);
+            }
+        }
+        Direction::FromRam => {
+            for _ in 0..block_count {
+                for _ in 0..block_size {
+                    let chan = system.dma.channel(Port::Gpu);
+                    let v = system.load::<u32>(chan.maddr);
+                    system.gpu.gp0(v);
+                    let chan = system.dma.channel_mut(Port::Gpu);
+                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
+                }
+                set_channel_irq(system, Port::Gpu, false);
+            }
+        }
+    };
+
+    let chan = system.dma.channel_mut(Port::Gpu);
+    chan.ctrl.reset_active();
+    set_channel_irq(system, Port::Gpu, true);
+}
+
 fn do_cdrom(system: &mut System) {
     todo!()
 }
@@ -109,13 +252,27 @@ fn do_spu(system: &mut System) {
     todo!()
 }
 fn do_otc(system: &mut System) {
-    todo!()
+    let chan = system.dma.channel(Port::Otc);
+    if !chan.ctrl.is_active() {
+        return;
+    }
+    if !system.dma.dpcr.otc_enabled() {
+        return;
+    }
+    let transfer_len = chan.block_size() * chan.block_count();
+
+    let mut addr = chan.maddr;
+
+    for i in 0..transfer_len {
+        let next_addr = (addr - 4) & 0xffffff;
+        let hdr = if i == transfer_len - 1 {0xffffff} else {next_addr};
+        system.store::<u32>(addr, hdr);
+        addr = next_addr;
+    }
+    let chan = system.dma.channel_mut(Port::Otc);
+    chan.ctrl.reset_active();
+    set_channel_irq(system, Port::Otc, true);
 }
-
-
-
-
-
 
 impl Dma {
     pub fn new() -> Dma {
@@ -221,6 +378,29 @@ impl Channel {
         self.block.count = (value >> 16) as u16;
     }
 
+    pub fn block_size(&self) -> u32 {
+        if self.block.size == 0 {
+            0x10000
+        } else {
+            self.block.size as u32
+        }
+    }
+
+    pub fn addr_step(&self) -> u32 {
+        match self.ctrl.addr_inc() {
+            Step::Increment => 4,
+            Step::Decrement => (-4_i32) as u32,
+        }
+    }
+
+    pub fn block_count(&self) -> u32 {
+        match self.ctrl.sync_mode() {
+            Sync::Manual => 1,
+            Sync::Request => self.block.count as u32,
+            Sync::LinkedList => 0,
+        }
+    }
+
     // pub fn transfer_size(&self) -> Option<u32> {
     //     let bs = self.block_size as u32;
     //     let bc = self.block_count as u32;
@@ -300,9 +480,9 @@ bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize, Clone, Copy)]
     struct ChanControl(u32);
     impl Debug;
-    from into Direction, direction, set_direction: 0,0;
-    from into Step, addr_inc, set_addr_incr: 1,1;
-    from into Sync, sync_mode, set_sync_mode: 9,10;
+    u8, from into Direction, direction, set_direction: 0,0;
+    u8, from into Step, addr_inc, set_addr_incr: 1,1;
+    u8, into Sync, sync_mode, _: 9,10;
     chopping_dma, _: 16,18;
     chopping_cpu, _: 20,22;
     start, set_start: 24;
@@ -333,8 +513,8 @@ pub enum Direction {
     FromRam = 1,
 }
 
-impl From<u32> for Direction {
-    fn from(value: u32) -> Self {
+impl From<u8> for Direction {
+    fn from(value: u8) -> Self {
         match value {
             0 => Self::ToRam,
             1 => Self::FromRam,
@@ -343,7 +523,7 @@ impl From<u32> for Direction {
     }
 }
 
-impl From<Direction> for u32 {
+impl From<Direction> for u8 {
     fn from(value: Direction) -> Self {
         match value {
             Direction::ToRam => 0,
@@ -354,23 +534,23 @@ impl From<Direction> for u32 {
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub enum Sync {
-    Manual = 0,
-    Request = 1,
+    Manual = 0,  // burst
+    Request = 1, // slice
     LinkedList = 2,
 }
 
-impl From<u32> for Sync {
-    fn from(value: u32) -> Self {
+impl From<u8> for Sync {
+    fn from(value: u8) -> Self {
         match value {
             0 => Self::Manual,
             1 => Self::Request,
             2 => Self::LinkedList,
-            _ => unreachable!(),
+            _ => unreachable!("got unreachable value: 0x{:x}", value),
         }
     }
 }
 
-impl From<Sync> for u32 {
+impl From<Sync> for u8 {
     fn from(value: Sync) -> Self {
         match value {
             Sync::Manual => 0,
@@ -386,8 +566,8 @@ pub enum Step {
     Decrement = 1,
 }
 
-impl From<u32> for Step {
-    fn from(value: u32) -> Self {
+impl From<u8> for Step {
+    fn from(value: u8) -> Self {
         match value {
             0 => Self::Increment,
             1 => Self::Decrement,
@@ -396,7 +576,7 @@ impl From<u32> for Step {
     }
 }
 
-impl From<Step> for u32 {
+impl From<Step> for u8 {
     fn from(value: Step) -> Self {
         match value {
             Step::Increment => 0,

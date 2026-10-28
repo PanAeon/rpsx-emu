@@ -180,7 +180,7 @@ impl System {
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA read32 {:x}", addr);
-            return self.dma.load(offset)
+            return dma::load(self, offset)
         }
         if let Some(offset) = map::SCRATCHPAD.contains(address) {
             return self.scratchpad.load(offset);
@@ -242,7 +242,7 @@ impl System {
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA store32 {:x} = {:x}", addr, value);
-            return self.dma.store(offset, value);
+            return dma::store(self, offset, value);
         }
         if let Some(offset) = map::SCRATCHPAD.contains(address) {
             return self.scratchpad.store(offset, value);
@@ -310,53 +310,53 @@ impl System {
         panic!("Unhandled store{:?} address: {:08x}", T::width(), address)
     }
 
-    pub fn set_channel_control(&mut self, port: Port, value: u32) {
+    // pub fn set_channel_control(&mut self, port: Port, value: u32) {
+    //
+    //     let mut ctrl = ChannelControl(value);
+    //     if port == Port::Otc {
+    //         ctrl.0 &= 0x51_000_000;
+    //         ctrl.0 |= 2;
+    //     }
+    //     let channel = self.dma.channel_mut(port);
+    //     let was_enabled = channel.enable;
+    //     let is_enabled = ctrl.is_enabled();
+    //     if was_enabled ^ is_enabled {
+    //         // Channel was started or stopped
+    //         if is_enabled {
+    //             channel.set_control(ctrl.0);
+    //             self.start_dma(port);
+    //         } else {
+    //             channel.enable = false;
+    //             self.run_channel(port, 128 * 16);
+    //             self.dma.channel_mut(port).set_control(ctrl.0);
+    //             // channel.set_control(ctrl.0);
+    //         }
+    //     } else {
+    //         channel.set_control(ctrl.0);
+    //         // psx.dma[port].control = ctrl;
+    //     }
+    // }
 
-        let mut ctrl = ChannelControl(value);
-        if port == Port::Otc {
-            ctrl.0 &= 0x51_000_000;
-            ctrl.0 |= 2;
-        }
-        let channel = self.dma.channel_mut(port);
-        let was_enabled = channel.enable;
-        let is_enabled = ctrl.is_enabled();
-        if was_enabled ^ is_enabled {
-            // Channel was started or stopped
-            if is_enabled {
-                channel.set_control(ctrl.0);
-                self.start_dma(port);
-            } else {
-                channel.enable = false;
-                self.run_channel(port, 128 * 16);
-                self.dma.channel_mut(port).set_control(ctrl.0);
-                // channel.set_control(ctrl.0);
-            }
-        } else {
-            channel.set_control(ctrl.0);
-            // psx.dma[port].control = ctrl;
-        }
-    }
+    // pub fn dma_event(system: &mut System) {
+    //     // continue where we left off
+    //     // println!("dma!");
+    //     system.run_channel(Port::Otc, 64); // actually ellapsed
+    //     system.run_channel(Port::Pio, 64); // actually ellapsed
+    //     system.run_channel(Port::CdRom, 64); // actually ellapsed
+    //     system.run_channel(Port::Gpu, 64); // actually ellapsed
+    //     system.run_channel(Port::Spu, 64); // actually ellapsed
+    //     system.run_channel(Port::MdecIn, 64); // actually ellapsed
+    //     system.run_channel(Port::MdecOut, 64); // actually ellapsed
+    //
+    // }
 
-    pub fn dma_event(system: &mut System) {
-        // continue where we left off
-        // println!("dma!");
-        system.run_channel(Port::Otc, 64); // actually ellapsed
-        system.run_channel(Port::Pio, 64); // actually ellapsed
-        system.run_channel(Port::CdRom, 64); // actually ellapsed
-        system.run_channel(Port::Gpu, 64); // actually ellapsed
-        system.run_channel(Port::Spu, 64); // actually ellapsed
-        system.run_channel(Port::MdecIn, 64); // actually ellapsed
-        system.run_channel(Port::MdecOut, 64); // actually ellapsed
-
-    }
-
-    pub fn start_dma(&mut self, port: Port) {
-        let channel = self.dma.channel_mut(port);
-        channel.remaining_words = 0;
-        channel.clock_counter = 0;
-        // continue where we left off
-        self.run_channel(port, 64);
-    }
+    // pub fn start_dma(&mut self, port: Port) {
+    //     let channel = self.dma.channel_mut(port);
+    //     channel.remaining_words = 0;
+    //     channel.clock_counter = 0;
+    //     // continue where we left off
+    //     self.run_channel(port, 64);
+    // }
 
     // pub fn do_dma(&mut self, port: Port, cycles: u64) {
     // match self.dma.channel(port).sync() {
@@ -364,7 +364,7 @@ impl System {
     //     self.do_dma_block(port, cycles)
     // }
     // }
-    pub fn run_channel(&mut self, port: Port, cycles: u64) {
+/*    pub fn run_channel(&mut self, port: Port, cycles: u64) {
         self.dma.channel_mut(port).clock_counter += cycles;
         let channel = self.dma.channel(port);
         let direction = channel.direction();
@@ -566,59 +566,59 @@ impl System {
             remsz -= 1;
         }
         Dma::done(self, port);*/
-    }
+    }*/
 
-    pub fn port_store(&mut self, port: Port, v: u32) -> u64 {
-        match port {
-            Port::MdecIn => {
-                self.mdec.store(0, v);
-                0
-            }
-            Port::Gpu => {
-                self.gpu.gp0(v);
-                0
-            }
-            Port::Spu => {
-                self.spu.ram_write::<4>(v);
-                47
-            }
-            _ => unimplemented!("DMA port store"),
-        }
-    }
-    pub fn port_load(&mut self, port: Port) -> (u32, u32, u64) {
-        let offset = 0;
-        let mut delay = 0;
-
-        let v = match port {
-            Port::Otc => {
-                let channel = self.dma.channel(port);
-
-                if channel.remaining_words == 1 {
-                    // Last entry contains the end of table marker
-                    0xff_ffff
-                } else {
-                    // Pointer to the previous entry
-                    channel.curr_addr.wrapping_sub(4) & 0x1f_ffff
-                }
-            }
-            // XXX latency taken from mednafen
-            Port::CdRom => {
-                delay = 8;
-                self.cdrom.load::<u32>(2)
-                // cd::dma_load(psx)
-            }
-            Port::Spu => self.spu.ram_read::<4>(),
-            Port::MdecOut => {
-                let v = self.mdec.load::<u32>(0);
-                // offset = off;
-                v
-            }
-            Port::Gpu => self.gpu.read(),
-            _ => unimplemented!("DMA port load {:?}", port),
-        };
-
-        (v, offset, delay)
-    }
+    // pub fn port_store(&mut self, port: Port, v: u32) -> u64 {
+    //     match port {
+    //         Port::MdecIn => {
+    //             self.mdec.store(0, v);
+    //             0
+    //         }
+    //         Port::Gpu => {
+    //             self.gpu.gp0(v);
+    //             0
+    //         }
+    //         Port::Spu => {
+    //             self.spu.ram_write::<4>(v);
+    //             47
+    //         }
+    //         _ => unimplemented!("DMA port store"),
+    //     }
+    // }
+    // pub fn port_load(&mut self, port: Port) -> (u32, u32, u64) {
+    //     let offset = 0;
+    //     let mut delay = 0;
+    //
+    //     let v = match port {
+    //         Port::Otc => {
+    //             let channel = self.dma.channel(port);
+    //
+    //             if channel.remaining_words == 1 {
+    //                 // Last entry contains the end of table marker
+    //                 0xff_ffff
+    //             } else {
+    //                 // Pointer to the previous entry
+    //                 channel.curr_addr.wrapping_sub(4) & 0x1f_ffff
+    //             }
+    //         }
+    //         // XXX latency taken from mednafen
+    //         Port::CdRom => {
+    //             delay = 8;
+    //             self.cdrom.load::<u32>(2)
+    //             // cd::dma_load(psx)
+    //         }
+    //         Port::Spu => self.spu.ram_read::<4>(),
+    //         Port::MdecOut => {
+    //             let v = self.mdec.load::<u32>(0);
+    //             // offset = off;
+    //             v
+    //         }
+    //         Port::Gpu => self.gpu.read(),
+    //         _ => unimplemented!("DMA port load {:?}", port),
+    //     };
+    //
+    //     (v, offset, delay)
+    // }
 
     // Check if the device targeted by `port` can either be read from of written to
     fn can_run(&mut self, port: Port, write: bool) -> bool {

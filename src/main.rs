@@ -1007,7 +1007,7 @@ impl State {
         self.update_gamepad();
         if self.paused {
             println!("current pc: 0x{:X}", self.system.cpu.regs.pc);
-            self.system.irqctl.status.set_dma(false);
+            // self.system.irqctl.status.set_dma(false);
             // self.cpu.system.irqctl.status.set_ctl_mem(true);
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;
@@ -1098,7 +1098,7 @@ impl State {
                     }
                     scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.system),
                     scheduler::Event::DsrOff => self.system.sio.turn_dsr_off(),
-                    scheduler::Event::Dma => system::System::dma_event(&mut self.system),
+                    scheduler::Event::Dma => {}//system::System::dma_event(&mut self.system),
                 }
             }
             // self.update_interpreter();

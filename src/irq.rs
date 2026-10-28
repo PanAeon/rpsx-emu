@@ -68,56 +68,56 @@ impl InterruptController {
     }
 
     pub fn set_vblank(&mut self) {
-        if !self.status.vblank() {
+         if !self.status.vblank() {
             self.int.set_vblank(true);
             self.status.set_vblank(true);
-        }
+         }
     }
 
     pub fn set_dma(&mut self) {
-        if !self.status.dma() {
+         if !self.status.dma() {
             self.int.set_dma(true);
             self.status.set_dma(true);
-        }
+         }
     }
     pub fn set_spu(&mut self) {
-        if !self.status.spu() {
+         if !self.status.spu() {
             self.int.set_spu(true);
             self.status.set_spu(true);
-        }
+         }
     }
     pub fn set_cdrom(&mut self) {
-        if !self.status.cdrom() {
+         if !self.status.cdrom() {
             self.int.set_cdrom(true);
             self.status.set_cdrom(true);
-        }
+         }
     }
     pub fn set_tmr0(&mut self) {
-        if !self.status.tmr0() {
+         if !self.status.tmr0() {
             self.int.set_tmr0(true);
             self.status.set_tmr0(true);
-        }
+         }
     }
 
     pub fn set_tmr1(&mut self) {
-        if !self.status.tmr1() {
+         if !self.status.tmr1() {
             self.int.set_tmr1(true);
             self.status.set_tmr1(true);
-        }
+         }
     }
 
     pub fn set_tmr2(&mut self) {
-        if !self.status.tmr2() {
+         if !self.status.tmr2() {
             self.int.set_tmr2(true);
             self.status.set_tmr2(true);
-        }
+         }
     }
 
     pub fn set_ctl_mem(&mut self) {
-        if !self.status.ctl_mem() {
+         if !self.status.ctl_mem() {
             self.int.set_ctl_mem(true);
             self.status.set_ctl_mem(true);
-        }
+         }
     }
 
 

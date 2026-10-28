@@ -57,8 +57,8 @@ pub fn store<T: Addressable>(system: &mut System, offset: u32, val: T) {
                     channel.set_block_control(partial_write(block, offset, val))
                 }
                 8 => {
-                    println!("channel ctrl, channel: {}, ctrl: {:?}", major, ChanControl(val.as_u32()));
-                    println!("0b{:b}", val.as_u32());
+                    // println!("channel ctrl, channel: {}, ctrl: {:?}", major, ChanControl(val.as_u32()));
+                    // println!("0b{:b}", val.as_u32());
                     channel.ctrl.0 = partial_write(channel.ctrl.0, offset, val);
                     match port {
                         Port::MdecIn => do_mdec_in(system),
@@ -113,7 +113,7 @@ pub fn partial_write<T: Addressable>(base: u32, addr: u32, value: T) -> u32 {
     }
 }
 fn set_channel_irq(system: &mut System, port: Port, is_full_transfer: bool) {
-    let chan_mask = 1_u32 << port as u8;
+    let chan_mask = 1_u8 << port as u8;
 
     if system.dma.dicr.irq_mask() & chan_mask == 0 {
         return;
@@ -151,7 +151,7 @@ fn do_mdec_in(system: &mut System) {
     let block_size = chan.block_size();
     let step = chan.addr_step();
 
-    while chan.block.count > 0 {
+    while system.dma.channel(Port::MdecIn).block.count > 0 {
         for _ in 0..block_size {
             let chan = system.dma.channel(Port::MdecIn);
             let v = system.load::<u32>(chan.maddr);
@@ -162,7 +162,7 @@ fn do_mdec_in(system: &mut System) {
         system.dma.channel_mut(Port::MdecIn).block.count -= 1;
     }
     let chan = system.dma.channel_mut(Port::MdecIn);
-    chan.ctrl.set_start(false);
+    chan.ctrl.reset_active();
     set_channel_irq(system, Port::MdecIn, true);
 }
 
@@ -180,18 +180,18 @@ fn do_mdec_out(system: &mut System) {
     let block_size = chan.block_size();
     let step = chan.addr_step();
 
-    while chan.block.count > 0 {
+    while system.dma.channel(Port::MdecOut).block.count > 0 {
         for _ in 0..block_size {
-            let chan = system.dma.channel(Port::MdecIn);
+            let chan = system.dma.channel(Port::MdecOut);
             let v = system.mdec.load::<u32>(0);
             system.store::<u32>(chan.maddr, v);
-            let chan = system.dma.channel_mut(Port::MdecIn);
+            let chan = system.dma.channel_mut(Port::MdecOut);
             chan.maddr = chan.maddr.wrapping_add(step);
         }
         system.dma.channel_mut(Port::MdecOut).block.count -= 1;
     }
     let chan = system.dma.channel_mut(Port::MdecOut);
-    chan.ctrl.set_start(false);
+    chan.ctrl.reset_active();
     set_channel_irq(system, Port::MdecOut, true);
 }
 
@@ -216,7 +216,7 @@ pub fn do_gpu_sync_mode_slice(system: &mut System) {
     let block_size = chan.block_size();
     let block_count = chan.block_count();
 
-    match chan.ctrl.direction() {
+    match chan.ctrl.get_direction() {
         Direction::ToRam => {
             for _ in 0..block_count {
                 for _ in 0..block_size {
@@ -271,10 +271,76 @@ pub fn do_gpu_sync_mode_linked_list(system: &mut System) {
 }
 
 fn do_cdrom(system: &mut System) {
-    todo!()
+    let chan = system.dma.channel(Port::CdRom);
+    if !chan.ctrl.is_active() {
+        return;
+    }
+    let addr_inc = chan.addr_step();
+    let block_size = chan.block_size();
+    let block_count = chan.block_count();
+
+    match chan.ctrl.get_direction() {
+        Direction::ToRam => {
+            for _ in 0..block_count {
+                for _ in 0..block_size {
+                    let v = system.cdrom.read_sector_data::<u32>();
+                    let chan = system.dma.channel(Port::CdRom);
+                    system.store(chan.maddr, v);
+                    let chan = system.dma.channel_mut(Port::CdRom);
+                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
+                }
+                set_channel_irq(system, Port::CdRom, false);
+            }
+        }
+        Direction::FromRam => {
+            unreachable!("not possible")
+        }
+    };
+
+
+    let chan = system.dma.channel_mut(Port::CdRom);
+    chan.ctrl.reset_active();
+    set_channel_irq(system, Port::CdRom, true);
 }
 fn do_spu(system: &mut System) {
-    todo!()
+    let chan = system.dma.channel(Port::Spu);
+    if !chan.ctrl.is_active() {
+        return;
+    }
+    let addr_inc = chan.addr_step();
+    let block_size = chan.block_size();
+    let block_count = chan.block_count();
+
+    match chan.ctrl.get_direction() {
+        Direction::ToRam => {
+            for _ in 0..block_count {
+                for _ in 0..block_size {
+                    let v = system.spu.ram_read::<4>();
+                    let chan = system.dma.channel(Port::Spu);
+                    system.store(chan.maddr, v);
+                    let chan = system.dma.channel_mut(Port::Spu);
+                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
+                }
+                set_channel_irq(system, Port::Spu, false);
+            }
+        }
+        Direction::FromRam => {
+            for _ in 0..block_count {
+                for _ in 0..block_size {
+                    let chan = system.dma.channel(Port::Spu);
+                    let v = system.load::<u32>(chan.maddr);
+                    system.spu.ram_write::<4>(v);
+                    let chan = system.dma.channel_mut(Port::Spu);
+                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
+                }
+                set_channel_irq(system, Port::Spu, false);
+            }
+        }
+    };
+
+    let chan = system.dma.channel_mut(Port::Spu);
+    chan.ctrl.reset_active();
+    set_channel_irq(system, Port::Spu, true);
 }
 fn do_otc(system: &mut System) {
     let chan = system.dma.channel(Port::Otc);
@@ -412,9 +478,10 @@ impl Channel {
     }
 
     pub fn addr_step(&self) -> u32 {
-        match self.ctrl.addr_inc() {
-            Step::Increment => 4,
-            Step::Decrement => (-4_i32) as u32,
+        if self.ctrl.addr_inc() {
+            (-4_i32) as u32
+        } else {
+            4
         }
     }
 
@@ -505,9 +572,11 @@ bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize, Clone, Copy)]
     struct ChanControl(u32);
     impl Debug;
-    u8, from into Direction, direction, set_direction: 0,0;
-    u8, from into Step, addr_inc, set_addr_incr: 1,1;
-    u8, into Sync, sync_mode, _: 9,10;
+    direction, set_direction: 0;
+    addr_inc, set_addr_incr: 1;
+    // u8, from into Direction, direction, set_direction: 0;
+    // u8, from into Step, addr_inc, set_addr_incr: 1;
+    // u8, into Sync, sync_mode, _: 9,10;
     chopping_dma, _: 16,18;
     chopping_cpu, _: 20,22;
     start, set_start: 24;
@@ -517,6 +586,21 @@ bitfield::bitfield! {
 }
 
 impl ChanControl {
+    fn get_direction(self) -> Direction {
+        if self.direction() {
+            Direction::FromRam
+        } else {
+            Direction::ToRam
+        }
+    }
+    fn sync_mode(self) -> Sync {
+        match (self.0 >> 9) & 3 {
+            0 => Sync::Burst,
+            1 => Sync::Slice,
+            2 => Sync::LinkedList,
+            _ => unimplemented!("Unknown DMA sync mode"),
+        }
+    }
     pub fn is_active(&self) -> bool {
         (self.start() || self.force_start()) && !self.pause()
     }
@@ -614,11 +698,11 @@ bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize, Clone)]
     struct InterruptReg(u32);
     impl Debug;
-    irq_mode, _: 0,6;
+    // u8, irq_mode, _: 6,0;
     bus_error, _: 15;
-    irq_mask, _: 16,22;
+    // u8, irq_mask, _: 22,16;
     master_enable, _: 23;
-    irq_flags, set_irq_flags: 24,30;
+    // u8, irq_flags, set_irq_flags: 30,24;
     master_irq, set_master_irq: 31;
 }
 
@@ -626,5 +710,20 @@ impl InterruptReg {
     fn update_master_irq(&mut self) {
         let irq_pending = self.irq_flags() & self.irq_mask() != 0;
         self.set_master_irq(self.bus_error() || (self.master_enable() && irq_pending));
+    }
+    pub fn irq_mask(&self) -> u8 {
+        ((self.0 >> 16) & 0x3F) as u8
+    }
+
+    pub fn irq_mode(&self) -> u8 {
+        (self.0 & 0x3F) as u8
+    }
+    pub fn irq_flags(&self) -> u8 {
+        ((self.0 >> 24) & 0x3F) as u8
+    }
+
+    pub fn set_irq_flags(&mut self, flags: u8) {
+        let mask = 0x3F << 24;
+        self.0 = (self.0 & !mask) | (((flags & 0x3f) as u32) << 24);
     }
 }

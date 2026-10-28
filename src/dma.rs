@@ -1,101 +1,193 @@
-use crate::{system::System};
+use crate::system::{Addressable, System};
 use serde::{Deserialize, Serialize};
-
 
 #[derive(Serialize, Deserialize)]
 pub struct Dma {
-    control: u32,
-    irq_enable: bool,
-    channel_irq_enable: u8,
-    channel_irq_flags: u8,
-    force_irq: bool,
-    irq_dummy: u8,
-    channels: [Channel;7]
+    dpcr: Control,
+    dicr: InterruptReg,
+    channels: [Channel; 7],
 }
+
+pub fn load<T: Addressable>(system: &mut System, offset: u32) -> T {
+    // if T::width() != AccessWidth::Word {
+    //     println!("Unhandled {:?} DMA load", T::width())
+    // }
+    let align = offset & 3;
+    let offset = offset & !3;
+    let major = (offset & 0x70) >> 4;
+    let minor = offset & 0xf;
+    let r = match major {
+        0..7 => {
+            let channel = system.dma.channel(Port::from_index(major as u8));
+            match minor {
+                0 => channel.maddr,
+                4 => channel.block_control(),
+                8 => channel.ctrl.0,
+                _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset),
+            }
+        }
+        7 => match minor {
+            0 => system.dma.dpcr.0,
+            4 => system.dma.dicr.0,
+            _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset),
+        },
+        _ => panic!("Unhandled DMA read at {:x} offset", offset),
+    };
+    T::from_u32(r >> (align * 8))
+}
+
+pub fn store<T: Addressable>(system: &mut System, offset: u32, val: T) {
+    // if T::width() != AccessWidth::Word {
+    //     panic!("Unhandled {:?} DMA store", T::width())
+    // }
+    let align = offset & 3;
+    let offset = offset & !3;
+    let value = val.as_u32();
+    let value = value << (align * 8);
+    let major = (offset & 0x70) >> 4;
+    let minor = offset & 0xf;
+    match major {
+        0..7 => {
+            let port = Port::from_index(major as u8);
+            let channel = system.dma.channel_mut(port);
+            match minor {
+                0 => channel.maddr = value,
+                4 => channel.set_block_control(value),
+                8 => {
+                    channel.ctrl.0 = value;
+                    match port {
+                        Port::MdecIn => do_mdec_in(system),
+                        Port::MdecOut => do_mdec_out(system),
+                        Port::Gpu => do_gpu(system),
+                        Port::CdRom => do_cdrom(system),
+                        Port::Spu => do_spu(system),
+                        Port::Pio => unimplemented!(),
+                        Port::Otc => do_otc(system),
+                    };
+                    //set_channel_control(system, port, value),
+                }
+                _ => panic!("Unhandled DMA write at {:x} offset", offset),
+            }
+            // if channel.active() { Some(port) } else { None }
+        }
+        7 => {
+            match minor {
+                0 => system.dma.dpcr.0 = value,
+                4 => {
+                    let mut new_dicr = InterruptReg(value);
+                    new_dicr.set_irq_flags(system.dma.dicr.irq_flags() & !new_dicr.irq_flags()); // write 1 to clear
+                    new_dicr.set_master_irq(system.dma.dicr.master_irq()); // bit 31 is read-only
+                    system.dma.dicr = new_dicr;
+                    system.dma.dicr.update_master_irq();
+                }
+                _ => panic!("Unhandled DMA read at {:x} offset", offset),
+            }
+            // None
+        }
+        _ => panic!("Unhandled DMA read at {:x} offset", offset),
+    };
+    // if let Some(port) = active_port {
+    //     self.do_dma(port, 64)
+    // }
+}
+
+fn do_mdec_in(system: &mut System) {
+    todo!()
+}
+
+fn do_mdec_out(system: &mut System) {
+    todo!()
+}
+
+fn do_gpu(system: &mut System) {
+    todo!()
+}
+fn do_cdrom(system: &mut System) {
+    todo!()
+}
+fn do_spu(system: &mut System) {
+    todo!()
+}
+fn do_otc(system: &mut System) {
+    todo!()
+}
+
+
+
+
+
 
 impl Dma {
     pub fn new() -> Dma {
         Dma {
-            control: 0x07654321,
-            irq_enable: false,
-            channel_irq_enable: 0,
-            channel_irq_flags: 0,
-            force_irq: false,
-            irq_dummy: 0,
-            channels: [Channel::new();7]
+            dpcr: Control(0x07654321),
+            dicr: InterruptReg(0),
+            channels: [Channel::new(); 7],
         }
     }
 
-    pub fn control(&self) -> u32 {
-        self.control
-    }
+    // pub fn master_enabled(&self, port: Port) -> bool {
+    //     let dpcr = Control(self.control);
+    //     match port {
+    //         Port::MdecIn => dpcr.mdecin_enabled(),
+    //         Port::MdecOut => dpcr.mdecout_enabled(),
+    //         Port::Gpu => dpcr.gpu_enabled(),
+    //         Port::CdRom => dpcr.cdrom_enabled(),
+    //         Port::Spu => dpcr.spu_enabled(),
+    //         Port::Pio => dpcr.pio_enabled(),
+    //         Port::Otc => dpcr.otc_enabled(),
+    //     }
+    // }
 
-    pub fn set_control(&mut self, value: u32) {
-        self.control = value;
-    }
+    // pub fn irq(&self) -> bool {
+    //     let channel_irq = self.channel_irq_flags & self.channel_irq_enable;
+    //     self.force_irq || (self.irq_enable && channel_irq != 0)
+    // }
 
-    pub fn master_enabled(&self, port: Port) -> bool {
-        let dpcr = Control(self.control);
-        match port {
-            Port::MdecIn => dpcr.mdecin_enabled(),
-            Port::MdecOut => dpcr.mdecout_enabled(),
-            Port::Gpu => dpcr.gpu_enabled(),
-            Port::CdRom => dpcr.cdrom_enabled(),
-            Port::Spu => dpcr.spu_enabled(),
-            Port::Pio => dpcr.pio_enabled(),
-            Port::Otc => dpcr.otc_enabled(),
-        }
-    }
+    // pub fn interrupt(&self) -> u32 {
+    //     let mut r = 0;
+    //
+    //     r |= self.irq_dummy as u32;
+    //     r |= (self.force_irq as u32) << 15;
+    //     r |= (self.channel_irq_enable as u32) << 16;
+    //     r |= (self.irq_enable as u32) << 23;
+    //     r |= (self.channel_irq_flags as u32) << 24;
+    //     r |= (self.irq() as u32) << 31;
+    //
+    //     r
+    // }
 
-    pub fn irq(&self) -> bool {
-        let channel_irq = self.channel_irq_flags & self.channel_irq_enable;
-        self.force_irq || (self.irq_enable && channel_irq != 0)
-    }
+    // pub fn set_interrupt(system: &mut System, val: u32) {
+    //     let prev_irq = system.dma.irq();
+    //     system.dma.irq_dummy = (val & 0x3f) as u8;
+    //
+    //     system.dma.force_irq = (val >> 15) & 1 != 0;
+    //     system.dma.channel_irq_enable = ((val >> 16) & 0x7f) as u8;
+    //     system.dma.irq_enable = (val >> 23) & 1 != 0;
+    //
+    //     // writing 1 to a flag resets it
+    //     let ack = ((val >> 24) & 0x3f) as u8;
+    //     system.dma.channel_irq_flags &= !ack; // TODO: (and, additionally, IRQ3 (DMA) must be acknowledged via Port 1F801070h).
+    //
+    //     if !prev_irq && system.dma.irq() {
+    //         system.irqctl.status.set_dma(true);
+    //     }
+    // }
 
-    pub fn interrupt(&self) -> u32 {
-        let mut r = 0;
-
-        r |= self.irq_dummy as u32;
-        r |= (self.force_irq as u32) << 15;
-        r |= (self.channel_irq_enable as u32) << 16;
-        r |= (self.irq_enable as u32) << 23;
-        r |= (self.channel_irq_flags as u32) << 24;
-        r |= (self.irq() as u32) << 31;
-
-        r
-    }
-
-    pub fn set_interrupt(system: &mut System, val: u32) {
-        let prev_irq = system.dma.irq();
-        system.dma.irq_dummy = (val & 0x3f) as u8;
-
-        system.dma.force_irq = (val >> 15) & 1 != 0;
-        system.dma.channel_irq_enable = ((val >> 16) & 0x7f) as u8;
-        system.dma.irq_enable = (val >> 23) & 1 != 0;
-
-        // writing 1 to a flag resets it
-        let ack = ((val >> 24) & 0x3f) as u8;
-        system.dma.channel_irq_flags &= !ack; // TODO: (and, additionally, IRQ3 (DMA) must be acknowledged via Port 1F801070h).
-
-        if !prev_irq && system.dma.irq() {
-            system.irqctl.status.set_dma(true);
-        }
-    }
-
-    pub fn done(system: &mut System, port: Port) {
-        system.dma.channel_mut(port).done();
-
-        let prev_irq = system.dma.irq();
-
-        let it_en = system.dma.channel_irq_enable & (1 << (port as usize));
-
-        system.dma.channel_irq_flags |= it_en;
-
-        if !prev_irq && system.dma.irq() {
-            system.irqctl.status.set_dma(true);
-        }
-
-    }
+    // pub fn done(system: &mut System, port: Port) {
+    //     system.dma.channel_mut(port).done();
+    //
+    //     let prev_irq = system.dma.irq();
+    //
+    //     let it_en = system.dma.channel_irq_enable & (1 << (port as usize));
+    //
+    //     system.dma.channel_irq_flags |= it_en;
+    //
+    //     if !prev_irq && system.dma.irq() {
+    //         system.irqctl.status.set_dma(true);
+    //     }
+    //
+    // }
 
     pub fn channel(&self, port: Port) -> Channel {
         self.channels[port as usize]
@@ -107,146 +199,38 @@ impl Dma {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Channel {
-    pub enable: bool,
-    pub direction: Direction,
-    pub step: Step,
-    pub sync: Sync,
-    pub trigger: bool,
-    pub chop: bool,
-    pub chop_dma_sz: u8,
-    pub chop_cpu_sz: u8,
-    dummy: u8,
-    pub base: u32,
-    pub block_size: u16,
-    pub block_count: u16,
-    pub clock_counter: u64,
-    pub remaining_words: u16,
-    pub curr_addr: u32,
+    pub maddr: u32,
+    ctrl: ChanControl,
+    block: BlockCtrl,
 }
-
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum Direction {
-    ToRam = 0,
-    FromRam = 1
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize)]
-pub enum Sync {
-    Manual = 0,
-    Request = 1,
-    LinkedList = 2,
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
-pub enum Step {
-    Increment = 0,
-    Decrement = 1
-}
-
 impl Channel {
-
     pub fn new() -> Channel {
         Channel {
-            enable: false,
-            direction: Direction::ToRam,
-            step: Step::Increment,
-            sync: Sync::Manual,
-            trigger: false,
-            chop: false,
-            chop_dma_sz: 0,
-            chop_cpu_sz: 0,
-            dummy: 0,
-            base: 0,
-            block_size: 0,
-            block_count: 0,
-            clock_counter: 0,
-            remaining_words: 0,
-            curr_addr: 0,
+            maddr: 0,
+            ctrl: ChanControl(0),
+            block: BlockCtrl { size: 0, count: 0 },
         }
     }
-    pub fn base(&self) -> u32 {
-        self.base
-    }
-    pub fn set_base(&mut self, value: u32) {
-        self.base = value & 0xffffff;
-    }
-    pub fn sync(&self) -> Sync {
-        self.sync
-    }
-    pub fn step(&self) -> Step {
-        self.step
-    }
-    pub fn direction(&self) -> Direction {
-        self.direction
-    }
     pub fn block_control(&self) -> u32 {
-        let bs = self.block_size as u32;
-        let bc = self.block_count as u32;
+        let bs = self.block.size as u32;
+        let bc = self.block.count as u32;
         (bc << 16) | bs
     }
     pub fn set_block_control(&mut self, value: u32) {
-        self.block_size = value as u16;
-        self.block_count = (value >> 16) as u16;
+        self.block.size = value as u16;
+        self.block.count = (value >> 16) as u16;
     }
 
-
-    pub fn control(&self) -> u32 {
-        let mut r = 0;
-        
-        r |= self.direction as u32;
-        r |= (self.step as u32) << 1;
-        r |= (self.chop as u32) << 8;
-        r |= (self.sync as u32) << 9;
-        r |= (self.chop_dma_sz as u32) << 16;
-        r |= (self.chop_cpu_sz as u32) << 20;
-        r |= (self.enable as u32) << 24;
-        r |= (self.trigger as u32) << 28;
-        r |= (self.dummy as u32) << 29;
-
-        r
-    }
-
-    pub fn set_control(&mut self, val: u32) {
-        self.direction = if val & 1 != 0 { Direction::FromRam } else { Direction::ToRam };
-        self.step = if (val >> 1) & 1 != 0 { Step::Decrement } else { Step::Increment };
-        self.chop = (val >> 8) & 1 != 0;
-        self.sync = match (val >> 9) & 3 {
-            0 => Sync::Manual,
-            1 => Sync::Request,
-            2 => Sync::LinkedList,
-            n => panic!("unknown dma sync mode {n}")
-        };
-        self.chop_dma_sz = ((val >> 16) & 7) as u8;
-        self.chop_cpu_sz = ((val >> 20) & 7) as u8;
-        self.enable = (val >> 24) & 1 != 0;
-        self.trigger = (val >> 28) & 1 != 0;
-        self.dummy = ((val >> 29) & 3) as u8;
-    }
-
-    pub fn active(&self) -> bool {
-        let trigger = match self.sync {
-            Sync::Manual => self.trigger,
-            _ => true,
-        };
-        self.enable && trigger
-    }
-
-    pub fn transfer_size(&self) -> Option<u32> {
-        let bs = self.block_size as u32;
-        let bc = self.block_count as u32;
-
-        match self.sync {
-            Sync::Manual => Some(bs),
-            Sync::Request => Some(bc * bs),
-            Sync::LinkedList => None
-        }
-    }
-
-    pub fn done(&mut self) {
-        self.enable = false;
-        self.trigger = false;
-    }
-
+    // pub fn transfer_size(&self) -> Option<u32> {
+    //     let bs = self.block_size as u32;
+    //     let bc = self.block_count as u32;
+    //
+    //     match self.sync {
+    //         Sync::Manual => Some(bs),
+    //         Sync::Request => Some(bc * bs),
+    //         Sync::LinkedList => None
+    //     }
+    // }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -270,7 +254,7 @@ impl Port {
             4 => Port::Spu,
             5 => Port::Pio,
             6 => Port::Otc,
-            n => panic!("Unknown dma port {n}")
+            n => panic!("Unknown dma port {n}"),
         }
     }
 }
@@ -310,4 +294,132 @@ bitfield::bitfield! {
     otc_prio, _: 24,26;
     otc_enabled, _: 27;
     mem_access_prio, _: 28,30;
+}
+
+bitfield::bitfield! {
+    #[derive(Default, Serialize, Deserialize, Clone, Copy)]
+    struct ChanControl(u32);
+    impl Debug;
+    from into Direction, direction, set_direction: 0,0;
+    from into Step, addr_inc, set_addr_incr: 1,1;
+    from into Sync, sync_mode, set_sync_mode: 9,10;
+    chopping_dma, _: 16,18;
+    chopping_cpu, _: 20,22;
+    start, set_start: 24;
+    force_start, set_force_start: 28;
+    pause, _: 29;
+    snooping, _: 30;
+}
+
+impl ChanControl {
+    pub fn is_active(&self) -> bool {
+        (self.start() || self.force_start()) && !self.pause()
+    }
+    pub fn reset_active(&mut self) {
+        self.set_start(false);
+        self.set_force_start(false);
+    }
+}
+
+#[derive(Default, Serialize, Deserialize, Clone, Copy)]
+struct BlockCtrl {
+    size: u16,
+    count: u16,
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Debug)]
+pub enum Direction {
+    ToRam = 0,
+    FromRam = 1,
+}
+
+impl From<u32> for Direction {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => Self::ToRam,
+            1 => Self::FromRam,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl From<Direction> for u32 {
+    fn from(value: Direction) -> Self {
+        match value {
+            Direction::ToRam => 0,
+            Direction::FromRam => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+pub enum Sync {
+    Manual = 0,
+    Request = 1,
+    LinkedList = 2,
+}
+
+impl From<u32> for Sync {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => Self::Manual,
+            1 => Self::Request,
+            2 => Self::LinkedList,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl From<Sync> for u32 {
+    fn from(value: Sync) -> Self {
+        match value {
+            Sync::Manual => 0,
+            Sync::Request => 1,
+            Sync::LinkedList => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Debug)]
+pub enum Step {
+    Increment = 0,
+    Decrement = 1,
+}
+
+impl From<u32> for Step {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => Self::Increment,
+            1 => Self::Decrement,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl From<Step> for u32 {
+    fn from(value: Step) -> Self {
+        match value {
+            Step::Increment => 0,
+            Step::Decrement => 1,
+        }
+    }
+}
+
+bitfield::bitfield! {
+    #[derive(Default, Serialize, Deserialize, Clone)]
+    struct InterruptReg(u32);
+    impl Debug;
+    irq_mode, _: 0,6;
+    bus_error, _: 15;
+    irq_mask, _: 16,22;
+    master_enable, _: 23;
+    irq_flags, set_irq_flags: 24,30;
+    master_irq, set_master_irq: 31;
+}
+
+impl InterruptReg {
+    fn update_master_irq(&mut self) {
+        let irq_pending = self.irq_flags() & self.irq_mask() != 0;
+        self.set_master_irq(self.bus_error() || (self.master_enable() && irq_pending));
+    }
 }

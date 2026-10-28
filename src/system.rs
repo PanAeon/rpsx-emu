@@ -180,7 +180,7 @@ impl System {
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA read32 {:x}", addr);
-            return self.dma_reg(offset);
+            return self.dma.load(offset)
         }
         if let Some(offset) = map::SCRATCHPAD.contains(address) {
             return self.scratchpad.load(offset);
@@ -242,7 +242,7 @@ impl System {
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA store32 {:x} = {:x}", addr, value);
-            return self.set_dma_reg(offset, value);
+            return self.dma.store(offset, value);
         }
         if let Some(offset) = map::SCRATCHPAD.contains(address) {
             return self.scratchpad.store(offset, value);
@@ -310,72 +310,8 @@ impl System {
         panic!("Unhandled store{:?} address: {:08x}", T::width(), address)
     }
 
-    pub fn dma_reg<T: Addressable>(&self, offset: u32) -> T {
-        // if T::width() != AccessWidth::Word {
-        //     println!("Unhandled {:?} DMA load", T::width())
-        // }
-        let align = offset & 3;
-        let offset = offset & !3;
-        let major = (offset & 0x70) >> 4;
-        let minor = offset & 0xf;
-        let r = match major {
-            0..7 => {
-                let channel = self.dma.channel(Port::from_index(major as u8));
-                match minor {
-                    0 => channel.base(),
-                    4 => channel.block_control(),
-                    8 => channel.control(),
-                    _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset),
-                }
-            }
-            7 => match minor {
-                0 => self.dma.control(),
-                4 => self.dma.interrupt(),
-                _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset),
-            },
-            _ => panic!("Unhandled DMA read at {:x} offset", offset),
-        };
-        T::from_u32(r >> (align * 8))
-    }
-
-    pub fn set_dma_reg<T: Addressable>(&mut self, offset: u32, val: T) {
-        // if T::width() != AccessWidth::Word {
-        //     panic!("Unhandled {:?} DMA store", T::width())
-        // }
-        let align = offset & 3;
-        let offset = offset & !3;
-        let value = val.as_u32();
-        let value = value << (align * 8);
-        let major = (offset & 0x70) >> 4;
-        let minor = offset & 0xf;
-        match major {
-            0..7 => {
-                let port = Port::from_index(major as u8);
-                let channel = self.dma.channel_mut(port);
-                match minor {
-                    0 => channel.set_base(value),
-                    4 => channel.set_block_control(value),
-                    8 => self.set_channel_control(port, value),
-                    _ => panic!("Unhandled DMA read at {:x} offset", offset),
-                }
-                // if channel.active() { Some(port) } else { None }
-            }
-            7 => {
-                match minor {
-                    0 => self.dma.set_control(value),
-                    4 => crate::dma::Dma::set_interrupt(self, value),
-                    _ => panic!("Unhandled DMA read at {:x} offset", offset),
-                }
-                // None
-            }
-            _ => panic!("Unhandled DMA read at {:x} offset", offset),
-        };
-        // if let Some(port) = active_port {
-        //     self.do_dma(port, 64)
-        // }
-    }
-
     pub fn set_channel_control(&mut self, port: Port, value: u32) {
+
         let mut ctrl = ChannelControl(value);
         if port == Port::Otc {
             ctrl.0 &= 0x51_000_000;

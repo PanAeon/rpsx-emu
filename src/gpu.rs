@@ -1332,6 +1332,17 @@ impl Gpu {
     }
 }
 
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        let sender = self.renderer_sender.take().unwrap();
+        sender.send(RendererMsg::PoisonPill);
+        let handler = self.renderer_handle.take().unwrap();
+        handler.join();
+        // SAFETY: `self` is pinned till after dropped.
+        // unsafe { Drop::pin_drop(std::pin::Pin::new_unchecked(self)) }
+    }
+}
+
 const FIVE_BIT_TO_8BIT: [u8; 32] = {
     let mut table = [0u8; 32];
     let mut i = 0;

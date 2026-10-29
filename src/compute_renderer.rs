@@ -437,6 +437,9 @@ impl ComputeRenderer {
                         renderer.drawing_area_top_left = *top_left;
                         renderer.drawing_area_bottom_right = *bottom_right;
                     }
+                    RendererMsg::PoisonPill => {
+                        return;
+                    }
                 }
             }
         });
@@ -467,7 +470,7 @@ impl ComputeRenderer {
     pub fn flush(&mut self) {
         if !self.vertices.is_empty() {
             {
-                let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
+                let width = self.drawing_area_bottom_right.0.saturating_sub(self.drawing_area_top_left.0) + 1;
                 let mut width_bin_x = width / 128;
                 if width_bin_x * 128 < width {
                     width_bin_x += 1;

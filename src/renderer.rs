@@ -77,6 +77,7 @@ pub enum RendererMsg {
         top_left: (u16, u16),
         bottom_right: (u16, u16),
     },
+    PoisonPill,
 }
 pub enum RendererResponse {
     FBUpdated {
@@ -380,6 +381,9 @@ impl Renderer {
                     }
                     RendererMsg::DrawingAreaChange {..}  => {
                         // ignore for now..
+                    }
+                    RendererMsg::PoisonPill => {
+                        return;
                     }
                 }
                 // match msg {

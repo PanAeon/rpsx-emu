@@ -61,13 +61,16 @@ impl Mdec {
         }
     }
 
+    // pub fn dma_can_read(&self) -> bool {
+    //     self.control.enable_data_out() && !self.output_fifo.is_empty()
+    // }
+    // pub fn dma_can_write(&self) -> bool {
+        // self.control.enable_data_in() && self.output_fifo.is_empty()
     pub fn dma_can_write(&self) -> bool {
-        // return true;
        self.control.enable_data_in() && self.output_fifo.is_empty()
     }
 
     pub fn dma_can_read(&self) -> bool {
-        // return true;
         self.control.enable_data_out() && !self.output_fifo.is_empty()
     }
 
@@ -351,8 +354,8 @@ bitfield::bitfield! {
     _, set_data_out_fifo_empty: 31;
     _, set_data_in_fifo_full: 30;
     _, set_command_busy: 29;
-    _, set_data_in_request: 28;
-    _, set_data_out_request: 27;
+    data_in_request, set_data_in_request: 28;
+    data_out_request, set_data_out_request: 27;
     data_output_depth, set_data_output_depth: 26,25;
     data_output_signed, set_data_output_signed: 24;
     _, set_data_output_bit15: 23;

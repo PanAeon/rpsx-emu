@@ -1,23 +1,9 @@
 use serde::Serialize;
 
 use crate::{
-    bios::Bios,
-    block_cache::BlockCache,
-    cdrom::CDRom,
-    dma::{
-        Direction::{self, FromRam},
-        Dma, Port, Step, Sync,
-    },
-    dynarec::Dynarec,
-    gpu::Gpu,
-    irq::InterruptController,
-    mdec::Mdec,
-    ram::Ram,
-    scheduler::Scheduler,
-    scratchpad::Scratchpad,
-    sio::Sio,
-    spu::Spu,
-    timers::Timers,
+    bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{
+        self, Direction, Dma, Port, Step, Sync,
+    }, dynarec::Dynarec, gpu::Gpu, irq::InterruptController, mdec::{self, Mdec}, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers,
 };
 
 pub mod map {
@@ -194,7 +180,7 @@ impl System {
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA read32 {:x}", addr);
-            return self.dma_reg(offset);
+            return dma::load(self, offset)
         }
         if let Some(offset) = map::SCRATCHPAD.contains(address) {
             return self.scratchpad.load(offset);
@@ -236,8 +222,8 @@ impl System {
         // }
         println!("Unhandled load{:?} address: {:08x}", T::width(), address);
         println!("pc is 0x{:X}", self.cpu.regs.pc);
-        panic!("Unhandled load{:?} address: {:08x}", T::width(), address);
-        // T::from_u32(0x0)
+        // panic!("Unhandled load{:?} address: {:08x}", T::width(), address);
+        T::from_u32(0x0)
     }
 
     pub fn store<T: Addressable>(&mut self, addr: u32, value: T) {
@@ -256,7 +242,7 @@ impl System {
         }
         if let Some(offset) = map::DMA.contains(address) {
             // println!("DMA store32 {:x} = {:x}", addr, value);
-            return self.set_dma_reg(offset, value);
+            return dma::store(self, offset, value);
         }
         if let Some(offset) = map::SCRATCHPAD.contains(address) {
             return self.scratchpad.store(offset, value);
@@ -324,152 +310,53 @@ impl System {
         panic!("Unhandled store{:?} address: {:08x}", T::width(), address)
     }
 
-    pub fn dma_reg<T: Addressable>(&self, offset: u32) -> T {
-        // if T::width() != AccessWidth::Word {
-        //     println!("Unhandled {:?} DMA load", T::width())
-        // }
-        let align = offset & 3;
-        let offset = offset & !3;
-        let major = (offset & 0x70) >> 4;
-        let minor = offset & 0xf;
-        let r = match major {
-            0..7 => {
-                let channel = self.dma.channel(Port::from_index(major as u8));
-                match minor {
-                    0 => channel.base(),
-                    4 => channel.block_control(),
-                    8 => channel.control(),
-                    _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset),
-                }
-            }
-            7 => match minor {
-                0 => self.dma.control(),
-                4 => self.dma.interrupt(),
-                _ => panic!("Unhandled DMA read at {:x} offset {major}.{minor}", offset),
-            },
-            _ => panic!("Unhandled DMA read at {:x} offset", offset),
-        };
-        T::from_u32(r >> (align * 8))
-    }
+    // pub fn set_channel_control(&mut self, port: Port, value: u32) {
+    //
+    //     let mut ctrl = ChannelControl(value);
+    //     if port == Port::Otc {
+    //         ctrl.0 &= 0x51_000_000;
+    //         ctrl.0 |= 2;
+    //     }
+    //     let channel = self.dma.channel_mut(port);
+    //     let was_enabled = channel.enable;
+    //     let is_enabled = ctrl.is_enabled();
+    //     if was_enabled ^ is_enabled {
+    //         // Channel was started or stopped
+    //         if is_enabled {
+    //             channel.set_control(ctrl.0);
+    //             self.start_dma(port);
+    //         } else {
+    //             channel.enable = false;
+    //             self.run_channel(port, 128 * 16);
+    //             self.dma.channel_mut(port).set_control(ctrl.0);
+    //             // channel.set_control(ctrl.0);
+    //         }
+    //     } else {
+    //         channel.set_control(ctrl.0);
+    //         // psx.dma[port].control = ctrl;
+    //     }
+    // }
 
-    pub fn set_dma_reg<T: Addressable>(&mut self, offset: u32, val: T) {
-        let align = offset & 3;
-        let offs = offset & !3;
-        let value = val.as_u32();
-        let value = value << (align * 8);
-        let major = (offs & 0x70) >> 4;
-        let minor = offs & 0xf;
-        // if T::width() != AccessWidth::Word && major == 7{
-        //     panic!("Unhandled {:?} DMA store, major: {}, minor: {}", T::width(), major, minor)
-        // }
-        match major {
-            0..7 => {
-                let port = Port::from_index(major as u8);
-                let channel = self.dma.channel_mut(port);
-                match minor {
-                    0 => channel.set_base(
-                        Self::partial_write(channel.base, offset, val)),
-                    4 => channel.set_block_control(Self::partial_write(channel.block_control(), offset, val)),
-                    8 => {
-                        let ctrl = channel.control();
-                        self.set_channel_control(port, 
-                          Self::partial_write(ctrl, offset, val));
+    // pub fn dma_event(system: &mut System) {
+    //     // continue where we left off
+    //     // println!("dma!");
+    //     system.run_channel(Port::Otc, 64); // actually ellapsed
+    //     system.run_channel(Port::Pio, 64); // actually ellapsed
+    //     system.run_channel(Port::CdRom, 64); // actually ellapsed
+    //     system.run_channel(Port::Gpu, 64); // actually ellapsed
+    //     system.run_channel(Port::Spu, 64); // actually ellapsed
+    //     system.run_channel(Port::MdecIn, 64); // actually ellapsed
+    //     system.run_channel(Port::MdecOut, 64); // actually ellapsed
+    //
+    // }
 
-                        let channel = self.dma.channel_mut(port);
-                        println!("chan: {}, port: {:?}, ctrl transfer mode: {:?}", major, port, channel.sync);
-                    },
-
-                    _ => panic!("Unhandled DMA read at {:x} offset", offset),
-                }
-                // if channel.active() { Some(port) } else { None }
-            }
-            7 => {
-                match minor {
-                    0 => {
-                        let ctrl = self.dma.control();
-                        self.dma.set_control(
-                          Self::partial_write(ctrl, offset, val));
-                    },
-                    4 => {
-                        let interrupt = self.dma.interrupt();
-                        crate::dma::Dma::set_interrupt(self,
-                        Self::partial_write(interrupt, offset, val))
-                    },
-                    _ => panic!("Unhandled DMA read at {:x} offset", offset),
-                }
-                // None
-            }
-            _ => panic!("Unhandled DMA read at {:x} offset", offset),
-        };
-        // if let Some(port) = active_port {
-        //     self.do_dma(port, 64)
-        // }
-    }
-
-    pub fn partial_write<T:Addressable>(base: u32, addr: u32, value: T) -> u32 {
-        match T::width() {
-            AccessWidth::Byte => {
-                let align = addr & 3;
-                let shift = align * 8;
-                let mask = 0xff_u32 << shift;
-                (base & !mask) | (value.as_u32() << shift)
-            },
-            AccessWidth::Halfword => {
-                let align = addr & 2;
-                let shift = align * 8;
-                let mask = 0xffff_u32 << shift;
-                (base & !mask) | (value.as_u32() << shift)
-            },
-            AccessWidth::Word => value.as_u32(),
-        }
-    }
-
-    pub fn set_channel_control(&mut self, port: Port, value: u32) {
-        let mut ctrl = ChannelControl(value);
-        if port == Port::Otc {
-            ctrl.0 &= 0x51_000_000;
-            ctrl.0 |= 2;
-        }
-        let channel = self.dma.channel_mut(port);
-        let was_enabled = channel.enable;
-        let is_enabled = ctrl.is_enabled();
-        if was_enabled ^ is_enabled {
-            // Channel was started or stopped
-            if is_enabled {
-                channel.set_control(ctrl.0);
-                self.start_dma(port);
-            } else {
-                channel.enable = false;
-                self.run_channel(port, 128 * 16);
-                self.dma.channel_mut(port).set_control(ctrl.0);
-                // channel.set_control(ctrl.0);
-            }
-        } else {
-            channel.set_control(ctrl.0);
-            // psx.dma[port].control = ctrl;
-        }
-    }
-
-    pub fn dma_event(system: &mut System) {
-        // continue where we left off
-        // println!("dma!");
-        system.run_channel(Port::Gpu, 128); // actually ellapsed
-        system.run_channel(Port::Spu, 128); // actually ellapsed
-        system.run_channel(Port::Pio, 128); // actually ellapsed
-        system.run_channel(Port::Otc, 128); // actually ellapsed
-        system.run_channel(Port::CdRom, 128); // actually ellapsed
-        system.run_channel(Port::MdecOut, 128); // actually ellapsed
-        system.run_channel(Port::MdecIn, 128); // actually ellapsed
-
-    }
-
-    pub fn start_dma(&mut self, port: Port) {
-        let channel = self.dma.channel_mut(port);
-        channel.remaining_words = 0;
-        channel.clock_counter = 0;
-        // continue where we left off
-        self.run_channel(port, 64);
-    }
+    // pub fn start_dma(&mut self, port: Port) {
+    //     let channel = self.dma.channel_mut(port);
+    //     channel.remaining_words = 0;
+    //     channel.clock_counter = 0;
+    //     // continue where we left off
+    //     self.run_channel(port, 64);
+    // }
 
     // pub fn do_dma(&mut self, port: Port, cycles: u64) {
     // match self.dma.channel(port).sync() {
@@ -477,17 +364,17 @@ impl System {
     //     self.do_dma_block(port, cycles)
     // }
     // }
-    pub fn run_channel(&mut self, port: Port, cycles: u64) {
+/*    pub fn run_channel(&mut self, port: Port, cycles: u64) {
         self.dma.channel_mut(port).clock_counter += cycles;
         let channel = self.dma.channel(port);
         let direction = channel.direction();
         let sync_mode = channel.sync();
 
-        let increment = match channel.step() {
-            Step::Increment => 4,
-            Step::Decrement => -4i32 as u32,
-        };
-        let mut addr = channel.base();
+        // let increment = match channel.step() {
+        //     Step::Increment => 4,
+        //     Step::Decrement => -4i32 as u32,
+        // };
+        // let addr = channel.base();
 
         while self.dma.channel_mut(port).clock_counter > 0 {
             let mut do_copy = true;
@@ -564,7 +451,7 @@ impl System {
                     unimplemented!("DMA address overflow");
                 }
 
-                let delay = if channel.direction == FromRam {
+                let delay = if channel.direction == Direction::FromRam {
                     let v = self.ram.load::<u32>(cur_addr);
                     self.port_store(port, v)
                 } else {
@@ -679,84 +566,61 @@ impl System {
             remsz -= 1;
         }
         Dma::done(self, port);*/
-    }
+    }*/
 
-    pub fn port_store(&mut self, port: Port, v: u32) -> u64 {
-        match port {
-            Port::MdecIn => {
-                self.mdec.store(0, v);
-                0
-            }
-            Port::Gpu => {
-                self.gpu.gp0(v);
-                0
-            }
-            Port::Spu => {
-                self.spu.ram_write::<4>(v);
-                47
-            }
-            _ => unimplemented!("DMA port store"),
-        }
-    }
-    pub fn port_load(&mut self, port: Port) -> (u32, u32, u64) {
-        let mut offset = 0;
-        let mut delay = 0;
-
-        let v = match port {
-            Port::Otc => {
-                let channel = self.dma.channel(port);
-
-                if channel.remaining_words == 1 {
-                    // Last entry contains the end of table marker
-                    0xff_ffff
-                } else {
-                    // Pointer to the previous entry
-                    channel.curr_addr.wrapping_sub(4) & 0x1f_ffff
-                }
-            }
-            // XXX latency taken from mednafen
-            Port::CdRom => {
-                delay = 8;
-                // println!("dma load from cd");
-                self.cdrom.load::<u32>(2)
-                // cd::dma_load(psx)
-            }
-            Port::Spu => self.spu.ram_read::<4>(),
-            Port::MdecOut => {
-                let v = self.mdec.load::<u32>(0);
-                // offset = off;
-                v
-            }
-            Port::Gpu => self.gpu.read(),
-            _ => unimplemented!("DMA port load {:?}", port),
-        };
-
-        (v, offset, delay)
-    }
+    // pub fn port_store(&mut self, port: Port, v: u32) -> u64 {
+    //     match port {
+    //         Port::MdecIn => {
+    //             self.mdec.store(0, v);
+    //             0
+    //         }
+    //         Port::Gpu => {
+    //             self.gpu.gp0(v);
+    //             0
+    //         }
+    //         Port::Spu => {
+    //             self.spu.ram_write::<4>(v);
+    //             47
+    //         }
+    //         _ => unimplemented!("DMA port store"),
+    //     }
+    // }
+    // pub fn port_load(&mut self, port: Port) -> (u32, u32, u64) {
+    //     let offset = 0;
+    //     let mut delay = 0;
+    //
+    //     let v = match port {
+    //         Port::Otc => {
+    //             let channel = self.dma.channel(port);
+    //
+    //             if channel.remaining_words == 1 {
+    //                 // Last entry contains the end of table marker
+    //                 0xff_ffff
+    //             } else {
+    //                 // Pointer to the previous entry
+    //                 channel.curr_addr.wrapping_sub(4) & 0x1f_ffff
+    //             }
+    //         }
+    //         // XXX latency taken from mednafen
+    //         Port::CdRom => {
+    //             delay = 8;
+    //             self.cdrom.load::<u32>(2)
+    //             // cd::dma_load(psx)
+    //         }
+    //         Port::Spu => self.spu.ram_read::<4>(),
+    //         Port::MdecOut => {
+    //             let v = self.mdec.load::<u32>(0);
+    //             // offset = off;
+    //             v
+    //         }
+    //         Port::Gpu => self.gpu.read(),
+    //         _ => unimplemented!("DMA port load {:?}", port),
+    //     };
+    //
+    //     (v, offset, delay)
+    // }
 
     // Check if the device targeted by `port` can either be read from of written to
-    fn can_run(&mut self, port: Port, write: bool) -> bool {
-        if write {
-            match port {
-                Port::Spu => true,
-                Port::Gpu => true, //gpu::dma_can_write(psx),
-                Port::MdecIn => self.mdec.dma_can_write(),
-                _ => unimplemented!("Can write {:?}?", port),
-            }
-        } else {
-            match port {
-                Port::Spu => true,
-                // XXX This is from mednafen but I'm not entirely sure why this doesn't simply return
-                // `true`
-                Port::Otc => true, //psx.dma[port].control.is_started(),
-                // XXX Does this make sense? Can the CDC block the DMA if no sector has been read?
-                Port::CdRom => true,
-                Port::MdecOut => self.mdec.dma_can_read(),
-                Port::Gpu => true,
-                _ => unimplemented!("Can read {:?}?", port),
-            }
-        }
-    }
     /*pub fn do_dma_linked_list(&mut self, port: Port, cycles: u64) {
         let channel = self.dma.channel_mut(port);
         let mut addr = channel.base() & 0x1ffffc;

@@ -484,7 +484,7 @@ impl Spu {
 
         let irq_line = spu.memory.irq.get();
         if !spu.last_irq_line && irq_line && spu.control.irq9_enabled() && spu.control.enabled() {
-            system.irqctl.status.set_spu(true);
+            system.irqctl.set_spu();
         }
         spu.last_irq_line = irq_line;
     }

@@ -98,7 +98,7 @@ fn main() {
     run(cli).unwrap();
 
     // fastmem_proto::run();
-    println!("ok");
+    println!("goodbye!");
 }
 
 const fn mat4_const_from_rows(m: [[f32; 4]; 4]) -> Mat4<f32> {
@@ -1007,7 +1007,7 @@ impl State {
         self.update_gamepad();
         if self.paused {
             println!("current pc: 0x{:X}", self.system.cpu.regs.pc);
-            self.system.irqctl.status.set_dma(false);
+            // self.system.irqctl.status.set_dma(false);
             // self.cpu.system.irqctl.status.set_ctl_mem(true);
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;
@@ -1062,7 +1062,7 @@ impl State {
                             .render_fb(self.framebuffer.clone(), self.display_vram);
                         self.update_vertex_buffer_if_needed(w, h, sx, sy, depth, false);
                         // if self.cpu.system.gpu.interrupt == false {
-                        self.system.irqctl.status.set_vblank(true);
+                        self.system.irqctl.set_vblank();
                         // }
                         timers::Timers::enter_vsync(&mut self.system);
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::EnterVSync).expect("ok");
@@ -1091,14 +1091,14 @@ impl State {
                         timers::Timers::exit_hsync(&mut self.system);
                     }
                     scheduler::Event::CDRomResultIrq(resp) => {
-                        cdrom::CDRom::process_response(&mut self.system, resp);
+                        // cdrom::CDRom::process_response(&mut self.system, resp);
                     }
                     scheduler::Event::Timer(i) => {
                         timers::Timers::process_interrupt(&mut self.system, i)
                     }
                     scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.system),
                     scheduler::Event::DsrOff => self.system.sio.turn_dsr_off(),
-                    scheduler::Event::Dma => system::System::dma_event(&mut self.system),
+                    scheduler::Event::Dma => {}//system::System::dma_event(&mut self.system),
                 }
             }
             // self.update_interpreter();
@@ -1169,6 +1169,7 @@ impl State {
             //     // self.interpreter.check_for_tty_output();
             // }
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
+            cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
             self.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {

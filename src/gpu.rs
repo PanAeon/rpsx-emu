@@ -71,8 +71,8 @@ pub struct Gpu {
     pub renderer_receiver: Option<Receiver<RendererResponse>>,
     #[serde(skip)]
     pub renderer_handle: Option<JoinHandle<()>>,
-    #[serde(with="serde_bytes")]
-    vram: Box<[u8]>
+    #[serde(with = "serde_bytes")]
+    vram: Box<[u8]>,
 }
 
 impl Gpu {
@@ -131,7 +131,7 @@ impl Gpu {
             renderer_sender: Some(renderer_sender),
             renderer_receiver: Some(renderer_receiver),
             renderer_handle: Some(renderer_handle),
-            vram: vec!(0; 2 * 512 * 1024).into_boxed_slice()
+            vram: vec![0; 2 * 512 * 1024].into_boxed_slice(),
         }
     }
 
@@ -318,7 +318,7 @@ impl Gpu {
             self.gp0_command.clear();
         }
         self.gp0_words_remaining -= 1;
-                let ctx = self.rendering_ctx();
+        let ctx = self.rendering_ctx();
         match &mut self.gp0_mode {
             Gp0Mode::Command => {
                 self.gp0_command.push_word(val);
@@ -334,7 +334,9 @@ impl Gpu {
                 data.push(val);
                 // self.process_cpu_to_vram_copy(val, top_left, resolution, current_row, current_col);
                 if self.gp0_words_remaining == 0 {
-                    self.renderer_sender.as_mut().unwrap()
+                    self.renderer_sender
+                        .as_mut()
+                        .unwrap()
                         .send(RendererMsg::CpuToVramCopy {
                             top_left: *top_left,
                             size: *resolution,
@@ -423,12 +425,10 @@ impl Gpu {
         let side = Self::gp0_vertex(self.gp0_command[2]);
 
         // let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
-            .send(RendererMsg::FillRect {
-                v,
-                side,
-                c: color,
-            })
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
+            .send(RendererMsg::FillRect { v, side, c: color })
             .expect("ok");
     }
     pub fn gp0_line_mono<const SEMI_TRANS: bool>(&mut self) {
@@ -437,7 +437,9 @@ impl Gpu {
         let v1 = Self::gp0_vertex(self.gp0_command[2]);
 
         let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::DrawLine {
                 v0,
                 v1,
@@ -457,7 +459,9 @@ impl Gpu {
         let v1 = Self::gp0_vertex(self.gp0_command[3]);
 
         let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::DrawLine {
                 v0,
                 v1,
@@ -476,7 +480,9 @@ impl Gpu {
         let v = Self::gp0_vertex(self.gp0_command[1]);
 
         let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::DrawRectangle {
                 v,
                 side: Vertex { x: SIDE, y: SIDE },
@@ -499,7 +505,9 @@ impl Gpu {
         let side = Self::gp0_vertex(self.gp0_command[2]);
 
         let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::DrawRectangle {
                 v,
                 side,
@@ -522,7 +530,9 @@ impl Gpu {
         let v = Self::gp0_vertex(self.gp0_command[1]);
         let [_u, _v, clut] = Self::gp0_page_clut(self.gp0_command[2]);
         let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::DrawRectangle {
                 v,
                 side: Vertex { x: SIDE, y: SIDE },
@@ -552,7 +562,9 @@ impl Gpu {
         let side = Self::gp0_vertex(self.gp0_command[3]);
 
         let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::DrawRectangle {
                 v,
                 side,
@@ -579,7 +591,9 @@ impl Gpu {
         if QUAD {
             let v3 = Self::gp0_vertex(self.gp0_command[4]);
             let ctx = self.rendering_ctx();
-            self.renderer_sender.as_mut().unwrap()
+            self.renderer_sender
+                .as_mut()
+                .unwrap()
                 .send(RendererMsg::DrawPolygon {
                     cs: [color; 4],
                     vs: [v0, v1, v2, v3],
@@ -596,7 +610,9 @@ impl Gpu {
                 .expect("ok");
         } else {
             let ctx = self.rendering_ctx();
-            self.renderer_sender.as_mut().unwrap()
+            self.renderer_sender
+                .as_mut()
+                .unwrap()
                 .send(RendererMsg::DrawPolygon {
                     cs: [color; 4],
                     vs: [v0, v1, v2, v2],
@@ -635,7 +651,9 @@ impl Gpu {
             // let mut vs1 = [v1, v2, v3];
             // let mut cs1 = [c1, c2, c3];
             let ctx = self.rendering_ctx();
-            self.renderer_sender.as_mut().unwrap()
+            self.renderer_sender
+                .as_mut()
+                .unwrap()
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v3],
                     cs: [c0, c1, c2, c3],
@@ -656,7 +674,9 @@ impl Gpu {
         } else {
             let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
             let ctx = self.rendering_ctx();
-            self.renderer_sender.as_mut().unwrap()
+            self.renderer_sender
+                .as_mut()
+                .unwrap()
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v2],
                     cs: [c0, c1, c2, c2],
@@ -691,7 +711,9 @@ impl Gpu {
             let [_u3, _v3, _] = Self::gp0_page_clut(self.gp0_command[8]);
             let uv1 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u3, _v3]];
             let ctx = self.rendering_ctx();
-            self.renderer_sender.as_mut().unwrap()
+            self.renderer_sender
+                .as_mut()
+                .unwrap()
                 .send(RendererMsg::DrawPolygon {
                     cs: [color; 4],
                     clut,
@@ -710,7 +732,9 @@ impl Gpu {
         } else {
             let uv0 = [[_u0, _v0], [_u1, _v1], [_u2, _v2], [_u2, _v2]];
             let ctx = self.rendering_ctx();
-            self.renderer_sender.as_mut().unwrap()
+            self.renderer_sender
+                .as_mut()
+                .unwrap()
                 .send(RendererMsg::DrawPolygon {
                     cs: [color; 4],
                     clut,
@@ -740,7 +764,9 @@ impl Gpu {
             let c3 = Self::gp0_colour(self.gp0_command[6]);
             let v3 = Self::gp0_vertex(self.gp0_command[7]);
             let ctx = self.rendering_ctx();
-            self.renderer_sender.as_mut().unwrap()
+            self.renderer_sender
+                .as_mut()
+                .unwrap()
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v3],
                     cs: [c0, c1, c2, c3],
@@ -758,7 +784,9 @@ impl Gpu {
             // self.draw_triangle_shaded::<SEMI_TRANS>(&mut [v1, v2, v3], &mut [c1, c2, c3]);
         } else {
             let ctx = self.rendering_ctx();
-            self.renderer_sender.as_mut().unwrap()
+            self.renderer_sender
+                .as_mut()
+                .unwrap()
                 .send(RendererMsg::DrawPolygon {
                     vs: [v0, v1, v2, v2],
                     cs: [c0, c1, c2, c2],
@@ -781,8 +809,15 @@ impl Gpu {
         let size = Self::gp0_vertex(self.gp0_command[3]);
 
         let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
-            .send(RendererMsg::Vram2VramBlit { src, dst, size, ctx})
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
+            .send(RendererMsg::Vram2VramBlit {
+                src,
+                dst,
+                size,
+                ctx,
+            })
             .expect("ok");
     }
 
@@ -815,7 +850,9 @@ impl Gpu {
     }
 
     pub fn save_vram(&mut self) {
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::VramToCpuCopy {
                 top_left: (0, 0),
                 size: (1024 as u16, 512 as u16),
@@ -831,17 +868,19 @@ impl Gpu {
         // self.vram = data.into_boxed_slice();
     }
 
-    pub fn load_vram(&mut self)  {
+    pub fn load_vram(&mut self) {
         let vram: &[u32] = bytemuck::cast_slice(&self.vram);
         let mut data = vec![];
         data.extend_from_slice(vram);
-                let ctx = self.rendering_ctx();
-        self.renderer_sender.as_mut().unwrap()
+        let ctx = self.rendering_ctx();
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::CpuToVramCopy {
                 top_left: (0, 0),
                 size: (1024, 512),
                 data: data,
-                ctx
+                ctx,
             })
             .expect("ok");
     }
@@ -869,7 +908,9 @@ impl Gpu {
         let imgsize = (imgsize + 1) & !1;
         self.gp0_words_remaining = imgsize / 2;
 
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::VramToCpuCopy {
                 top_left: (x, y),
                 size: (width as u16, height as u16),
@@ -915,7 +956,9 @@ impl Gpu {
         self.texture_window_y_offset = ((val >> 15) & 0x1f) as u8;
     }
     pub fn send_drawing_area_change(&mut self) {
-        self.renderer_sender.as_mut().unwrap()
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
             .send(RendererMsg::DrawingAreaChange {
                 top_left: (self.drawing_area_left, self.drawing_area_top),
                 bottom_right: (self.drawing_area_right, self.drawing_area_bottom),
@@ -961,9 +1004,13 @@ impl Gpu {
             0x06 => self.gp1_display_horizontal_range(val),
             0x07 => self.gp1_display_vertical_range(val),
             0x08 => self.gp1_display_mode(val),
-            0x09 => {println!("gp1 0x09 ignored")},
+            0x09 => {
+                println!("gp1 0x09 ignored")
+            }
             0x10 => self.gp1_get_gpu_info(val),
-            0x20 => {println!("0x20 gp1 ignored")}
+            0x20 => {
+                println!("0x20 gp1 ignored")
+            }
             _ => panic!("Unhandled GP1 command {:08X} opcode: {:02X}", val, opcode),
         }
     }
@@ -1227,7 +1274,9 @@ impl Gpu {
         //     std::thread::sleep_ms(1000);
         // }
         let ctx = self.rendering_ctx();
-        self.renderer_sender.as_ref().unwrap()
+        self.renderer_sender
+            .as_ref()
+            .unwrap()
             .send(RendererMsg::RenderFB {
                 framebuffer: framebuffer,
                 full_ram: display_vram,
@@ -1334,10 +1383,13 @@ impl Gpu {
 
 impl Drop for Gpu {
     fn drop(&mut self) {
-        let sender = self.renderer_sender.take().unwrap();
-        sender.send(RendererMsg::PoisonPill);
-        let handler = self.renderer_handle.take().unwrap();
-        handler.join();
+        let sender = self.renderer_sender.take();
+        if let Some(sender) = sender {
+            sender.send(RendererMsg::PoisonPill).expect("ok");
+            let handler = self.renderer_handle.take().unwrap();
+            handler.join().expect("ok");
+        }
+
         // SAFETY: `self` is pinned till after dropped.
         // unsafe { Drop::pin_drop(std::pin::Pin::new_unchecked(self)) }
     }
@@ -2368,10 +2420,10 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         fifo_len: 1,
         out_of_band: false,
     },
-                // 0x7C => (3, ),
-                // 0x7D => (3, ),
-                // 0x7E => (3, ),
-                // 0x7F => (3, ),
+    // 0x7C => (3, ),
+    // 0x7D => (3, ),
+    // 0x7E => (3, ),
+    // 0x7F => (3, ),
     Command {
         handler: Gpu::gp0_rect_texture_fixed::<16, OPAQUE, BLEND>,
         len: 3,

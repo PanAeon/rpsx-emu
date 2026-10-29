@@ -307,7 +307,7 @@ impl System {
         //     return;
         // }
 
-        panic!("Unhandled store{:?} address: {:08x}", T::width(), address)
+        panic!("Unhandled store{:?} address: {:08x}; pc: 0x{:x}", T::width(), address, self.cpu.regs.pc)
     }
 
     // pub fn set_channel_control(&mut self, port: Port, value: u32) {

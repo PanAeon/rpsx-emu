@@ -1,6 +1,7 @@
 
 use cpal::traits::StreamTrait;
 use gilrs::Axis;
+use log::info;
 use wgpu_profiler::GpuProfiler;
 // use env_logger::fmt::style::Color;
 use std::io::Read;
@@ -260,7 +261,7 @@ impl State {
 
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
         for a in adapters {
-            println!("available: {}", a.get_info().name);
+            info!("available: {}", a.get_info().name);
         }
 
         let adapter = instance
@@ -273,7 +274,7 @@ impl State {
             })
             .await?;
 
-        println!("Selected adapter name: {}", adapter.get_info().name);
+        info!("Selected adapter name: {}", adapter.get_info().name);
 
         let limits = wgpu::Limits::default().using_resolution(adapter.limits());
         // limits.max_texture_dimension_2d *= 2;
@@ -621,7 +622,7 @@ impl State {
         let core_ids = core_affinity::get_core_ids().unwrap();
         let res = core_affinity::set_for_current(core_ids[0]);
         if res {
-            println!("main thread pinned to 0");
+            info!("main thread pinned to 0");
         }
 
         let (audio_stream, audio_sender) = crate::audio::build_audio_stream()?;
@@ -689,7 +690,7 @@ impl State {
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
-            println!("{} is {:?}", gamepad.name(), gamepad.power_info());
+            info!("{} is {:?}", gamepad.name(), gamepad.power_info());
             if gamepad.name().eq("Microsoft Xbox Controller") {
                 state.active_gamepad = Some(id)
             }
@@ -811,13 +812,13 @@ impl State {
         let initial_sp = u32::from_le_bytes(data[0x30..0x34].try_into().unwrap());
 
         // exe_ram_addr = crate::system::mask_region(exe_ram_addr);
-        println!("exe ram addr: 0x{:X}", exe_ram_addr);
-        println!("initial pc: 0x{:X}", initial_pc);
+        info!("exe ram addr: 0x{:X}", exe_ram_addr);
+        info!("initial pc: 0x{:X}", initial_pc);
 
         // let exe_size = (file_size - 2048) as u32;
         // let exe_size = (exe_size_2kb);
         // let exe_size = 1013760 - 2048;
-        println!("exe size: {}", exe_size);
+        info!("exe size: {}", exe_size);
         self.system.ram.data[exe_ram_addr as usize..(exe_ram_addr as usize + exe_size)]
             .copy_from_slice(&data[2048..2048 + exe_size as usize]);
         // self.system.block_cache.invalidate();
@@ -1589,7 +1590,7 @@ impl State {
                         prev_buttons |= 0x1 << (crate::sio::Button::R1 as usize);
                     }
                     gilrs::Button::Mode => {
-                        println!("mode!");
+                        info!("analog mode changed!");
                         let prev = self.system.sio.gamepad1.mode.get();
                         self.system.sio.gamepad1.set_analog_mode(!prev);
                     }

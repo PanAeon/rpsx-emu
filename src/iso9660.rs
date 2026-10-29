@@ -40,7 +40,7 @@ impl Directory {
         let mut dp = extent_location as usize * SECTOR_SIZE; //track.disc_position(track_msf)?;
 
         while extent_len > 0 {
-            let sector = image.read_sector(dp);
+            let sector = image.read_sector(dp).expect("ok");
 
             let data = mode2_xa_payload(&sector);
 
@@ -167,7 +167,7 @@ impl Entry {
         let mut dp = extent_location as usize * SECTOR_SIZE; //track.disc_position(track_msf)?;
 
         while extent_len > 0 {
-            let sector = image.read_sector(dp);
+            let sector = image.read_sector(dp).expect("ok");
 
             let data = mode2_xa_payload(&sector);
 
@@ -213,7 +213,7 @@ pub fn open_image(image: &mut CdCache) -> Directory {
 
     // Look for the primary volume descriptor
     loop {
-        sector = image.read_sector(dp);
+        sector = image.read_sector(dp).expect("ok");
 
         let volume_descriptor = mode2_xa_payload(&sector);
 

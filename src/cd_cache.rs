@@ -28,7 +28,7 @@ impl CdCache {
         }
     }
 
-    pub fn read_sector(&mut self, pos: usize) -> [u8;0x930] {
+    pub fn read_sector(&mut self, pos: usize) -> Option<[u8;0x930]> {
         let (reader_mutex, cond) = &*self.reader;
         let mut reader = reader_mutex.lock().unwrap();
 
@@ -62,7 +62,7 @@ impl Drop for CdCache {
 }
 
 pub struct Reader {
-    sectors: lru::LruCache<usize, [u8;0x930]>,
+    sectors: lru::LruCache<usize, Option<[u8;0x930]>>,
     prefetch_remaining: u32,
     prefetch_next: usize,
     quit: bool,
@@ -85,6 +85,20 @@ impl Reader {
             files
         }
     }
+
+    pub fn valid_sector(&self, pos: usize) -> bool {
+        let track = self.tracks.iter().find(|x| {
+          let track_idx = x.indexes.iter().find(|x| x.id != 0).unwrap();
+          let end = track_idx.lba + x.len;
+          end >= pos
+        });
+        if let Some(track) = track {
+            let rel_pos = pos - track.get_start();
+            rel_pos < track.len
+        } else {
+            false
+        }
+    }
     pub fn read_sector(&mut self, pos: usize, buff: &mut [u8]) {
         // let track_idx = last_track.indexes.iter().find(|x| x.id != 0).unwrap();
         // first find track...
@@ -104,7 +118,6 @@ impl Reader {
         let pos = pos - track_idx.lba;
         f.seek(std::io::SeekFrom::Start(pos as u64)).expect("ok");
         f.read_exact(buff).expect("ok");// can cause problems on last sector?
-            
     }
 }
 
@@ -122,9 +135,16 @@ fn run_prefetcher( reader: Arc<(Mutex<Reader>, Condvar)>) {
             continue;
         }
 
-        reader.prefetch_remaining -= 1; // halp! will blow out at the end of the disk..
         let pos = reader.prefetch_next;
-        reader.prefetch_next += 0x930;
+
+        let next_sector = reader.prefetch_next + 0x930;
+        if reader.valid_sector(next_sector) {
+            reader.prefetch_remaining -= 1; // halp! will blow out at the end of the disk..
+            reader.prefetch_next += 0x930;
+        } else {
+            reader.prefetch_remaining = 0;
+        }
+
        
         if reader.sectors.contains(&pos) {
             continue;
@@ -139,8 +159,13 @@ fn run_prefetcher( reader: Arc<(Mutex<Reader>, Condvar)>) {
 
         // let mut reader = reader_mutex.lock().unwrap();
         let mut buff = [0u8;0x930];
-        reader.read_sector(pos, &mut buff);
-        reader.sectors.put(pos, buff);
+        if reader.valid_sector(pos) {
+            reader.read_sector(pos, &mut buff);
+            reader.sectors.put(pos, Some(buff));
+        } else {
+            println!("WARN: attempt to read invalid sector");
+            reader.sectors.put(pos, None);
+        }
 
         cond.notify_one();
     }

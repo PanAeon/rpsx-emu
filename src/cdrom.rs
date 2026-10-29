@@ -35,6 +35,17 @@ pub struct Track {
     pub len: usize,
 }
 
+impl Track {
+    pub fn get_start(&self) -> usize {
+        let start = if self.indexes[0].id == 1 {
+            self.indexes[0].lba
+        } else {
+            self.indexes[1].lba
+        };
+        start
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Image {
     read_head: usize,
@@ -134,32 +145,32 @@ impl Image {
         self.read_head = sectors * SECTOR_SIZE;
     }
 
-    pub fn advance_sector(&mut self) -> Vec<u8> {
+    pub fn advance_sector(&mut self) -> Option<Vec<u8>> {
         let start = self.read_head;
         // println!("cdrom debug: advance_sector {}", start/SECTOR_SIZE);
         self.read_head += SECTOR_SIZE;
         if start < 2 * 75 * SECTOR_SIZE {
-            vec![0x0; SECTOR_SIZE]
+            Some(vec![0x0; SECTOR_SIZE])
         } else {
             self.cache
                 .as_mut()
                 .unwrap()
                 .read_sector(start - 2 * 75 * SECTOR_SIZE)
-                .to_vec()
+                .map(|x| x.to_vec())
             // self.data[start..self.read_head].to_vec()
         }
     }
 
-    pub fn current_sector(&mut self) -> Vec<u8> {
+    pub fn current_sector(&mut self) -> Option<Vec<u8>> {
         let start = self.read_head;
         if start < 2 * 75 * SECTOR_SIZE {
-            vec![0x0; SECTOR_SIZE]
+            Some(vec![0x0; SECTOR_SIZE])
         } else {
             self.cache
                 .as_mut()
                 .unwrap()
                 .read_sector(start - 2 * 75 * SECTOR_SIZE)
-                .to_vec()
+                .map(|x| x.to_vec())
         }
     }
 
@@ -207,7 +218,7 @@ impl Image {
     pub fn get_current_sector_info(&mut self) -> [u8; 8] {
         // let (amm, ass, asect) = self.mm_ss_ff(self.read_head);
 
-        let sector = self.current_sector();
+        let sector = self.current_sector().expect("ok");
 
         let amm = sector[0xC];
         let ass = sector[0xD];
@@ -221,6 +232,13 @@ impl Image {
         [amm, ass, asect, sector_mode, file, channel, submode, ci]
     }
 
+    pub fn current_track(&self) -> Track {
+        let current_track = self
+            .tracks
+            .partition_point(|t| t.indexes[0].lba <= self.read_head)
+            .saturating_sub(1);
+        self.tracks[current_track].clone()
+    }
     pub fn current_position_info(&self) -> [u8; 8] {
         let current_track = self
             .tracks
@@ -468,7 +486,7 @@ impl CDRom {
                     cdrom.irq_mask.0 = v;
                     // cdrom.irq_mask = cdrom.irq_mask.set_int_enable(v);
                     // println!("irq mask: 0b{:b}", cdrom.irq_mask.int_enable());
-                },
+                }
                 2 => cdrom.pending_volume.l2l_volume = v,
                 3 => cdrom.pending_volume.r2l_volume = v,
                 _ => unreachable!(),
@@ -528,23 +546,25 @@ impl CDRom {
             // 0x00 => self.cmd_unused(),
             0x01 => Self::cmd_nop(system),
             0x02 => Self::cmd_setloc(system),
-            0x03 => Self::cmd_nop(system), // cmd play
+            0x03 => Self::cmd_play(system), // cmd play
             0x06 => Self::cmd_readn(system),
             0x08 => Self::cmd_stop(system),
             0x09 => Self::cmd_pause(system),
             0x0a => Self::cmd_init(system),
             0x0b => Self::cmd_mute(system),
             0x0c => Self::cmd_demute(system),
-            0x0e => Self::cmd_setmode(system),
             0x0d => Self::cmd_set_filter(system),
+            0x0e => Self::cmd_setmode(system),
             0x10 => Self::cmd_get_locl(system),
             0x11 => Self::cmd_get_locp(system),
+            0x13 => Self::cmd_gettn(system),
             0x14 => Self::cmd_gettd(system),
             0x15 => Self::cmd_seekl(system),
+            0x16 => Self::cmd_seekl(system), // seekp
             0x19 => Self::cmd_test(system),
             0x1a => Self::cmd_getid(system),
             0x1b => Self::cmd_readn(system), // TODO: should be reads
-            0x13 => Self::cmd_gettn(system),
+            0x1e => Self::cmd_readtoc(system), // TODO: should be reads
 
             _ => panic!("Unhandled command: 0x{:x}", cmd),
         };
@@ -928,6 +948,33 @@ impl CDRom {
             _ => unreachable!(),
         }
     }
+    pub fn cmd_play(system: &mut System) {
+        let cdrom = &mut system.cdrom;
+        match cdrom.cmd_state {
+            CmdState::RecvCmd => {
+                cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
+                cdrom.cmd_state = CmdState::Resp1;
+                cdrom.stat.set_spindle_motor(true);
+            }
+            CmdState::Resp1 => {
+                let cdrom = &mut system.cdrom;
+                println!("DEBUG CDROM: cmd_play ");
+                let track_num = cdrom.cmd_params.pop();
+                if let Some(track_id) = track_num {
+                    let track_num = from_bcd(track_id).unwrap();
+                    let track = cdrom.disk.as_ref().unwrap().get_track_by_number(track_num).expect("ok");
+                    cdrom.seekloc = Some(track.get_start() as u32);
+                }
+                let cdrom = &mut system.cdrom;
+                cdrom.begin_playing();
+
+                cdrom.push_result_byte(cdrom.stat.0);
+                Self::set_interrupt(system, 3);
+                system.cdrom.finish_command();
+            }
+            _ => unreachable!(),
+        }
+    }
     // pub fn cmd_readn(&mut self) -> CommandResponse {
     //     if !self.parameters.is_empty() {
     //         return error_response(&self.stat, 0x20, "readn doesn't takes parameters");
@@ -1135,6 +1182,27 @@ impl CDRom {
                 cdrom.stat.set_spindle_motor(true);
                 cdrom.mode.0 = 0x20;
                 cdrom.reset_read_state();
+                cdrom.push_result_byte(cdrom.stat.0);
+                Self::set_interrupt(system, 2);
+                system.cdrom.finish_command();
+            }
+        }
+    }
+    pub fn cmd_readtoc(system: &mut System) {
+        let cdrom = &mut system.cdrom;
+        match cdrom.cmd_state {
+            CmdState::RecvCmd => {
+                cdrom.cmd_delay = CDROM_INIT_DELAY_CYCLES;
+                cdrom.cmd_state = CmdState::Resp1;
+            }
+            CmdState::Resp1 => {
+                println!("DEBUG CDROM: cmd_readtoc");
+                cdrom.push_result_byte(cdrom.stat.0);
+                cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
+                cdrom.cmd_state = CmdState::Resp2;
+                Self::set_interrupt(system, 3);
+            }
+            CmdState::Resp2 => {
                 cdrom.push_result_byte(cdrom.stat.0);
                 Self::set_interrupt(system, 2);
                 system.cdrom.finish_command();
@@ -1360,6 +1428,16 @@ impl CDRom {
         self.stat.set_error(false);
     }
 
+    pub fn begin_playing(&mut self) {
+        self.read_state = ReadState::Playing;
+        if self.seekloc.is_some() {
+            self.stat.set_seek(true);
+            self.read_delay = CDROM_SEEKL_DELAY_CYCLES;
+        } else {
+            self.stat.set_play(true);
+            self.read_delay = CDROM_READ_DELAY_CYCLES;
+        }
+    }
     pub fn begin_reading(&mut self) {
         self.read_state = ReadState::Reading;
         // advance XA...
@@ -1375,7 +1453,7 @@ impl CDRom {
         }
     }
 
-    pub fn tick(system: &mut System, num_cycles: u64)  {
+    pub fn tick(system: &mut System, num_cycles: u64) {
         let cdrom = &mut system.cdrom;
         if cdrom.irq_pending.ints() != 0 {
             return;
@@ -1391,24 +1469,24 @@ impl CDRom {
                 match cdrom.read_state {
                     ReadState::Idle => unreachable!(),
                     ReadState::Reading => Self::step_reading(system),
-                    ReadState::Playing => unimplemented!("playing"),
+                    ReadState::Playing => Self::step_playing(system), 
                 }
             }
         }
     }
-    
-        // pub fn push_to_audio_buffer(&mut self, data: &[u8]) {
-        //     let samples: Vec<i16> = data
-        //         .chunks_exact(2)
-        //         .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        //         .collect();
-        //     self.audio_buffer.extend(samples);
-        // }
 
-        pub fn get_audio_sample(&mut self) -> i16 {
-            let sample = self.audio_buffer.pop_front().unwrap_or(0);
-            if self.mute { 0 } else { sample }
-        }
+    pub fn push_to_audio_buffer(&mut self, data: &[u8]) {
+        let samples: Vec<i16> = data
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        self.audio_buffer.extend(samples);
+    }
+
+    pub fn get_audio_sample(&mut self) -> i16 {
+        let sample = self.audio_buffer.pop_front().unwrap_or(0);
+        if self.mute { 0 } else { sample }
+    }
 
     fn step_reading(system: &mut System) {
         let cdrom = &mut system.cdrom;
@@ -1432,6 +1510,13 @@ impl CDRom {
             cdrom.results.clear();
 
             let sector = disk.advance_sector();
+            let Some(sector) = sector else {
+                system.cdrom.push_error(DriveError::SeekFailed);
+                Self::set_interrupt(system, 5);
+                system.cdrom.finish_command();
+                return;
+            }; 
+            
             cdrom.last_sector_header.copy_from_slice(&sector[12..20]);
             cdrom.read_delay = match cdrom.mode.speed() {
                 Speed::Normal => CDROM_READ_DELAY_CYCLES,
@@ -1439,7 +1524,7 @@ impl CDRom {
             };
 
             if cdrom.is_xa_audio_sector(&sector) {
-                println!("cdrom debug, is xa audio sector?");
+                cdrom.process_xa_audio_sector(&sector);
                 return;
             }
             let mut sector_data = VecDeque::from(sector);
@@ -1458,6 +1543,68 @@ impl CDRom {
             Self::set_interrupt(system, 1);
         }
     }
+    fn step_playing(system: &mut System) {
+        let cdrom = &mut system.cdrom;
+        if let Some(loc) = cdrom.seekloc.take() {
+            cdrom.disk.as_mut().unwrap().seek(loc);
+            cdrom.stat.set_seek(false);
+            cdrom.read_delay = CDROM_READ_DELAY_CYCLES;
+        } else {
+            // FIXME: check valid location..
+            cdrom.stat.set_play(true);
+            let sector = cdrom.disk.as_mut().unwrap().current_sector();
+            let Some(sector) = sector else {
+                system.cdrom.push_error(DriveError::SeekFailed);
+                Self::set_interrupt(system, 5);
+                system.cdrom.finish_command();
+                return;
+            }; 
+            cdrom.push_to_audio_buffer(&sector);
+            // let samples: Vec<i16> = bytemuck::cast_vec(sector);
+            cdrom.read_delay = CDROM_READ_DELAY_CYCLES;
+
+            if cdrom.mode.play_report() {
+                Self::push_play_report(system);
+            }
+        }
+    }
+    fn push_play_report(system: &mut System) {
+        let cdrom = &mut system.cdrom;
+        let disk = cdrom.disk.as_ref().unwrap();
+        let (mm, ss, ff) = disk.mm_ss_ff(disk.read_head);
+        if ff % 10 != 0 {
+            return;
+        }
+        let abs_pos = disk.read_head;
+        let track = disk.current_track();
+
+        let in_pregap = abs_pos < track.get_start();
+        let track_index = if in_pregap {0} else {1};
+        let rel_pos = abs_pos - track.get_start();
+
+        let (rel_mm, rel_ss, rel_ff) = disk.mm_ss_ff(rel_pos);
+
+        cdrom.results.clear();
+        cdrom.push_result_byte(cdrom.stat.0);
+        cdrom.push_result_byte(to_bcd(track.id).expect("ok"));
+        cdrom.push_result_byte(to_bcd(track_index).expect("ok"));
+
+        if (ff / 10) % 2 == 0 {
+            cdrom.push_result_byte(to_bcd(mm).expect("ok"));
+            cdrom.push_result_byte(to_bcd(ss).expect("ok"));
+            cdrom.push_result_byte(to_bcd(ff).expect("ok"));
+        } else {
+            cdrom.push_result_byte(to_bcd(rel_mm).expect("ok"));
+            cdrom.push_result_byte(to_bcd(rel_ss).expect("ok"));
+            cdrom.push_result_byte(to_bcd(rel_ff).expect("ok"));
+        }
+
+        // TODO: peak values
+        cdrom.push_result_byte(0);
+        cdrom.push_result_byte(0);
+        Self::set_interrupt(system, 1);
+
+    }
 
     fn is_xa_audio_sector(&self, sector: &Vec<u8>) -> bool {
         if !self.mode.xa_adpcm() {
@@ -1469,14 +1616,14 @@ impl CDRom {
         if sector[0xF] != 2 {
             return false;
         }
-            let file = sector[0x10];
-            let channel = sector[0x11];
-            let submode = sector[0x12];
+        let file = sector[0x10];
+        let channel = sector[0x11];
+        let submode = sector[0x12];
 
-            // let is_realtime_audio = (submode & 0x44) == 0x44;
-            let is_form2 = submode & (1 << 5) != 0;
-            let is_audio = submode & (1 << 2) != 0;
-            let is_realtime = submode & (1 << 6) != 0;
+        // let is_realtime_audio = (submode & 0x44) == 0x44;
+        let is_form2 = submode & (1 << 5) != 0;
+        let is_audio = submode & (1 << 2) != 0;
+        let is_realtime = submode & (1 << 6) != 0;
         if !is_form2 {
             return false;
         }
@@ -1490,7 +1637,39 @@ impl CDRom {
         }
         return true;
     }
-/*
+    fn process_xa_audio_sector(&mut self, sector: &Vec<u8>) {
+        let audio_header = cdxa::AudioHeader(sector[0x13]);
+
+        let audio_samples = match (audio_header.channel(), audio_header.sample_rate()) {
+            (cdxa::Channel::Mono, cdxa::SampleRate::R37800) => decode_audio_sector::<false>(
+                &sector,
+                &mut self.adpcm_history,
+                &mut self.high_res_resamplers,
+            ),
+            (cdxa::Channel::Mono, cdxa::SampleRate::R18900) => decode_audio_sector::<false>(
+                &sector,
+                &mut self.adpcm_history,
+                &mut self.low_res_resamplers,
+            ),
+            (cdxa::Channel::Mono, cdxa::SampleRate::Reserved) => unimplemented!(),
+            (cdxa::Channel::Stereo, cdxa::SampleRate::R37800) => decode_audio_sector::<true>(
+                &sector,
+                &mut self.adpcm_history,
+                &mut self.high_res_resamplers,
+            ),
+            (cdxa::Channel::Stereo, cdxa::SampleRate::R18900) => decode_audio_sector::<true>(
+                &sector,
+                &mut self.adpcm_history,
+                &mut self.low_res_resamplers,
+            ),
+            (cdxa::Channel::Stereo, cdxa::SampleRate::Reserved) => todo!(),
+            (cdxa::Channel::Reserved, cdxa::SampleRate::R37800) => unimplemented!(),
+            (cdxa::Channel::Reserved, cdxa::SampleRate::R18900) => unimplemented!(),
+            (cdxa::Channel::Reserved, cdxa::SampleRate::Reserved) => unimplemented!(),
+        };
+        self.audio_buffer.extend(audio_samples);
+    }
+    /*
         pub fn process_sector(&mut self, sector: Vec<u8>) -> bool {
             if self.stat.playing() {
                 assert!(self.mode.cdda());
@@ -1783,7 +1962,7 @@ bitfield::bitfield! {
     into SectorSize, sector_size, _: 5,5;
     ignore_bit, _: 4;
     xa_filter, _: 3;
-    report, _: 2;
+    play_report, _: 2;
     auto_pause, _: 1;
     cdda, _: 0;
 }
@@ -1799,19 +1978,19 @@ bitfield::bitfield! {
 bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize)]
     pub struct IrqMask(u8);
-    int_enable, _: 0,2;
+    int_enable, _: 2,0;
 }
 
 bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize)]
     pub struct IrqPending(u8);
-    ints, _:  0,2;
+    ints, _:  2,0;
 }
 
 bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize)]
     pub struct AckInterrupt(u8);
-    int_clear, _:  0,2;
+    int_clear, _:  2,0;
     xa_adpcm_clear, _: 5;
     param_clear, _: 6;
     chip_reset, _: 7;
@@ -1841,9 +2020,6 @@ pub const AVG_2ND_RESP_PAUSE: u64 = 0x0021_181C;
 pub const AVG_2ND_RESP_SEEKL: u64 = 0x6E1CD;
 
 pub const AVG_RATE_INT1: u64 = 0x6E1CD;
-
-
-
 
 const fn from_bcd(val: u8) -> Option<u8> {
     let ones = val & 0xF;

@@ -98,7 +98,7 @@ fn main() {
     run(cli).unwrap();
 
     // fastmem_proto::run();
-    println!("ok");
+    println!("goodbye!");
 }
 
 const fn mat4_const_from_rows(m: [[f32; 4]; 4]) -> Mat4<f32> {

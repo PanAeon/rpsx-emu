@@ -1,3 +1,5 @@
+use std::ops::{Index, IndexMut};
+
 use crate::system::{AccessWidth, Addressable, System};
 use serde::{Deserialize, Serialize};
 
@@ -8,17 +10,31 @@ pub struct Dma {
     channels: [Channel; 7],
 }
 
-pub fn load<T: Addressable>(system: &mut System, offset: u32) -> T {
-    if T::width() != AccessWidth::Word {
-        println!("Unhandled {:?} DMA load", T::width())
+impl IndexMut<Port> for Dma {
+    fn index_mut(&mut self, index: Port) -> &mut Channel {
+        &mut self.channels[index as usize]
     }
+}
+
+impl Index<Port> for Dma {
+    type Output = Channel;
+
+    fn index(&self, index: Port) -> &Channel {
+        &self.channels[index as usize]
+    }
+}
+
+pub fn load<T: Addressable>(system: &mut System, offset: u32) -> T {
+    // if T::width() != AccessWidth::Word {
+        // println!("Unhandled {:?} DMA load", T::width())
+    // }
     let align = offset & 3;
     let offset = offset & !3;
     let major = (offset & 0x70) >> 4;
     let minor = offset & 0xf;
     let r = match major {
         0..7 => {
-            let channel = system.dma.channel(Port::from_index(major as u8));
+            let channel = system.dma[Port::from_index(major as u8)];
             match minor {
                 0 => channel.maddr,
                 4 => channel.block_control(),
@@ -49,7 +65,7 @@ pub fn store<T: Addressable>(system: &mut System, offset: u32, val: T) {
     match major {
         0..7 => {
             let port = Port::from_index(major as u8);
-            let channel = system.dma.channel_mut(port);
+            let channel = &mut system.dma[port];
             match minor {
                 0 => channel.maddr = partial_write(channel.maddr, offset, val),
                 4 => {
@@ -112,6 +128,10 @@ pub fn partial_write<T: Addressable>(base: u32, addr: u32, value: T) -> u32 {
         AccessWidth::Word => value.as_u32(),
     }
 }
+
+pub fn dma_event(system: &mut System) {
+}
+
 fn set_channel_irq(system: &mut System, port: Port, is_full_transfer: bool) {
     let chan_mask = 1_u8 << port as u8;
 
@@ -138,7 +158,7 @@ fn set_channel_irq(system: &mut System, port: Port, is_full_transfer: bool) {
 }
 
 fn do_mdec_in(system: &mut System) {
-    let chan = system.dma.channel(Port::MdecIn);
+    let chan = system.dma[Port::MdecIn];
     if !chan.ctrl.start() {
         return;
     }
@@ -151,23 +171,22 @@ fn do_mdec_in(system: &mut System) {
     let block_size = chan.block_size();
     let step = chan.addr_step();
 
-    while system.dma.channel(Port::MdecIn).block.count > 0 {
+    while system.dma[Port::MdecIn].block.count > 0 {
         for _ in 0..block_size {
-            let chan = system.dma.channel(Port::MdecIn);
+            let chan = system.dma[Port::MdecIn];
             let v = system.load::<u32>(chan.maddr);
-            let chan = system.dma.channel_mut(Port::MdecIn);
+            let chan = &mut system.dma[Port::MdecIn];
             chan.maddr = chan.maddr.wrapping_add(step);
             system.mdec.store(0, v);
         }
-        system.dma.channel_mut(Port::MdecIn).block.count -= 1;
+        system.dma[Port::MdecIn].block.count -= 1;
     }
-    let chan = system.dma.channel_mut(Port::MdecIn);
-    chan.ctrl.reset_active();
+    system.dma[Port::MdecIn].ctrl.reset_active();
     set_channel_irq(system, Port::MdecIn, true);
 }
 
 fn do_mdec_out(system: &mut System) {
-    let chan = system.dma.channel(Port::MdecOut);
+    let chan = system.dma[Port::MdecOut];
     if !chan.ctrl.start() {
         return;
     }
@@ -180,23 +199,22 @@ fn do_mdec_out(system: &mut System) {
     let block_size = chan.block_size();
     let step = chan.addr_step();
 
-    while system.dma.channel(Port::MdecOut).block.count > 0 {
+    while system.dma[Port::MdecOut].block.count > 0 {
         for _ in 0..block_size {
-            let chan = system.dma.channel(Port::MdecOut);
+            let chan = system.dma[Port::MdecOut];
             let v = system.mdec.load::<u32>(0);
             system.store::<u32>(chan.maddr, v);
-            let chan = system.dma.channel_mut(Port::MdecOut);
+            let chan = &mut system.dma[Port::MdecOut];
             chan.maddr = chan.maddr.wrapping_add(step);
         }
-        system.dma.channel_mut(Port::MdecOut).block.count -= 1;
+        system.dma[Port::MdecOut].block.count -= 1;
     }
-    let chan = system.dma.channel_mut(Port::MdecOut);
-    chan.ctrl.reset_active();
+    system.dma[Port::MdecOut].ctrl.reset_active();
     set_channel_irq(system, Port::MdecOut, true);
 }
 
 fn do_gpu(system: &mut System) {
-    let chan = system.dma.channel(Port::Gpu);
+    let chan = system.dma[Port::Gpu];
     if !chan.ctrl.is_active() {
         return;
     }
@@ -210,7 +228,7 @@ fn do_gpu(system: &mut System) {
 }
 
 pub fn do_gpu_sync_mode_slice(system: &mut System) {
-    let chan = system.dma.channel(Port::Gpu);
+    let chan = system.dma[Port::Gpu];
 
     let addr_inc = chan.addr_step();
     let block_size = chan.block_size();
@@ -221,9 +239,9 @@ pub fn do_gpu_sync_mode_slice(system: &mut System) {
             for _ in 0..block_count {
                 for _ in 0..block_size {
                     let v = system.gpu.read();
-                    let chan = system.dma.channel(Port::Gpu);
+                    let chan = system.dma[Port::Gpu];
                     system.store(chan.maddr, v);
-                    let chan = system.dma.channel_mut(Port::Gpu);
+                    let chan = &mut system.dma[Port::Gpu];
                     chan.maddr = chan.maddr.wrapping_add(addr_inc);
                 }
                 set_channel_irq(system, Port::Gpu, false);
@@ -232,10 +250,10 @@ pub fn do_gpu_sync_mode_slice(system: &mut System) {
         Direction::FromRam => {
             for _ in 0..block_count {
                 for _ in 0..block_size {
-                    let chan = system.dma.channel(Port::Gpu);
+                    let chan = system.dma[Port::Gpu];
                     let v = system.load::<u32>(chan.maddr);
                     system.gpu.gp0(v);
-                    let chan = system.dma.channel_mut(Port::Gpu);
+                    let chan = &mut system.dma[Port::Gpu];
                     chan.maddr = chan.maddr.wrapping_add(addr_inc);
                 }
                 set_channel_irq(system, Port::Gpu, false);
@@ -243,13 +261,12 @@ pub fn do_gpu_sync_mode_slice(system: &mut System) {
         }
     };
 
-    let chan = system.dma.channel_mut(Port::Gpu);
-    chan.ctrl.reset_active();
+    let chan = system.dma[Port::Gpu].ctrl.reset_active();
     set_channel_irq(system, Port::Gpu, true);
 }
 
 pub fn do_gpu_sync_mode_linked_list(system: &mut System) {
-    let chan = system.dma.channel(Port::Gpu);
+    let chan = system.dma[Port::Gpu];
 
     let mut addr = chan.maddr & 0x1ffffc;
     while addr != 0xffffff {
@@ -265,13 +282,12 @@ pub fn do_gpu_sync_mode_linked_list(system: &mut System) {
         set_channel_irq(system, Port::Gpu, false);
         addr = hdr & 0xffffff;
     }
-    let chan = system.dma.channel_mut(Port::Gpu);
-    chan.ctrl.reset_active();
+    let chan = system.dma[Port::Gpu].ctrl.reset_active();
     set_channel_irq(system, Port::Gpu, true);
 }
 
 fn do_cdrom(system: &mut System) {
-    let chan = system.dma.channel(Port::CdRom);
+    let chan = system.dma[Port::CdRom];
     if !chan.ctrl.is_active() {
         return;
     }
@@ -284,9 +300,9 @@ fn do_cdrom(system: &mut System) {
             for _ in 0..block_count {
                 for _ in 0..block_size {
                     let v = system.cdrom.read_sector_data::<u32>();
-                    let chan = system.dma.channel(Port::CdRom);
+                    let chan = system.dma[Port::CdRom];
                     system.store(chan.maddr, v);
-                    let chan = system.dma.channel_mut(Port::CdRom);
+                    let chan = &mut system.dma[Port::CdRom];
                     chan.maddr = chan.maddr.wrapping_add(addr_inc);
                 }
                 set_channel_irq(system, Port::CdRom, false);
@@ -298,12 +314,11 @@ fn do_cdrom(system: &mut System) {
     };
 
 
-    let chan = system.dma.channel_mut(Port::CdRom);
-    chan.ctrl.reset_active();
+    system.dma[Port::CdRom].ctrl.reset_active();
     set_channel_irq(system, Port::CdRom, true);
 }
 fn do_spu(system: &mut System) {
-    let chan = system.dma.channel(Port::Spu);
+    let chan = system.dma[Port::Spu];
     if !chan.ctrl.is_active() {
         return;
     }
@@ -316,9 +331,9 @@ fn do_spu(system: &mut System) {
             for _ in 0..block_count {
                 for _ in 0..block_size {
                     let v = system.spu.ram_read::<4>();
-                    let chan = system.dma.channel(Port::Spu);
+                    let chan = system.dma[Port::Spu];
                     system.store(chan.maddr, v);
-                    let chan = system.dma.channel_mut(Port::Spu);
+                    let chan = &mut system.dma[Port::Spu];
                     chan.maddr = chan.maddr.wrapping_add(addr_inc);
                 }
                 set_channel_irq(system, Port::Spu, false);
@@ -327,10 +342,10 @@ fn do_spu(system: &mut System) {
         Direction::FromRam => {
             for _ in 0..block_count {
                 for _ in 0..block_size {
-                    let chan = system.dma.channel(Port::Spu);
+                    let chan = system.dma[Port::Spu];
                     let v = system.load::<u32>(chan.maddr);
                     system.spu.ram_write::<4>(v);
-                    let chan = system.dma.channel_mut(Port::Spu);
+                    let chan = &mut system.dma[Port::Spu];
                     chan.maddr = chan.maddr.wrapping_add(addr_inc);
                 }
                 set_channel_irq(system, Port::Spu, false);
@@ -338,12 +353,11 @@ fn do_spu(system: &mut System) {
         }
     };
 
-    let chan = system.dma.channel_mut(Port::Spu);
-    chan.ctrl.reset_active();
+    system.dma[Port::Spu].ctrl.reset_active();
     set_channel_irq(system, Port::Spu, true);
 }
 fn do_otc(system: &mut System) {
-    let chan = system.dma.channel(Port::Otc);
+    let chan = system.dma[Port::Otc];
     if !chan.ctrl.is_active() {
         return;
     }
@@ -360,8 +374,7 @@ fn do_otc(system: &mut System) {
         system.store::<u32>(addr, hdr);
         addr = next_addr;
     }
-    let chan = system.dma.channel_mut(Port::Otc);
-    chan.ctrl.reset_active();
+    system.dma[Port::Otc].ctrl.reset_active();
     set_channel_irq(system, Port::Otc, true);
 }
 
@@ -437,12 +450,12 @@ impl Dma {
     //
     // }
 
-    pub fn channel(&self, port: Port) -> Channel {
-        self.channels[port as usize]
-    }
-    pub fn channel_mut(&mut self, port: Port) -> &mut Channel {
-        &mut self.channels[port as usize]
-    }
+    // pub fn channel(&self, port: Port) -> Channel {
+    //     self.channels[port as usize]
+    // }
+    // pub fn channel_mut(&mut self, port: Port) -> &mut Channel {
+    //     &mut self.channels[port as usize]
+    // }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]

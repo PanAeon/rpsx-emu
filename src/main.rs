@@ -1099,7 +1099,7 @@ impl State {
                     }
                     scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.system),
                     scheduler::Event::DsrOff => self.system.sio.turn_dsr_off(),
-                    scheduler::Event::Dma => {}//system::System::dma_event(&mut self.system),
+                    scheduler::Event::Dma => dma::dma_event(&mut self.system),
                 }
             }
             // self.update_interpreter();

@@ -154,10 +154,10 @@ impl Image {
     pub fn seek(&mut self, sectors: u32) {
         self.read_head = sectors as usize * SECTOR_SIZE;
     }
-    pub fn seek_location(&mut self, mins: u8, secs: u8, sect: u8) {
-        let sectors = ((mins as usize) * 75 * 60) + ((secs as usize) * 75) + (sect as usize);
-        self.read_head = sectors * SECTOR_SIZE;
-    }
+    // pub fn seek_location(&mut self, mins: u8, secs: u8, sect: u8) {
+    //     let sectors = ((mins as usize) * 75 * 60) + ((secs as usize) * 75) + (sect as usize);
+    //     self.read_head = sectors * SECTOR_SIZE;
+    // }
 
     pub fn advance_sector(&mut self) -> Option<Vec<u8>> {
         let start = self.read_head;
@@ -199,16 +199,16 @@ impl Image {
         self.tracks.last().expect("last track").id
     }
 
-    pub fn track_mm_ss_ff(&self, track_id: u8) -> (u8, u8, u8) {
-        let track = &self.tracks[track_id as usize - 1];
-
-        let start = if track.indexes[0].id == 1 {
-            track.indexes[0].lba
-        } else {
-            track.indexes[1].lba
-        };
-        self.mm_ss_ff(start)
-    }
+    // pub fn track_mm_ss_ff(&self, track_id: u8) -> (u8, u8, u8) {
+    //     let track = &self.tracks[track_id as usize - 1];
+    //
+    //     let start = if track.indexes[0].id == 1 {
+    //         track.indexes[0].lba
+    //     } else {
+    //         track.indexes[1].lba
+    //     };
+    //     self.mm_ss_ff(start)
+    // }
 
     pub fn last_track_end(&self) -> (u8, u8, u8) {
         let last_track = self.tracks.last().unwrap();
@@ -230,22 +230,22 @@ impl Image {
         (mins as u8, secs as u8, sect as u8)
     }
     // INT3(amm,ass,asect,mode,file,channel,sm,ci)
-    pub fn get_current_sector_info(&mut self) -> [u8; 8] {
-        // let (amm, ass, asect) = self.mm_ss_ff(self.read_head);
-
-        let sector = self.current_sector().expect("ok");
-
-        let amm = sector[0xC];
-        let ass = sector[0xD];
-        let asect = sector[0xE];
-        let sector_mode = sector[0xF];
-        let file = sector[0x10];
-        let channel = sector[0x11];
-        let submode = sector[0x12];
-        let ci = sector[0x13];
-        // let is_realtime_audio = (submode & 0x44) == 0x44;
-        [amm, ass, asect, sector_mode, file, channel, submode, ci]
-    }
+    // pub fn get_current_sector_info(&mut self) -> [u8; 8] {
+    //     // let (amm, ass, asect) = self.mm_ss_ff(self.read_head);
+    //
+    //     let sector = self.current_sector().expect("ok");
+    //
+    //     let amm = sector[0xC];
+    //     let ass = sector[0xD];
+    //     let asect = sector[0xE];
+    //     let sector_mode = sector[0xF];
+    //     let file = sector[0x10];
+    //     let channel = sector[0x11];
+    //     let submode = sector[0x12];
+    //     let ci = sector[0x13];
+    //     // let is_realtime_audio = (submode & 0x44) == 0x44;
+    //     [amm, ass, asect, sector_mode, file, channel, submode, ci]
+    // }
 
     pub fn current_track(&self) -> Track {
         let current_track = self

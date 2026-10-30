@@ -1263,6 +1263,110 @@ impl Gpu {
         };
     }
 
+    // from swan station
+    pub fn update_crt_display_params(&self) -> (u16, u16, u16, u16) {
+        const NTSC_TICKS_PER_LINE: u16 = 3413;
+        const NTSC_TOTAL_LINES: u16 = 263;
+
+        const NTSC_HORIZONTAL_ACTIVE_START: u16 = 488;
+        const NTSC_HORIZONTAL_ACTIVE_END: u16 = 3288;
+        const NTSC_VERTICAL_ACTIVE_START: u16 = 16;
+        const NTSC_VERTICAL_ACTIVE_END: u16 = 256;
+
+        const VRAM_WIDTH: u16 = 1024;
+        const VRAM_HEIGHT: u16 = 512;
+
+        let horizontal_total = NTSC_TICKS_PER_LINE;
+        let vertical_total = NTSC_TOTAL_LINES;
+
+        // let dot_clock_dividers = [10, 8, 5, 4, 7, 7, 7, 7];
+        // let horizontal_resolution_index =
+    // self.hres.2 | (self.hres.3);
+        // let dot_clock_divider = dot_clock_dividers[horizontal_resolution_index as usize];
+        let dot_clock_divider = self.get_clock_divider();
+
+        let horizontal_display_start = (self.display_horiz_start.min(horizontal_total)
+            / dot_clock_divider)
+            * dot_clock_divider;
+        let horizontal_display_end =
+            (self.display_horiz_end.min(horizontal_total) / dot_clock_divider) * dot_clock_divider;
+        let vertical_display_start = self.display_line_start.min(vertical_total);
+        let vertical_display_end = self.display_line_end.min(vertical_total);
+
+        let horizontal_visible_start = horizontal_display_start
+            .clamp(NTSC_HORIZONTAL_ACTIVE_START, NTSC_HORIZONTAL_ACTIVE_END);
+        let horizontal_visible_end =
+            horizontal_display_end.clamp(horizontal_visible_start, NTSC_HORIZONTAL_ACTIVE_END);
+        let vertical_visible_start =
+            vertical_display_start.clamp(NTSC_VERTICAL_ACTIVE_START, NTSC_VERTICAL_ACTIVE_END);
+        let vertical_visible_end =
+            vertical_display_end.clamp(vertical_display_start, NTSC_VERTICAL_ACTIVE_END);
+
+        let y_shift = self.interlaced as u8;
+        let height_shift = y_shift;
+
+        let display_width = (horizontal_visible_end - horizontal_visible_start) / dot_clock_divider;
+        let display_height = (vertical_visible_end - vertical_visible_start) << height_shift;
+
+        // determine number of pixels outputted from vram
+        let horizontal_display_ticks = if horizontal_display_end < horizontal_display_start {
+            0
+        } else {
+            horizontal_display_end - horizontal_display_start
+        };
+        let horizontal_display_pixels = horizontal_display_ticks / dot_clock_divider;
+
+        let mut display_vram_width = if horizontal_display_pixels == 1 { 4 } else {
+            (horizontal_display_pixels + 2) & !3
+        };
+
+        // adjust vram rectangle
+        let mut horizontal_skip_pixels: u16 = 0;
+        let mut display_vram_left: u16 = 0;
+        let mut display_vram_top: u16 = 0;
+        let mut display_origin_left: u16 = 0;
+        let mut display_origin_top: u16 = 0;
+        if horizontal_display_start >= horizontal_visible_start {
+            display_origin_left = (horizontal_display_start - horizontal_visible_start) / dot_clock_divider;
+            display_vram_left = self.display_vram_x_start;
+            horizontal_skip_pixels = 0;
+        } else {
+            horizontal_skip_pixels = (horizontal_visible_start - horizontal_display_start) / dot_clock_divider;
+            display_origin_left = 0;
+            display_vram_left = (self.display_vram_x_start + horizontal_skip_pixels) % VRAM_WIDTH;
+        }
+
+        display_vram_width -= horizontal_skip_pixels.min(display_vram_width);
+        display_vram_width = display_vram_width.min(display_width - display_origin_left);
+
+        if vertical_display_start >= vertical_visible_start {
+            display_origin_top = (vertical_display_start - vertical_visible_start);
+            display_vram_top = self.display_vram_y_start;
+        } else {
+            display_origin_top = 0;
+            display_vram_top = (self.display_vram_y_start + (vertical_visible_start - vertical_display_start)) % VRAM_HEIGHT;
+        }
+
+        let mut  display_vram_height = 0;
+        if vertical_display_end <= vertical_visible_end {
+            display_vram_height =
+                (vertical_display_end - 
+                vertical_display_end.min(vertical_display_start.max(vertical_visible_start))) << height_shift;
+        } else {
+            display_vram_height =
+                (vertical_visible_end -
+               vertical_visible_end.min(vertical_display_start.max(vertical_visible_start))) << height_shift;
+        }
+
+        (display_vram_left, display_vram_top,
+          display_vram_width, display_vram_height)
+    }
+
+    pub fn get_crt_vram_source_rect(&self) {
+        let sx = self.display_vram_x_start;
+        let sy = self.display_vram_y_start;
+    }
+
     pub fn render_fb(
         &self,
         framebuffer: Arc<Mutex<Vec<u32>>>,
@@ -1296,15 +1400,16 @@ impl Gpu {
         //     },
         // };
 
+        let (sx, sy, width, height) = self.update_crt_display_params();
         let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
         match msg {
             RendererResponse::FBUpdated {
-                width,
-                height,
-                sx,
-                sy,
+                width:_,
+                height:_,
+                sx:_,
+                sy:_,
                 depth,
-            } => (width, height, sx, sy, depth),
+            } => (width as usize, height as usize, sx as usize, sy as usize, depth),
             _ => panic!("something went wrong.. sync call returned wrong response"),
         }
     }
@@ -1327,14 +1432,17 @@ impl Gpu {
         self.in_hblank = false;
     }
     pub fn get_clock_divider(&self) -> u16 {
-        match self.hres.0 {
-            0 => 10,            // 256
-            1 => 8,             // 320
-            2 => 7,             // 512
-            3 => 5,             // 640
-            4 | 5 | 6 | 7 => 4, // 368
-            _ => panic!("not implemented"),
-        }
+        const DOT_CLOCK_DIVIDERS: [u16;8] = [10, 8, 5, 4, 7, 7, 7, 7];
+        DOT_CLOCK_DIVIDERS[(self.hres.2 | self.hres.3) as usize]
+
+        // match self.hres.0 {
+        //     0 => 10,            // 256
+        //     1 => 8,             // 320
+        //     2 => 7,             // 512
+            // 3 => 5,             // 640
+            // 4 | 5 | 6 | 7 => 4, // 368
+            // _ => panic!("not implemented"),
+        // }
     }
 
     pub fn rendering_ctx(&self) -> RenderingContext {
@@ -1421,16 +1529,16 @@ enum Field {
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
-pub struct HorizontalRes(u8, u8);
+pub struct HorizontalRes(u8, u8, u8, u8);
 
 impl HorizontalRes {
     pub fn from_fields(hr1: u8, hr2: u8) -> HorizontalRes {
         let st = (hr2 & 1) | ((hr1 & 3) << 1);
         let hr = (hr2 & 1 << 4) | (hr1 & 3);
-        HorizontalRes(hr, st)
+        HorizontalRes(hr, st, hr1, hr2)
     }
     fn into_status(self) -> u32 {
-        let HorizontalRes(_, st) = self;
+        let HorizontalRes(_, st,_,_) = self;
 
         (st as u32) << 16
     }

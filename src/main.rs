@@ -941,6 +941,15 @@ impl State {
             return;
         }
 
+        // let (startx, starty, width, height) = self.system.gpu.update_crt_display_params();
+        // let width = width as usize;
+        // let height = height as usize;
+        // let sx = startx as usize;
+        // let sy = starty as usize;
+
+        // println!("vram: {} x {} start: {}x{}; display: {} x {} start: {} x {}", w, h, sx, sy, width, height, _sx, _sy);
+
+
         let scale = height as f32 / self.config.height as f32;
         let mut w = width as f32 / scale / self.config.width as f32;
         let mut h: f32 = 1.0;

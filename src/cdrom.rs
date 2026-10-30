@@ -8,7 +8,6 @@ use crate::cd_cache::CdCache;
 use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
 use crate::iso9660;
 use crate::{
-    scheduler::Event,
     system::{Addressable, System},
 };
 
@@ -43,6 +42,13 @@ impl Track {
             self.indexes[1].lba
         };
         start
+    }
+    pub fn get_start_mut(&mut self) -> &mut usize {
+        if self.indexes[0].id == 1 {
+            &mut self.indexes[0].lba
+        } else {
+            &mut self.indexes[1].lba
+        }
     }
 }
 
@@ -89,7 +95,15 @@ impl Image {
 
             (tracks.clone(), CdCache::new(tracks))
         } else if path.ends_with(".cue") {
-            let tracks = crate::cue::parse_cue(&path);
+            let mut tracks = crate::cue::parse_cue(&path);
+            let mut prev_lba = 0;
+            for t in &mut tracks {
+                *t.get_start_mut() = prev_lba;
+                prev_lba += t.len;
+            }
+            for t in &tracks {
+                println!(">> track: {:?}", t);
+            }
             let cache = CdCache::new(tracks.clone());
             (tracks, cache)
         } else {
@@ -182,7 +196,7 @@ impl Image {
         self.tracks.first().expect("first track").id
     }
     pub fn last_track_id(&self) -> u8 {
-        self.tracks.first().expect("last track").id
+        self.tracks.last().expect("last track").id
     }
 
     pub fn track_mm_ss_ff(&self, track_id: u8) -> (u8, u8, u8) {
@@ -200,7 +214,8 @@ impl Image {
         let last_track = self.tracks.last().unwrap();
         let track_idx = last_track.indexes.iter().find(|x| x.id != 0).unwrap();
         // should we add prelude?
-        let length = 2 * 75 * SECTOR_SIZE + last_track.len + track_idx.lba;
+        // let length = 2 * 75 * SECTOR_SIZE + last_track.len + track_idx.lba;
+        let length = last_track.len + track_idx.lba;
         // let length = self.file.as_ref().unwrap().metadata().unwrap().len();
         self.mm_ss_ff(length as usize)
         // self.mm_ss_ff(self.data.len())
@@ -235,22 +250,28 @@ impl Image {
     pub fn current_track(&self) -> Track {
         let current_track = self
             .tracks
-            .partition_point(|t| t.indexes[0].lba <= self.read_head)
+            .partition_point(|t| t.get_start() <= self.read_head)
             .saturating_sub(1);
         self.tracks[current_track].clone()
     }
     pub fn current_position_info(&self) -> [u8; 8] {
         let current_track = self
             .tracks
-            .partition_point(|t| t.indexes[0].lba <= self.read_head)
+            .partition_point(|t| t.get_start() <= self.read_head)
             .saturating_sub(1);
 
         let current_track = &self.tracks[current_track];
 
-        let current_index = current_track
-            .indexes
-            .partition_point(|i| i.lba <= self.read_head)
-            .saturating_sub(1);
+        let current_index = if current_track.indexes[0].id == 1 {
+            0
+        } else {
+            1
+        };
+
+        // let current_index = current_track
+        //     .indexes
+        //     .partition_point(|i| i.lba <= self.read_head)
+        //     .saturating_sub(1);
 
         let current_index = &current_track.indexes[current_index];
 
@@ -1198,7 +1219,7 @@ impl CDRom {
             CmdState::Resp1 => {
                 println!("DEBUG CDROM: cmd_readtoc");
                 cdrom.push_result_byte(cdrom.stat.0);
-                cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
+                cdrom.cmd_delay = 5*CDROM_INIT_DELAY_CYCLES;
                 cdrom.cmd_state = CmdState::Resp2;
                 Self::set_interrupt(system, 3);
             }
@@ -1232,6 +1253,7 @@ impl CDRom {
     //
     pub fn cmd_gettn(system: &mut System) {
         let cdrom = &mut system.cdrom;
+        // cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
         let Some(disk) = cdrom.disk.as_ref() else {
             cdrom.push_error(DriveError::CannotRespond);
             println!("warn gettn while no disk");
@@ -1302,7 +1324,7 @@ impl CDRom {
             }
             CmdState::Resp1 => {
                 let track_num = from_bcd(cdrom.cmd_params.pop().unwrap_or(0)).unwrap_or(0);
-                println!("DEBUG CDROM: get_td");
+                println!("DEBUG CDROM: get_td (track_num: {})", track_num);
                 let Some(disk) = cdrom.disk.as_ref() else {
                     cdrom.push_error(DriveError::CannotRespond);
                     println!("warn gettd while no disk");
@@ -1320,10 +1342,13 @@ impl CDRom {
                 };
 
                 let (mm, ss, _) = if track_num != 0 {
-                    disk.track_mm_ss_ff(track_num)
+                    let start = track.get_start();
+                    disk.mm_ss_ff(start)
                 } else {
                     disk.last_track_end()
                 };
+
+                println!("DEBUG CDROM: get_td reporting mm: {} ss:{}", mm, ss);
                 cdrom.push_result_byte(cdrom.stat.0);
                 cdrom.push_result_byte(to_bcd(mm).expect("ok"));
                 cdrom.push_result_byte(to_bcd(ss).expect("ok"));
@@ -1552,7 +1577,7 @@ impl CDRom {
         } else {
             // FIXME: check valid location..
             cdrom.stat.set_play(true);
-            let sector = cdrom.disk.as_mut().unwrap().current_sector();
+            let sector = cdrom.disk.as_mut().unwrap().advance_sector();
             let Some(sector) = sector else {
                 system.cdrom.push_error(DriveError::SeekFailed);
                 Self::set_interrupt(system, 5);

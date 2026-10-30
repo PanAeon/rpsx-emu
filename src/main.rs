@@ -1,6 +1,7 @@
 
 use cpal::traits::StreamTrait;
 use gilrs::Axis;
+use log::LevelFilter;
 use log::info;
 use wgpu_profiler::GpuProfiler;
 // use env_logger::fmt::style::Color;
@@ -1740,7 +1741,8 @@ impl ApplicationHandler<State> for App {
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
-    env_logger::init();
+    env_logger::Builder::new().filter_module("rpsx_emu", LevelFilter::Info).init();
+    // env_logger::init();
 
     let event_loop = EventLoop::with_user_event().build()?;
     let mut app = App::new(cli);

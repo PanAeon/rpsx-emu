@@ -37,8 +37,10 @@ const REG_BADDR: u32 = 38;
 const REG_LOAD_REG: u32 = 39;
 const REG_LOAD_VAL: u32 = 40;
 
+const BLOCK_LEN: usize = 512;
+
 #[repr(C)]
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Registers {
     pub regs: [u32; 32],
     pub hi: u32,
@@ -136,7 +138,7 @@ impl Dynarec {
 
     pub fn schedule_compile_block(system: &mut System, addr: u32) {
         if system.block_cache.in_flight.insert(addr) {
-            let mut buff = [Instruction(0); 256];
+            let mut buff = [Instruction(0); BLOCK_LEN+1];
             let xs = Self::parse_block(system, addr, &mut buff);
             system
                 .cpu
@@ -228,13 +230,14 @@ impl Dynarec {
         &block.mem == current
     }
 
+    // TODO: apparently there's a problem whe block_len is 256 and gran turismo
     pub fn parse_block<'a, 'b>(
         system: &'a mut System,
         addr: u32,
         buff: &'b mut [Instruction],
     ) -> &'b [Instruction] {
-        let mut len = 255;
-        for i in 0..255 {
+        let mut len = BLOCK_LEN;
+        for i in 0..BLOCK_LEN {
             buff[i] = Instruction(system.load::<u32>(addr + i as u32 * 4));
             if buff[i].is_unconditional_jump() {
                 buff[i + 1] = Instruction(system.load::<u32>(addr + (i + 1) as u32 * 4));
@@ -243,9 +246,9 @@ impl Dynarec {
                 break;
             }
         }
-        if len == 255 && buff[254].is_conditional_jump() {
-            buff[255] = Instruction(system.load::<u32>(addr + (255) as u32 * 4));
-            len = 256;
+        if len == BLOCK_LEN && buff[BLOCK_LEN-1].is_conditional_jump() {
+            buff[BLOCK_LEN] = Instruction(system.load::<u32>(addr + (BLOCK_LEN) as u32 * 4));
+            len = BLOCK_LEN + 1;
         }
         &buff[0..len]
     }
@@ -657,6 +660,9 @@ impl Compiler {
                 panic!("{}", x);
             }
         };
+        if addr == 0x80011028 {
+                println!("{}", self.ctx.func.display());
+        }
         if !last_jmp {
             // println!("{}", self.ctx.func.display());
             // println!("last command is not jump");

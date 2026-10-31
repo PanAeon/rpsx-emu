@@ -1,3 +1,4 @@
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::ops::Div;
@@ -917,14 +918,14 @@ impl CDRom {
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
                 if cdrom.read_state != ReadState::Reading {
-                    println!("error: getlocl while not reading..");
+                    warn!("getlocl while not reading..");
                     cdrom.push_error(DriveError::CannotRespond);
                     Self::set_interrupt(system, 5);
                     system.cdrom.finish_command();
                     return;
                 };
 
-                println!("DEBUG CDROM: get_locl ");
+                info!("get_locl");
                 let header = cdrom.last_sector_header;
                 cdrom.push_result_slice(&header);
                 Self::set_interrupt(system, 3);
@@ -1536,6 +1537,7 @@ impl CDRom {
 
             let sector = disk.advance_sector();
             let Some(sector) = sector else {
+                warn!("Seek failed");
                 system.cdrom.push_error(DriveError::SeekFailed);
                 Self::set_interrupt(system, 5);
                 system.cdrom.finish_command();

@@ -8,9 +8,7 @@ use arrayvec::ArrayVec;
 use crate::cd_cache::CdCache;
 use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
 use crate::iso9660;
-use crate::{
-    system::{Addressable, System},
-};
+use crate::system::{Addressable, System};
 
 pub const SECTOR_SIZE: usize = 0x930;
 
@@ -214,22 +212,13 @@ impl Image {
     pub fn last_track_end(&self) -> (u8, u8, u8) {
         let last_track = self.tracks.last().unwrap();
         let track_idx = last_track.indexes.iter().find(|x| x.id != 0).unwrap();
-        // should we add prelude?
-        // let length = 2 * 75 * SECTOR_SIZE + last_track.len + track_idx.lba;
         let length = last_track.len + track_idx.lba;
+        // let length = last_track.len + track_idx.lba;
         // let length = self.file.as_ref().unwrap().metadata().unwrap().len();
-        self.mm_ss_ff(length as usize)
+        sectors_to_pos(length)
         // self.mm_ss_ff(self.data.len())
     }
 
-    pub fn mm_ss_ff(&self, read_head: usize) -> (u8, u8, u8) {
-        let sectors = read_head / SECTOR_SIZE;
-        let secs = sectors / 75;
-        let sect = sectors % 75;
-        let mins = secs / 60;
-        let secs = mins % 60;
-        (mins as u8, secs as u8, sect as u8)
-    }
     // INT3(amm,ass,asect,mode,file,channel,sm,ci)
     // pub fn get_current_sector_info(&mut self) -> [u8; 8] {
     //     // let (amm, ass, asect) = self.mm_ss_ff(self.read_head);
@@ -276,8 +265,8 @@ impl Image {
 
         let current_index = &current_track.indexes[current_index];
 
-        let track_pos = self.mm_ss_ff(self.read_head.saturating_sub(current_index.lba));
-        let disk_pos = self.mm_ss_ff(self.read_head);
+        let track_pos = mm_ss_ff(self.read_head.saturating_sub(current_index.lba));
+        let disk_pos = sectors_to_pos(self.read_head);
 
         [
             current_track.id,
@@ -984,7 +973,12 @@ impl CDRom {
                 let track_num = cdrom.cmd_params.pop();
                 if let Some(track_id) = track_num {
                     let track_num = from_bcd(track_id).unwrap();
-                    let track = cdrom.disk.as_ref().unwrap().get_track_by_number(track_num).expect("ok");
+                    let track = cdrom
+                        .disk
+                        .as_ref()
+                        .unwrap()
+                        .get_track_by_number(track_num)
+                        .expect("ok");
                     cdrom.seekloc = Some(track.get_start() as u32);
                 }
                 let cdrom = &mut system.cdrom;
@@ -1220,7 +1214,7 @@ impl CDRom {
             CmdState::Resp1 => {
                 println!("DEBUG CDROM: cmd_readtoc");
                 cdrom.push_result_byte(cdrom.stat.0);
-                cdrom.cmd_delay = 5*CDROM_INIT_DELAY_CYCLES;
+                cdrom.cmd_delay = 5 * CDROM_INIT_DELAY_CYCLES;
                 cdrom.cmd_state = CmdState::Resp2;
                 Self::set_interrupt(system, 3);
             }
@@ -1325,7 +1319,7 @@ impl CDRom {
             }
             CmdState::Resp1 => {
                 let track_num = from_bcd(cdrom.cmd_params.pop().unwrap_or(0)).unwrap_or(0);
-                println!("DEBUG CDROM: get_td (track_num: {})", track_num);
+                info!("get_td (track_num: {})", track_num);
                 let Some(disk) = cdrom.disk.as_ref() else {
                     cdrom.push_error(DriveError::CannotRespond);
                     println!("warn gettd while no disk");
@@ -1344,12 +1338,13 @@ impl CDRom {
 
                 let (mm, ss, _) = if track_num != 0 {
                     let start = track.get_start();
-                    disk.mm_ss_ff(start)
+                    sectors_to_pos(start)
                 } else {
                     disk.last_track_end()
                 };
 
-                println!("DEBUG CDROM: get_td reporting mm: {} ss:{}", mm, ss);
+
+                info!("get_td reporting mm: {} ss:{}", mm, ss);
                 cdrom.push_result_byte(cdrom.stat.0);
                 cdrom.push_result_byte(to_bcd(mm).expect("ok"));
                 cdrom.push_result_byte(to_bcd(ss).expect("ok"));
@@ -1495,7 +1490,7 @@ impl CDRom {
                 match cdrom.read_state {
                     ReadState::Idle => unreachable!(),
                     ReadState::Reading => Self::step_reading(system),
-                    ReadState::Playing => Self::step_playing(system), 
+                    ReadState::Playing => Self::step_playing(system),
                 }
             }
         }
@@ -1542,8 +1537,8 @@ impl CDRom {
                 Self::set_interrupt(system, 5);
                 system.cdrom.finish_command();
                 return;
-            }; 
-            
+            };
+
             cdrom.last_sector_header.copy_from_slice(&sector[12..20]);
             cdrom.read_delay = match cdrom.mode.speed() {
                 Speed::Normal => CDROM_READ_DELAY_CYCLES,
@@ -1585,7 +1580,7 @@ impl CDRom {
                 Self::set_interrupt(system, 5);
                 system.cdrom.finish_command();
                 return;
-            }; 
+            };
             cdrom.push_to_audio_buffer(&sector);
             // let samples: Vec<i16> = bytemuck::cast_vec(sector);
             cdrom.read_delay = CDROM_READ_DELAY_CYCLES;
@@ -1598,7 +1593,7 @@ impl CDRom {
     fn push_play_report(system: &mut System) {
         let cdrom = &mut system.cdrom;
         let disk = cdrom.disk.as_ref().unwrap();
-        let (mm, ss, ff) = disk.mm_ss_ff(disk.read_head);
+        let (mm, ss, ff) = sectors_to_pos(disk.read_head);
         if ff % 10 != 0 {
             return;
         }
@@ -1606,10 +1601,10 @@ impl CDRom {
         let track = disk.current_track();
 
         let in_pregap = abs_pos < track.get_start();
-        let track_index = if in_pregap {0} else {1};
+        let track_index = if in_pregap { 0 } else { 1 };
         let rel_pos = abs_pos - track.get_start();
 
-        let (rel_mm, rel_ss, rel_ff) = disk.mm_ss_ff(rel_pos);
+        let (rel_mm, rel_ss, rel_ff) = mm_ss_ff(rel_pos);
 
         cdrom.results.clear();
         cdrom.push_result_byte(cdrom.stat.0);
@@ -1630,7 +1625,6 @@ impl CDRom {
         cdrom.push_result_byte(0);
         cdrom.push_result_byte(0);
         Self::set_interrupt(system, 1);
-
     }
 
     fn is_xa_audio_sector(&self, sector: &Vec<u8>) -> bool {
@@ -2256,4 +2250,25 @@ fn read_system_cnf(image: &mut CdCache) -> Vec<u8> {
 
 pub fn pos_to_sectors(mins: u8, secs: u8, sect: u8) -> u32 {
     ((mins as u32) * 75 * 60) + ((secs as u32) * 75) + (sect as u32)
+}
+
+// doesn't add pregap
+pub fn mm_ss_ff(read_head: usize) -> (u8, u8, u8) {
+    let sectors = (read_head / SECTOR_SIZE);
+    let secs = (sectors / 75);
+    let sect = sectors % 75;
+    let mins = secs / 60;
+    let secs = secs % 60;
+    (mins as u8, secs as u8, sect as u8)
+}
+
+// adds pregap
+pub fn sectors_to_pos(read_head: usize) -> (u8, u8, u8) {
+    mm_ss_ff(read_head +  2 * 75 * SECTOR_SIZE)
+}
+
+#[test]
+fn test_sector_to_pos() {
+    let zero = sectors_to_pos(0);
+    assert!(zero == (0, 2, 0))
 }

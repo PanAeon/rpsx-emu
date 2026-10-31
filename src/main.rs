@@ -930,6 +930,9 @@ impl State {
         if width == 0 && height == 0 {
             self.output_width = width;
             self.output_height = height;
+            self.display_depth = depth;
+            self.sx = sx;
+            self.sy = sy;
             return;
         }
         if !force
@@ -941,6 +944,11 @@ impl State {
         {
             return;
         }
+            self.output_width = width;
+            self.output_height = height;
+            self.display_depth = depth;
+            self.sx = sx;
+            self.sy = sy;
 
         // let (startx, starty, width, height) = self.system.gpu.update_crt_display_params();
         // let width = width as usize;

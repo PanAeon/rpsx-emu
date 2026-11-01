@@ -47,7 +47,8 @@ pub fn create_draw_pipeline(
     let depth_stencil: Option<wgpu::DepthStencilState> = None;
 
     let shader_source = if enable_crt_shader {
-        Cow::Borrowed(include_str!("crt.wgsl"))
+        // Cow::Borrowed(include_str!("crt.wgsl"))
+        Cow::Borrowed(include_str!("potato.wgsl"))
     } else {
         Cow::Borrowed(include_str!("empty.wgsl"))
     };

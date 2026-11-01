@@ -1,24 +1,24 @@
-struct TextureInfo {
-    width: u32,
-    height: u32,
-}
+// struct TextureInfo {
+//     width: u32,
+//     height: u32,
+// }
 
 struct DisplayUniforms {
     is_24bpp: u32
 }
 
 // camera maps from world coordinates to NDC
-@group(0) @binding(0) var<uniform> camera: mat4x4<f32>;
-@group(0) @binding(1) var<uniform> uniforms: DisplayUniforms;
+// @group(0) @binding(0) var<uniform> camera: mat4x4<f32>;
+@group(0) @binding(0) var<uniform> uniforms: DisplayUniforms;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) uv: vec2<f32>,
 };
 
-@group(1) @binding(0) var<uniform> texture_info: TextureInfo;
-@group(1) @binding(1) var t_diffuse: texture_2d<u32>;
-@group(1) @binding(2) var s_diffuse: sampler;
+// @group(1) @binding(0) var<uniform> texture_info: TextureInfo;
+@group(1) @binding(0) var t_diffuse: texture_2d<u32>;
+// @group(1) @binding(2) var s_diffuse: sampler;
 
 
 struct VertexOutput {
@@ -26,6 +26,12 @@ struct VertexOutput {
     @location(0) tex_coords: vec2<f32>,
 }
 
+const CAMERA: mat4x4<f32> =    mat4x4<f32>(
+        2.0, 0.0, 0.0, 0.0,
+        0.0, 2.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        -1.0, -1.0, 0.0, 1.0
+    );
 
 @vertex
 fn vert_main(model: VertexInput) -> VertexOutput {
@@ -33,7 +39,7 @@ fn vert_main(model: VertexInput) -> VertexOutput {
     ret.tex_coords = model.uv;
     let position = vec4<f32>(model.position, 1.0);
     // ret.position = tilemap.transform*position;
-    ret.clip_position = camera * position;
+    ret.clip_position = CAMERA * position;
      // ret.clip_position =  position;
     // ret.tex_coords = TEX_COORDS[vertex_index % 6u];
     // ret.position = camera * position;

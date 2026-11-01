@@ -1,16 +1,14 @@
-
 use cpal::traits::StreamTrait;
 use gilrs::Axis;
 use log::LevelFilter;
 use log::info;
 use wgpu_profiler::GpuProfiler;
-use std::collections::HashSet;
 // use env_logger::fmt::style::Color;
 use std::io::Read;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Mutex;
 use std::sync::Arc;
+use std::sync::Mutex;
 use wgpu::util::DeviceExt;
 use winit::keyboard::Key;
 use winit::{
@@ -24,7 +22,6 @@ use winit::{
 use gilrs::{Event, GamepadId, Gilrs};
 
 use std::{borrow::Cow, num::NonZeroU64};
-use vek::{Mat4, Vec4};
 
 use crate::cdrom::CDRom;
 use crate::dynarec::Dynarec;
@@ -59,14 +56,14 @@ mod timers;
 mod block_cache;
 mod cd_cache;
 mod cdxa;
+mod cue;
 mod dummy_renderer;
 mod dynarec;
-mod interpreter;
-mod save_state;
 mod fastmem;
+mod interpreter;
 mod iso9660;
-mod cue;
 mod presenter;
+mod save_state;
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
 //     let mut i = 0;
@@ -77,7 +74,7 @@ mod presenter;
 //     table
 // };
 
-use clap::{Parser};
+use clap::Parser;
 
 #[derive(Parser, Clone)]
 pub struct Cli {
@@ -87,7 +84,9 @@ pub struct Cli {
     #[arg(long)]
     sideload: bool,
     #[arg(long)]
-    profilegpu: bool
+    profilegpu: bool,
+    #[arg(long)]
+    enable_crt_shader: bool,
 }
 
 fn main() {
@@ -105,24 +104,24 @@ fn main() {
     println!("goodbye!");
 }
 
-const fn mat4_const_from_rows(m: [[f32; 4]; 4]) -> Mat4<f32> {
-    Mat4 {
-        cols: Vec4 {
-            x: Vec4::new(m[0][0], m[1][0], m[2][0], m[3][0]),
-            y: Vec4::new(m[0][1], m[1][1], m[2][1], m[3][1]),
-            z: Vec4::new(m[0][2], m[1][2], m[2][2], m[3][2]),
-            w: Vec4::new(m[0][3], m[1][3], m[2][3], m[3][3]),
-        },
-    }
-}
+// const fn mat4_const_from_rows(m: [[f32; 4]; 4]) -> Mat4<f32> {
+//     Mat4 {
+//         cols: Vec4 {
+//             x: Vec4::new(m[0][0], m[1][0], m[2][0], m[3][0]),
+//             y: Vec4::new(m[0][1], m[1][1], m[2][1], m[3][1]),
+//             z: Vec4::new(m[0][2], m[1][2], m[2][2], m[3][2]),
+//             w: Vec4::new(m[0][3], m[1][3], m[2][3], m[3][3]),
+//         },
+//     }
+// }
 
-#[rustfmt::skip]
-pub const FULLSCREEN_QUAD_CAMERA: Mat4<f32> = mat4_const_from_rows([
-    [2.0, 0.0, 0.0, -1.0],
-    [0.0, 2.0, 0.0, -1.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-]);
+// #[rustfmt::skip]
+// pub const FULLSCREEN_QUAD_CAMERA: Mat4<f32> = mat4_const_from_rows([
+//     [2.0, 0.0, 0.0, -1.0],
+//     [0.0, 2.0, 0.0, -1.0],
+//     [0.0, 0.0, 1.0, 0.0],
+//     [0.0, 0.0, 0.0, 1.0],
+// ]);
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -214,13 +213,13 @@ pub struct State {
     frame_num: u64,
     render_time_ms: u32,
     // camera: Camera,
-    camera_buffer: wgpu::Buffer,
+    // camera_buffer: wgpu::Buffer,
     uniforms_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
+    uniforms_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
-    texture_params_buffer: wgpu::Buffer,
+    // texture_params_buffer: wgpu::Buffer,
     render_texture: wgpu::Texture,
     texture_bind_group: wgpu::BindGroup,
     // dimensions: (u32, u32),
@@ -243,6 +242,10 @@ pub struct State {
     software_render: bool,
     sideload_exe: Option<String>,
     ctrl_pressed: bool,
+    draw_pipeline: wgpu::RenderPipeline,
+    draw_texture: wgpu::Texture,
+    draw_vertex_buffer: wgpu::Buffer,
+    draw_texture_bind_group: wgpu::BindGroup,
 }
 
 impl State {
@@ -302,9 +305,9 @@ impl State {
             })
             .await?;
 
-        device.on_uncaptured_error(Arc::new(|error| {
-            eprintln!("Uncaptured wgpu error: {:#?}", error);
-        }));
+        // device.on_uncaptured_error(Arc::new(|error| {
+        //     eprintln!("Uncaptured wgpu error: {:#?}", error);
+        // }));
 
         let surface_caps = surface.get_capabilities(&adapter);
 
@@ -368,61 +371,41 @@ impl State {
             label: Some("shaders"),
             source: wgpu::ShaderSource::Wgsl(shader_source),
         });
-        let camera_bind_group_layout =
+        let uniforms_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("camera_bind_group_layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: NonZeroU64::new(
-                                ::std::mem::size_of::<[[f32; 4]; 4]>() as u64,
-                            ),
-                        },
-                        count: None,
+                label: Some("uniforms_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::all(),
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(
+                            ::std::mem::size_of::<DisplayUniforms>() as u64
+                        ),
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::all(),
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: NonZeroU64::new(
-                                ::std::mem::size_of::<DisplayUniforms>() as u64,
-                            ),
-                        },
-                        count: None,
-                    },
-                ],
+                    count: None,
+                }],
             });
-        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("camera_buffer"),
-            size: ::std::mem::size_of::<[[f32; 4]; 4]>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: Some("camera_buffer"),
+        //     size: ::std::mem::size_of::<[[f32; 4]; 4]>() as u64,
+        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        //     mapped_at_creation: false,
+        // });
         let uniforms_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniform_buffer"),
             size: ::std::mem::size_of::<DisplayUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("camera_bind_group"),
-            layout: &camera_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: uniforms_buffer.as_entire_binding(),
-                },
-            ],
+        let uniforms_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uniforms_bind_group"),
+            layout: &uniforms_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms_buffer.as_entire_binding(),
+            }],
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex_buffer"),
@@ -439,20 +422,20 @@ impl State {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("texture_bind_group_layout"),
                 entries: &[
+                    // wgpu::BindGroupLayoutEntry {
+                    //     binding: 0,
+                    //     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    //     ty: wgpu::BindingType::Buffer {
+                    //         ty: wgpu::BufferBindingType::Uniform,
+                    //         has_dynamic_offset: false,
+                    //         min_binding_size: NonZeroU64::new(
+                    //             ::std::mem::size_of::<TextureBuffer>() as u64,
+                    //         ),
+                    //     },
+                    //     count: None,
+                    // },
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: NonZeroU64::new(
-                                ::std::mem::size_of::<TextureBuffer>() as u64,
-                            ),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Uint,
@@ -461,18 +444,18 @@ impl State {
                         },
                         count: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
+                    // wgpu::BindGroupLayoutEntry {
+                    //     binding: 2,
+                    //     visibility: wgpu::ShaderStages::FRAGMENT,
+                    //     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    //     count: None,
+                    // },
                 ],
             });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
             bind_group_layouts: &[
-                Some(&camera_bind_group_layout),
+                Some(&uniforms_bind_group_layout),
                 Some(&texture_bind_group_layout),
             ],
             immediate_size: 0,
@@ -507,40 +490,43 @@ impl State {
 
         // let data_view = tileset_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        let texture_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("texture_params_buffer"),
-            size: ::std::mem::size_of::<TextureBuffer>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        //     address_mode_u: wgpu::AddressMode::ClampToEdge,
+        //     address_mode_v: wgpu::AddressMode::ClampToEdge,
+        //     address_mode_w: wgpu::AddressMode::ClampToEdge,
+        //     mag_filter: wgpu::FilterMode::Linear,
+        //     min_filter: wgpu::FilterMode::Nearest,
+        //     mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        //     ..Default::default()
+        // });
+        // let texture_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: Some("texture_params_buffer"),
+        //     size: ::std::mem::size_of::<TextureBuffer>() as u64,
+        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        //     mapped_at_creation: false,
+        // });
         let texture_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("texture bind_group"),
             layout: &texture_bind_group_layout,
             entries: &[
+                // wgpu::BindGroupEntry {
+                //     binding: 0,
+                //     resource: texture_params_buffer.as_entire_binding(),
+                // },
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: texture_params_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
                     resource: wgpu::BindingResource::TextureView(&texture_view),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
-                },
+                // wgpu::BindGroupEntry {
+                //     binding: 2,
+                //     resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                // },
             ],
         });
+
+        let (draw_pipeline, draw_texture, draw_vertex_buffer, draw_texture_bind_group) =
+            crate::presenter::create_draw_pipeline(&device, config.format, cli.enable_crt_shader);
 
         let (ram_slice, bios_slice) = fastmem::create_memory_mappings();
         let bios = bios::Bios::new(bios_slice, Path::new("/foo/SCPH1001.BIN"))?;
@@ -550,7 +536,11 @@ impl State {
         let dma = dma::Dma::new();
         // let gpu = gpu::Gpu::new();
         let spu = spu::Spu::new();
-        let cdrom = CDRom::new(if cli.sideload {None} else {cli.filename.clone()});
+        let cdrom = CDRom::new(if cli.sideload {
+            None
+        } else {
+            cli.filename.clone()
+        });
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
         let sio = sio::Sio::new();
@@ -569,7 +559,7 @@ impl State {
                 queue.clone(),
                 config.format,
                 render_texture.clone(),
-                cli.profilegpu
+                cli.profilegpu,
             )
         };
         let gpu = gpu::Gpu::new(sender, receiver, handle);
@@ -647,9 +637,9 @@ impl State {
             // render_finished: std::time::Instant::now(),
             // diffuse_bind_group,
             // camera,
-            camera_buffer,
+            // camera_buffer,
             uniforms_buffer,
-            camera_bind_group,
+            uniforms_bind_group,
             // camera_controller,
             render_finished: web_time::Instant::now(),
             render_time_ms: 0,
@@ -658,7 +648,7 @@ impl State {
             vertex_buffer,
             pipeline,
             texture_bind_group_layout,
-            texture_params_buffer,
+            // texture_params_buffer,
             // tileset_params_buffer,
             // tileset_texture,
             // tileset_bind_group,
@@ -668,6 +658,11 @@ impl State {
             render_texture,
             framebuffer: Arc::new(Mutex::new(vec![0; 1024 * 512])),
             texture_size,
+
+            draw_pipeline,
+            draw_texture,
+            draw_vertex_buffer,
+            draw_texture_bind_group,
             // image_rgba,
             // dimensions,
             // game_state,
@@ -690,7 +685,9 @@ impl State {
             sx: 0,
             sy: 0,
             display_depth: DisplayDepth::D15Bits, // writer,
-            sideload_exe: cli.sideload.then(|| cli.filename.expect("sideload binary to be present")),
+            sideload_exe: cli
+                .sideload
+                .then(|| cli.filename.expect("sideload binary to be present")),
             ctrl_pressed: false,
         };
 
@@ -701,7 +698,7 @@ impl State {
             }
         }
 
-        set_camera(&state, &state.queue, FULLSCREEN_QUAD_CAMERA);
+        // set_camera(&state, &state.queue, FULLSCREEN_QUAD_CAMERA);
         set_uniforms(&state, &state.queue);
 
         State::upload_framebuffer(&state);
@@ -939,11 +936,11 @@ impl State {
         {
             return;
         }
-            self.output_width = width;
-            self.output_height = height;
-            self.display_depth = depth;
-            self.sx = sx;
-            self.sy = sy;
+        self.output_width = width;
+        self.output_height = height;
+        self.display_depth = depth;
+        self.sx = sx;
+        self.sy = sy;
 
         // let (startx, starty, width, height) = self.system.gpu.update_crt_display_params();
         // let width = width as usize;
@@ -952,7 +949,6 @@ impl State {
         // let sy = starty as usize;
 
         // println!("vram: {} x {} start: {}x{}; display: {} x {} start: {} x {}", w, h, sx, sy, width, height, _sx, _sy);
-
 
         let scale = height as f32 / self.config.height as f32;
         let mut w = width as f32 / scale / self.config.width as f32;
@@ -1123,7 +1119,7 @@ impl State {
             // let budget = self.cpu.system.scheduler.next_event_budget();
             // TODO:
             //if !pending_interrupt || (is_gte && !self.delay_slot) {
-            
+
             if Dynarec::check_for_pending_interrupts(&mut self.system) {
                 self.system.cpu.external_interrupt();
             }
@@ -1141,12 +1137,13 @@ impl State {
 
             Dynarec::receive_compiled_blocks(&mut self.system);
 
-
-
-
             // let block_idx = None;
             let block_idx = if let Some(entry) = self.system.block_cache.get_entry(pc) {
-                if self.system.block_cache.is_block_dirty(entry.block_idx.unwrap()) {
+                if self
+                    .system
+                    .block_cache
+                    .is_block_dirty(entry.block_idx.unwrap())
+                {
                     if !Dynarec::is_block_valid(&mut self.system, entry.block_idx.unwrap()) {
                         // recompile block...
                         Dynarec::schedule_compile_block(&mut self.system, pc);
@@ -1160,7 +1157,7 @@ impl State {
                         entry.block_idx
                     }
                 } else {
-                        entry.block_idx
+                    entry.block_idx
                 }
             } else {
                 Dynarec::schedule_compile_block(&mut self.system, pc);
@@ -1217,12 +1214,43 @@ impl State {
         // }
     }
 
-
     fn render(&mut self, view: &wgpu::TextureView) {
         self.upload_framebuffer();
         self.window.request_redraw();
 
+        {
 
+            let draw_texture_view = self.draw_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("draw_encoder"),
+                });
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("draw_rpass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &draw_texture_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    ..Default::default()
+                });
+                rpass.set_pipeline(&self.pipeline);
+                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                rpass.set_bind_group(0, &self.uniforms_bind_group, &[]);
+
+                rpass.set_bind_group(1, &self.texture_bind_group, &[]);
+                rpass.draw(0..6, 0..1);
+                // render(self, &self.device, &mut rpass);
+            }
+            self.queue.submit(vec![encoder.finish()]);
+        }
         {
             let mut encoder = self
                 .device
@@ -1244,7 +1272,12 @@ impl State {
                     depth_stencil_attachment: None,
                     ..Default::default()
                 });
-                render(self, &self.device, &mut rpass);
+                rpass.set_pipeline(&self.draw_pipeline);
+                rpass.set_vertex_buffer(0, self.draw_vertex_buffer.slice(..));
+                // rpass.set_bind_group(0, &self.uniforms_bind_group, &[]);
+
+                rpass.set_bind_group(0, &self.draw_texture_bind_group, &[]);
+                rpass.draw(0..6, 0..1);
             }
             self.queue.submit(vec![encoder.finish()]);
         }
@@ -1307,42 +1340,42 @@ impl State {
         _repeat: bool,
     ) {
         if code == KeyCode::ControlLeft || code == KeyCode::ControlRight {
-            self.ctrl_pressed = key_state.is_pressed(); 
+            self.ctrl_pressed = key_state.is_pressed();
         }
         match (code, key_state.is_pressed()) {
             (KeyCode::Space, false) => self.paused = !self.paused,
             (KeyCode::KeyV, false) => self.display_vram = !self.display_vram,
             (KeyCode::Digit1, false) => {
                 if self.ctrl_pressed {
-                   load_state(1, &mut self.system); 
+                    load_state(1, &mut self.system);
                 } else {
                     save_state(1, &mut self.system);
                 }
             }
             (KeyCode::Digit2, false) => {
                 if self.ctrl_pressed {
-                   load_state(2, &mut self.system); 
+                    load_state(2, &mut self.system);
                 } else {
                     save_state(2, &mut self.system);
                 }
             }
             (KeyCode::Digit3, false) => {
                 if self.ctrl_pressed {
-                   load_state(3, &mut self.system); 
+                    load_state(3, &mut self.system);
                 } else {
                     save_state(3, &mut self.system);
                 }
             }
             (KeyCode::Digit4, false) => {
                 if self.ctrl_pressed {
-                   load_state(4, &mut self.system); 
+                    load_state(4, &mut self.system);
                 } else {
                     save_state(4, &mut self.system);
                 }
             }
             (KeyCode::Digit5, false) => {
                 if self.ctrl_pressed {
-                   load_state(5, &mut self.system); 
+                    load_state(5, &mut self.system);
                 } else {
                     save_state(5, &mut self.system);
                 }
@@ -1399,7 +1432,10 @@ impl State {
     pub fn update_gamepad(&mut self) {
         let mut prev_buttons = self.system.sio.gamepad1.digital_switches;
         while let Some(Event {
-            id:_, event, time:_, ..
+            id: _,
+            event,
+            time: _,
+            ..
         }) = self.gilrs.next_event()
         {
             // println!("{:?} New event from {}: {:?}", time, id, event);
@@ -1500,7 +1536,6 @@ impl State {
                         axes[3] = byte; // correct
                     }
                     // self.system.sio.gamepad1.set_stick_axis(left, right);
-                    
                 }
                 gilrs::EventType::Connected => {}
                 gilrs::EventType::Disconnected => {}
@@ -1512,11 +1547,10 @@ impl State {
     }
 }
 
-
 pub struct App {
     state: Option<State>,
     occluded: bool,
-    cli: Cli
+    cli: Cli,
 }
 
 impl App {
@@ -1524,7 +1558,7 @@ impl App {
         Self {
             state: None,
             occluded: false,
-            cli
+            cli,
         }
     }
 }
@@ -1631,7 +1665,9 @@ impl ApplicationHandler<State> for App {
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
-    env_logger::Builder::new().filter_module("rpsx_emu", LevelFilter::Info).init();
+    env_logger::Builder::new()
+        .filter_module("rpsx_emu", LevelFilter::Info)
+        .init();
     // env_logger::init();
 
     let event_loop = EventLoop::with_user_event().build()?;
@@ -1657,23 +1693,23 @@ pub fn set_uniforms(state: &State, queue: &wgpu::Queue) {
         bytemuck::cast_slice(&[DisplayUniforms { is_24bpp }]),
     );
 }
-/// Set the camera matrix that maps from world coordinates to Normalized Device Coordinates.
-pub fn set_camera(state: &State, queue: &wgpu::Queue, camera: Mat4<f32>) {
-    queue.write_buffer(
-        &state.camera_buffer,
-        0,
-        bytemuck::cast_slice(&camera.into_col_arrays()),
-    );
-}
-pub fn render<'a: 'pass, 'pass>(
-    state: &State,
-    _device: &wgpu::Device,
-    rpass: &mut wgpu::RenderPass<'pass>,
-) {
-    rpass.set_pipeline(&state.pipeline);
-    rpass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
-    rpass.set_bind_group(0, &state.camera_bind_group, &[]);
-
-    rpass.set_bind_group(1, &state.texture_bind_group, &[]);
-    rpass.draw(0..6, 0..1);
-}
+// Set the camera matrix that maps from world coordinates to Normalized Device Coordinates.
+// pub fn set_camera(state: &State, queue: &wgpu::Queue, camera: Mat4<f32>) {
+//     queue.write_buffer(
+//         &state.camera_buffer,
+//         0,
+//         bytemuck::cast_slice(&camera.into_col_arrays()),
+//     );
+// }
+// pub fn render<'a: 'pass, 'pass>(
+//     state: &State,
+//     _device: &wgpu::Device,
+//     rpass: &mut wgpu::RenderPass<'pass>,
+// ) {
+//     rpass.set_pipeline(&state.pipeline);
+//     rpass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
+//     rpass.set_bind_group(0, &state.uniforms_bind_group, &[]);
+//
+//     rpass.set_bind_group(1, &state.texture_bind_group, &[]);
+//     rpass.draw(0..6, 0..1);
+// }

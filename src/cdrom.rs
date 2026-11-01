@@ -244,6 +244,7 @@ impl Image {
             .saturating_sub(1);
         self.tracks[current_track].clone()
     }
+
     pub fn current_position_info(&self) -> [u8; 8] {
         let current_track = self
             .tracks
@@ -265,18 +266,26 @@ impl Image {
 
         let current_index = &current_track.indexes[current_index];
 
-        let track_pos = mm_ss_ff(self.read_head.saturating_sub(2 * 75 * SECTOR_SIZE).saturating_sub(current_index.lba));
-        let disk_pos = sectors_to_pos(self.read_head);
+        let track_pos = mm_ss_ff(
+            self.read_head
+                .saturating_sub(2 * 75 * SECTOR_SIZE)
+                .saturating_sub(current_index.lba),
+        );
+        let disk_pos = mm_ss_ff(self.read_head);
+
+        info!("getlocp: {} {} {} {} {} {} {} {}",
+             current_track.id, current_index.id, track_pos.0, track_pos.1, track_pos.2,
+        disk_pos.0, disk_pos.1, disk_pos.2);
 
         [
-            current_track.id,
-            current_index.id,
-            track_pos.0,
-            track_pos.1,
-            track_pos.2,
-            disk_pos.0,
-            disk_pos.1,
-            disk_pos.2,
+            to_bcd(current_track.id).unwrap(),
+            to_bcd(current_index.id).unwrap(),
+            to_bcd(track_pos.0).unwrap(),
+            to_bcd(track_pos.1).unwrap(),
+            to_bcd(track_pos.2).unwrap(),
+            to_bcd(disk_pos.0).unwrap(),
+            to_bcd(disk_pos.1).unwrap(),
+            to_bcd(disk_pos.2).unwrap(),
         ]
     }
 
@@ -316,7 +325,7 @@ pub struct CDRom {
     data_buffer: VecDeque<u8>,
     data_pos: u32,
     last_sector_header: [u8; 8],
-    read_state: ReadState,
+    pub read_state: ReadState,
     read_delay: u32,
     irq_mask: IrqMask,
     irq_pending: IrqPending,
@@ -875,7 +884,7 @@ impl CDRom {
                 let bytes = disk.current_position_info();
                 cdrom.push_result_slice(&bytes);
 
-                println!("DEBUG CDROM: get_locp ");
+                // println!("DEBUG CDROM: get_locp ");
                 Self::set_interrupt(system, 3);
                 system.cdrom.finish_command();
             }
@@ -1343,7 +1352,6 @@ impl CDRom {
                     disk.last_track_end()
                 };
 
-
                 info!("get_td reporting mm: {} ss:{}", mm, ss);
                 cdrom.push_result_byte(cdrom.stat.0);
                 cdrom.push_result_byte(to_bcd(mm).expect("ok"));
@@ -1602,7 +1610,9 @@ impl CDRom {
 
         let in_pregap = abs_pos < track.get_start(); // TODO: wrong! track 1 lba is 0
         let track_index = if in_pregap { 0 } else { 1 };
-        let rel_pos = abs_pos.saturating_sub(2 * 75 * SECTOR_SIZE).saturating_sub(track.get_start());
+        let rel_pos = abs_pos
+            .saturating_sub(2 * 75 * SECTOR_SIZE)
+            .saturating_sub(track.get_start());
 
         let (rel_mm, rel_ss, rel_ff) = mm_ss_ff(rel_pos);
 
@@ -2264,7 +2274,7 @@ pub fn mm_ss_ff(read_head: usize) -> (u8, u8, u8) {
 
 // adds pregap
 pub fn sectors_to_pos(read_head: usize) -> (u8, u8, u8) {
-    mm_ss_ff(read_head +  2 * 75 * SECTOR_SIZE)
+    mm_ss_ff(read_head + 2 * 75 * SECTOR_SIZE)
 }
 
 #[test]

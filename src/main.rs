@@ -1027,6 +1027,7 @@ impl State {
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;
             self.paused = false;
+            // self.system.cdrom.begin_playing();
             return;
         }
         loop {

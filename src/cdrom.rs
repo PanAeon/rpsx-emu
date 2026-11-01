@@ -265,7 +265,7 @@ impl Image {
 
         let current_index = &current_track.indexes[current_index];
 
-        let track_pos = mm_ss_ff(self.read_head.saturating_sub(current_index.lba));
+        let track_pos = mm_ss_ff(self.read_head.saturating_sub(2 * 75 * SECTOR_SIZE).saturating_sub(current_index.lba));
         let disk_pos = sectors_to_pos(self.read_head);
 
         [
@@ -1600,9 +1600,9 @@ impl CDRom {
         let abs_pos = disk.read_head;
         let track = disk.current_track();
 
-        let in_pregap = abs_pos < track.get_start();
+        let in_pregap = abs_pos < track.get_start(); // TODO: wrong! track 1 lba is 0
         let track_index = if in_pregap { 0 } else { 1 };
-        let rel_pos = abs_pos - track.get_start();
+        let rel_pos = abs_pos.saturating_sub(2 * 75 * SECTOR_SIZE).saturating_sub(track.get_start());
 
         let (rel_mm, rel_ss, rel_ff) = mm_ss_ff(rel_pos);
 

@@ -37,7 +37,7 @@ const REG_BADDR: u32 = 38;
 const REG_LOAD_REG: u32 = 39;
 const REG_LOAD_VAL: u32 = 40;
 
-const BLOCK_LEN: usize = 512;
+const BLOCK_LEN: usize = 471;
 
 #[repr(C)]
 #[derive(Serialize, Deserialize, Debug)]

@@ -51,18 +51,6 @@ impl Sio {
             }
             0xA => T::from_u32(self.control.0 as u32),
             0xE => T::from_u32(self.boudrate_reload as u32), // baud rate
-            0x1A => {
-                warn!("sio ignore load to 0x1A");
-               T::from_u32(0) 
-            }
-            0x1E => {
-                warn!("sio ignore load to 0x1E");
-               T::from_u32(0) 
-            }
-            0x18 => {
-                warn!("sio ignore load to 0x18");
-               T::from_u32(0) 
-            }
             _ => panic!("Unhandled sio load{:?} offset: {:08x}", T::width(), offset),
         }
     }
@@ -83,15 +71,6 @@ impl Sio {
             0xA => Self::write_control(system, val),
             0xE => {
                 sio.boudrate_reload = val;
-            }
-            0x1A => {
-                warn!("sio ignore store to 0x1A");
-            }
-            0x1E => {
-                warn!("sio ignore store to 0x1E");
-            }
-            0x18 => {
-                warn!("sio ignore store to 0x18");
             }
             _ => panic!("Unhandled sio store{:?} offset: {:08x}", T::width(), offset),
         };

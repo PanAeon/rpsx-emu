@@ -51,6 +51,7 @@ mod renderer;
 mod scheduler;
 mod scratchpad;
 mod sio;
+mod sio2;
 mod spu;
 mod system;
 mod timers;
@@ -125,7 +126,7 @@ pub const FULLSCREEN_QUAD_CAMERA: Mat4<f32> = mat4_const_from_rows([
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
+pub struct Vertex {
     position: [f32; 3],
     uv: [f32; 2],
 }
@@ -151,7 +152,7 @@ impl Vertex {
     }
 }
 
-const VERTICES: &[Vertex] = &[
+pub const VERTICES: &[Vertex] = &[
     Vertex {
         position: [0.0, 0.0, 0.0],
         uv: [0.0, 0.0],
@@ -553,6 +554,7 @@ impl State {
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
         let sio = sio::Sio::new();
+        let sio2 = sio2::Sio2::new();
         let mdec = mdec::Mdec::new();
         let mut scheduler = scheduler::Scheduler::default();
         scheduler.init();
@@ -585,6 +587,7 @@ impl State {
             timers,
             cdrom,
             sio,
+            sio2,
             mdec,
             gpu,
             block_cache,
@@ -927,14 +930,6 @@ impl State {
         depth: DisplayDepth,
         force: bool,
     ) {
-        if width == 0 && height == 0 {
-            self.output_width = width;
-            self.output_height = height;
-            self.display_depth = depth;
-            self.sx = sx;
-            self.sy = sy;
-            return;
-        }
         if !force
             && width == self.output_width
             && height == self.output_height
@@ -1226,63 +1221,8 @@ impl State {
         self.upload_framebuffer();
         self.window.request_redraw();
 
-        // let output = self.surface.as_ref().unwrap().get_current_texture();
-        // let view = output
-        //     .texture
-        //     .create_view(&wgpu::TextureViewDescriptor::default());
-
-        // let mut encoder = self
-        //     .device
-        //     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        //         label: Some("Render Encoder"),
-        //     });
 
         {
-            // let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            //     label: Some("Render Pass"),
-            //     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            //         view: &view,
-            //         resolve_target: None,
-            //         ops: wgpu::Operations {
-            //             load: wgpu::LoadOp::Clear(self.clear_color),
-            //             store: wgpu::StoreOp::Store,
-            //         },
-            //         depth_slice: None,
-            //     })],
-            //     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            //         view: &self.depth_texture.view,
-            //         depth_ops: Some(wgpu::Operations {
-            //             load: wgpu::LoadOp::Clear(1.0),
-            //             store: wgpu::StoreOp::Store,
-            //         }),
-            //         stencil_ops: None,
-            //     }),
-            //     occlusion_query_set: None,
-            //     timestamp_writes: None,
-            //     multiview_mask: None,
-            // });
-            //     render_pass.set_pipeline(&self.render_pipeline); // 2.
-            //     render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            //     // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            //     // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            //     render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            //     // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            //     // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            //
-            //     render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            //     render_pass.set_pipeline(&self.render_pipeline);
-            //     render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            //     render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            //
-            //     use model::DrawModel;
-            //     render_pass
-            //         .draw_mesh_instanced(&self.obj_model.meshes[0], 0..self.instances.len() as u32);
-            // }
-            //
-            // self.queue.submit(iter::once(encoder.finish()));
-
-            // tilemap stuff
-            // {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {

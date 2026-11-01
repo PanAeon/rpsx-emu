@@ -3,7 +3,7 @@ use serde::Serialize;
 use crate::{
     bios::Bios, block_cache::BlockCache, cdrom::CDRom, dma::{
         self, Direction, Dma, Port, Step, Sync,
-    }, dynarec::Dynarec, gpu::Gpu, irq::InterruptController, mdec::{self, Mdec}, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, spu::Spu, timers::Timers,
+    }, dynarec::Dynarec, gpu::Gpu, irq::InterruptController, mdec::{self, Mdec}, ram::Ram, scheduler::Scheduler, scratchpad::Scratchpad, sio::Sio, sio2::Sio2, spu::Spu, timers::Timers,
 };
 
 pub mod map {
@@ -34,7 +34,8 @@ pub mod map {
     pub const TIMERS: Range = Range(0x1F801100, 0x30);
     pub const DMA: Range = Range(0x1f801080, 0x80);
     pub const GPU: Range = Range(0x1f801810, 8);
-    pub const JOYSTICK: Range = Range(0x1f801040, 32);
+    pub const JOYSTICK: Range = Range(0x1f801040, 16);
+    pub const SIO2: Range = Range(0x1f801050, 16);
     pub const CDROM: Range = Range(0x1f801800, 4);
     pub const MDEC: Range = Range(0x1F80_1820, 8);
 }
@@ -104,6 +105,7 @@ pub struct System {
     pub timers: Timers,
     pub cdrom: CDRom,
     pub sio: Sio,
+    pub sio2: Sio2,
     pub mdec: Mdec,
     pub gpu: Gpu,
     #[serde(skip)]
@@ -134,6 +136,7 @@ impl System {
         timers: Timers,
         cdrom: CDRom,
         sio: Sio,
+        sio2: Sio2,
         mdec: Mdec,
         gpu: Gpu,
         block_cache: BlockCache,
@@ -150,6 +153,7 @@ impl System {
             timers,
             cdrom,
             sio,
+            sio2,
             mdec,
             gpu,
             block_cache,
@@ -216,6 +220,11 @@ impl System {
         if let Some(_) = map::RAM_SIZE.contains(address) {
             return T::from_u32(0x00000B88);
         }
+        if let Some(offset) = map::SIO2.contains(address) {
+            // println!("Unhandled read from Joystick register {:x}", addr);
+            // return T::from_u32(0);
+            return self.sio2.load(offset);
+        }
         // if address >= 0xfffff000 {
         //     println!("Unhandled read from ??? address {:x}", address);
         //     return T::from_u32(0);
@@ -252,11 +261,6 @@ impl System {
             // return crate::spu::store(&mut self.spu, address, value);
             return self.spu.store(address, value);
         }
-        if let Some(offset) = map::JOYSTICK.contains(address) {
-            return crate::sio::Sio::store(self, offset, value);
-            // println!("Unhandled write to Joystick register {:x}", addr);
-            // return;
-        }
         if let Some(offset) = map::TIMERS.contains(address) {
             return crate::timers::store(self, offset, value);
             // return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
@@ -264,6 +268,11 @@ impl System {
         if let Some(offset) = map::CDROM.contains(address) {
             return crate::cdrom::CDRom::store(self, offset, value);
             // return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
+        }
+        if let Some(offset) = map::JOYSTICK.contains(address) {
+            return crate::sio::Sio::store(self, offset, value);
+            // println!("Unhandled write to Joystick register {:x}", addr);
+            // return;
         }
         if let Some(offset) = map::MDEC.contains(address) {
             return self.mdec.store(offset, value);
@@ -301,6 +310,11 @@ impl System {
         if let Some(_) = map::EXPANSION_2.contains(address) {
             println!("Unhandled write to expansion_2 register {:x}", addr);
             return;
+        }
+        if let Some(offset) = map::SIO2.contains(address) {
+            return crate::sio2::Sio2::store(self, offset, value);
+            // println!("Unhandled write to Joystick register {:x}", addr);
+            // return;
         }
         // if address == 0x1f00e1ec {
         //     return;

@@ -205,7 +205,7 @@ impl System {
             return self.bios.load(offset);
         }
         if let Some(offset) = map::MDEC.contains(address) {
-            return self.mdec.load(offset);
+            return crate::mdec::load(self, offset);
         }
         if let Some(_) = map::EXPANSION_1.contains(address) {
             return T::from_u32(!0);
@@ -275,7 +275,7 @@ impl System {
             // return;
         }
         if let Some(offset) = map::MDEC.contains(address) {
-            return self.mdec.store(offset, value);
+            return crate::mdec::store( self,offset, value);
         }
         if let Some(offset) = map::MEM_CTRL.contains(address) {
             let val = value.as_u32();

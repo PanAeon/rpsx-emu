@@ -162,7 +162,7 @@ fn do_mdec_in(system: &mut System) {
     if !chan.ctrl.start() {
         return;
     }
-    if !system.mdec.dma_can_write() {
+    if !crate::mdec::dma_can_write(system) {
         return;
     }
     if !system.dma.dpcr.mdecin_enabled() {
@@ -177,7 +177,7 @@ fn do_mdec_in(system: &mut System) {
             let v = system.load::<u32>(chan.maddr);
             let chan = &mut system.dma[Port::MdecIn];
             chan.maddr = chan.maddr.wrapping_add(step);
-            system.mdec.store(0, v);
+            crate::mdec::store(system, 0, v);
         }
         system.dma[Port::MdecIn].block.count -= 1;
     }
@@ -190,7 +190,7 @@ fn do_mdec_out(system: &mut System) {
     if !chan.ctrl.start() {
         return;
     }
-    if !system.mdec.dma_can_read() {
+    if !crate::mdec::dma_can_read(system) {
         return;
     }
     if !system.dma.dpcr.mdecout_enabled() {
@@ -202,7 +202,7 @@ fn do_mdec_out(system: &mut System) {
     while system.dma[Port::MdecOut].block.count > 0 {
         for _ in 0..block_size {
             let chan = system.dma[Port::MdecOut];
-            let v = system.mdec.load::<u32>(0);
+            let v = crate::mdec::load::<u32>(system, 0);
             system.store::<u32>(chan.maddr, v);
             let chan = &mut system.dma[Port::MdecOut];
             chan.maddr = chan.maddr.wrapping_add(step);

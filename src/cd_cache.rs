@@ -1,6 +1,6 @@
 use std::{fs::File, io::{Read, Seek}, num::NonZero, sync::{Arc, Condvar, Mutex}, thread};
 
-use crate::cdrom::Track;
+use crate::cdrom::{SECTOR_SIZE, Track};
 
 // My take on https://github.com/simias/rustation-ng/blob/main/src/psx/cd/disc/cache.rs
 
@@ -28,17 +28,17 @@ impl CdCache {
         }
     }
 
-    pub fn read_sector(&mut self, pos: usize) -> Option<[u8;0x930]> {
+    pub fn read_sector(&mut self, sector: u64) -> Option<[u8;0x930]> {
         let (reader_mutex, cond) = &*self.reader;
         let mut reader = reader_mutex.lock().unwrap();
 
         loop {
-            reader.prefetch_next = pos;
+            reader.prefetch_next = sector;
             reader.prefetch_remaining = PREFETCH_READAHEAD_SECTORS;
 
             cond.notify_one();
 
-            if let Some(s) = reader.sectors.get(&pos) {
+            if let Some(s) = reader.sectors.get(&sector) {
                 return s.clone();
             }
             reader = cond.wait(reader).unwrap();
@@ -62,9 +62,9 @@ impl Drop for CdCache {
 }
 
 pub struct Reader {
-    sectors: lru::LruCache<usize, Option<[u8;0x930]>>,
+    sectors: lru::LruCache<u64, Option<[u8;0x930]>>,
     prefetch_remaining: u32,
-    prefetch_next: usize,
+    prefetch_next: u64,
     quit: bool,
     tracks: Vec<Track>,
     files: Vec<Option<File>>,
@@ -86,38 +86,36 @@ impl Reader {
         }
     }
 
-    pub fn valid_sector(&self, pos: usize) -> bool {
+    pub fn valid_sector(&self, sector: u64) -> bool {
         let track = self.tracks.iter().find(|x| {
-          let track_idx = x.indexes.iter().find(|x| x.id != 0).unwrap();
-          let end = track_idx.lba + x.len;
-          end >= pos
+            x.end_sector >= sector
         });
-        if let Some(track) = track {
-            let rel_pos = pos - track.get_start();
-            rel_pos < track.len
-        } else {
-            false
-        }
+        track.is_some()
     }
-    pub fn read_sector(&mut self, pos: usize, buff: &mut [u8]) {
-        // let track_idx = last_track.indexes.iter().find(|x| x.id != 0).unwrap();
-        // first find track...
+    pub fn read_sector(&mut self, sector: u64, buff: &mut [u8]) {
         let track = self.tracks.iter().find(|x| {
-          let track_idx = x.indexes.iter().find(|x| x.id != 0).unwrap();
-          let end = track_idx.lba + x.len;
-          end >= pos
+            x.end_sector >= sector
         }).expect("ok");
+
         let maybefile = &mut self.files[track.id as usize - 1];
         let f = if maybefile.is_none() {
             maybefile.insert(File::open(&track.filename).expect("ok"))
         } else {
             maybefile.as_mut().unwrap()
         };
+
+        if sector < track.start_sector {
+            // we are in pregap
+            buff.fill(0);
+        } else {
+            let rel_sector = sector - track.start_sector;
+            f.seek(std::io::SeekFrom::Start(rel_sector * SECTOR_SIZE)).expect("ok");
+            f.read(buff).expect("ok");// can cause problems on last sector?
+        }
+
         
-        let track_idx = track.indexes.iter().find(|x| x.id != 0).unwrap();
-        let pos = pos - track_idx.lba;
-        f.seek(std::io::SeekFrom::Start(pos as u64)).expect("ok");
-        f.read_exact(buff).expect("ok");// can cause problems on last sector?
+        // let track_idx = track.indexes.iter().find(|x| x.id != 0).unwrap();
+        // let pos = sector - track_idx.lba;
     }
 }
 
@@ -135,7 +133,7 @@ fn run_prefetcher( reader: Arc<(Mutex<Reader>, Condvar)>) {
             continue;
         }
 
-        let pos = reader.prefetch_next;
+        let sector = reader.prefetch_next;
 
         let next_sector = reader.prefetch_next + 0x930;
         if reader.valid_sector(next_sector) {
@@ -146,7 +144,7 @@ fn run_prefetcher( reader: Arc<(Mutex<Reader>, Condvar)>) {
         }
 
        
-        if reader.sectors.contains(&pos) {
+        if reader.sectors.contains(&sector) {
             continue;
         }
 
@@ -159,12 +157,12 @@ fn run_prefetcher( reader: Arc<(Mutex<Reader>, Condvar)>) {
 
         // let mut reader = reader_mutex.lock().unwrap();
         let mut buff = [0u8;0x930];
-        if reader.valid_sector(pos) {
-            reader.read_sector(pos, &mut buff);
-            reader.sectors.put(pos, Some(buff));
+        if reader.valid_sector(sector) {
+            reader.read_sector(sector, &mut buff);
+            reader.sectors.put(sector, Some(buff));
         } else {
             println!("WARN: attempt to read invalid sector");
-            reader.sectors.put(pos, None);
+            reader.sectors.put(sector, None);
         }
 
         cond.notify_one();

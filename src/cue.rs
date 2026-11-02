@@ -1,9 +1,26 @@
 use std::{fs::File, path::PathBuf, str::FromStr};
 
-use crate::cdrom::{SECTOR_SIZE, Track, TrackIndex, TrackType};
+use log::info;
+use serde::{Deserialize, Serialize};
+
+use crate::cdrom::{SECTOR_SIZE, TrackType, mm_ss_ff};
 // from https://github.com/kaezrr/starpsx/blob/main/cue/src/scanner.rs
 
 
+#[derive(PartialEq, Eq, Serialize, Deserialize, Debug, Clone)]
+pub struct TrackIndex {
+    pub id: u8,
+    pub start_pos: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Track {
+    pub id: u8,
+    pub track_type: TrackType,
+    pub indexes: Vec<TrackIndex>,
+    pub filename: String,
+    // pub len: usize,
+}
 // #[derive(Debug)]
 // pub struct File {
 //     #[expect(unused)]
@@ -16,6 +33,58 @@ use crate::cdrom::{SECTOR_SIZE, Track, TrackIndex, TrackType};
 // pub enum FileType {
 //     Binary,
 // }
+pub fn load_cue(cue: Vec<Track>) -> Vec<crate::cdrom::Track> {
+    let mut tracks = Vec::new();
+    let mut absolute_sector : u64 = 150;
+
+    for track in cue {
+        let metadata = File::open(&track.filename).unwrap().metadata().unwrap();
+        let file_sector_count = metadata.len().saturating_div(SECTOR_SIZE as u64);
+
+        let mut index_00 : Option<TrackIndex> = None;
+        let mut index_01 : Option<TrackIndex> = None;
+
+        for index in track.indexes {
+            match index.id {
+                0 => index_00 = Some(index),
+                1 => index_01 = Some(index),
+                _ => {}
+            }
+        }
+        let Some(index_01) = index_01 else {
+            panic!("index_01 not found");
+        };
+
+        let track_start = absolute_sector + index_01.start_pos;
+        let pregap_start = if let Some(idx) = index_00 {
+            absolute_sector + idx.start_pos
+        } else {
+            track_start
+        };
+        let track_end = track_start + file_sector_count;
+
+        tracks.push(crate::cdrom::Track {
+            id: track.id,
+            pregap_sector: pregap_start,
+            start_sector: track_start,
+            end_sector: track_end,
+            filename: track.filename,
+            len: metadata.len(),
+        });
+        absolute_sector = track_end; // TODO: why different?
+    }
+    for track in &tracks {
+        let (mm, ss, ff) = mm_ss_ff(track.start_sector);
+            info!("track {}: {:02}:{:02}:{:02} lba={}", 
+                track.id,
+                mm,
+                ss,
+                ff,
+                track.start_sector,
+            );
+    }
+    tracks
+}
 
 // FILE "Crash Bandicoot (USA).bin" BINARY
 //   TRACK 01 MODE2/2352
@@ -112,7 +181,7 @@ impl CueParser {
             indexes.push(self.parse_index()?);
         }
 
-        let len = File::open(&filename).unwrap().metadata().unwrap().len();
+        // let len = File::open(&filename).unwrap().metadata().unwrap().len();
 
 
         Ok(Track {
@@ -120,7 +189,7 @@ impl CueParser {
             indexes,
             track_type,
             filename,
-            len: len as usize
+            // len: len as usize
         })
     }
 
@@ -159,7 +228,7 @@ impl CueParser {
             anyhow::bail!("Expect newline after index.");
         };
 
-        Ok(TrackIndex { id, lba })
+        Ok(TrackIndex { id, start_pos: lba })
     }
 
     const fn is_at_end(&self) -> bool {
@@ -336,7 +405,7 @@ pub enum Token {
 
     String(String),
     Number(u8),
-    CdTime(usize),
+    CdTime(u64),
 
     Newline,
     Eof,
@@ -346,8 +415,8 @@ pub enum Token {
     Dcp,
 }
 
-const fn to_sectors(minutes: usize, seconds: usize, frames: usize) -> usize {
-    (minutes * 60 * 75 + seconds * 75 + frames) * SECTOR_SIZE
+const fn to_sectors(minutes: usize, seconds: usize, frames: usize) -> u64 {
+    ((minutes * 60 * 75 + seconds * 75 + frames) ) as u64
 }
 
 

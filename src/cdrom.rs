@@ -9,7 +9,7 @@ use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_
 use crate::iso9660;
 use crate::system::{Addressable, System};
 
-pub const SECTOR_SIZE: usize = 0x930;
+pub const SECTOR_SIZE: u64 = 0x930;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrackType {
@@ -26,33 +26,16 @@ pub struct TrackIndex {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Track {
     pub id: u8,
-    pub track_type: TrackType,
-    pub indexes: Vec<TrackIndex>,
+    pub pregap_sector: u64,
+    pub start_sector: u64,
+    pub end_sector: u64,
     pub filename: String,
-    pub len: usize,
-}
-
-impl Track {
-    pub fn get_start(&self) -> usize {
-        let start = if self.indexes[0].id == 1 {
-            self.indexes[0].lba
-        } else {
-            self.indexes[1].lba
-        };
-        start
-    }
-    pub fn get_start_mut(&mut self) -> &mut usize {
-        if self.indexes[0].id == 1 {
-            &mut self.indexes[0].lba
-        } else {
-            &mut self.indexes[1].lba
-        }
-    }
+    pub len: u64,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Image {
-    read_head: usize,
+    read_head: u64,
     // #[serde(skip)]
     // pub data: Box<[u8]>,
     pub tracks: Vec<Track>,
@@ -82,28 +65,21 @@ impl Image {
         // };
         let (tracks, mut cache) = if path.ends_with(".bin") {
             let f = std::fs::File::open(&path).expect("ok");
-            let len = f.metadata().expect("ok").len() as usize;
+            let len = f.metadata().expect("ok").len();
             let tracks = vec![Track {
                 id: 1,
-                track_type: TrackType::Mode2352,
-                indexes: vec![TrackIndex { id: 1, lba: 0 }],
                 filename: path.to_string(),
                 len,
+                pregap_sector: 0,
+                start_sector: 2 * 75,
+                end_sector: len / SECTOR_SIZE,
             }];
 
             (tracks.clone(), CdCache::new(tracks))
         } else if path.ends_with(".cue") {
-            let mut tracks = crate::cue::parse_cue(&path);
-            let mut prev_lba = 0;
-            for t in &mut tracks {
-                *t.get_start_mut() = prev_lba;
-                prev_lba += t.len;
-            }
-            for t in &tracks {
-                println!(">> track: {:?}", t);
-            }
-            let cache = CdCache::new(tracks.clone());
-            (tracks, cache)
+            let cue_tracks = crate::cue::parse_cue(&path);
+            let tracks = crate::cue::load_cue(cue_tracks);
+            (tracks.clone(), CdCache::new(tracks))
         } else {
             println!("don't know how to read : {}", path);
             std::process::exit(1);
@@ -150,7 +126,7 @@ impl Image {
     }
 
     pub fn seek(&mut self, sectors: u32) {
-        self.read_head = sectors as usize * SECTOR_SIZE;
+        self.read_head = sectors as u64;
     }
     // pub fn seek_location(&mut self, mins: u8, secs: u8, sect: u8) {
     //     let sectors = ((mins as usize) * 75 * 60) + ((secs as usize) * 75) + (sect as usize);
@@ -160,37 +136,16 @@ impl Image {
     pub fn advance_sector(&mut self) -> Option<Vec<u8>> {
         let start = self.read_head;
         // println!("cdrom debug: advance_sector {}", start/SECTOR_SIZE);
-        self.read_head += SECTOR_SIZE;
-        if start < 2 * 75 * SECTOR_SIZE {
-            Some(vec![0x0; SECTOR_SIZE])
-        } else {
-            self.cache
-                .as_mut()
-                .unwrap()
-                .read_sector(start - 2 * 75 * SECTOR_SIZE)
-                .map(|x| x.to_vec())
-            // self.data[start..self.read_head].to_vec()
-        }
+        self.read_head += 1;
+        self.cache
+            .as_mut()
+            .unwrap()
+            .read_sector(start)
+            .map(|x| x.to_vec())
+        // self.data[start..self.read_head].to_vec()
     }
 
-    #[allow(dead_code)]
-    pub fn current_sector(&mut self) -> Option<Vec<u8>> {
-        let start = self.read_head;
-        if start < 2 * 75 * SECTOR_SIZE {
-            Some(vec![0x0; SECTOR_SIZE])
-        } else {
-            self.cache
-                .as_mut()
-                .unwrap()
-                .read_sector(start - 2 * 75 * SECTOR_SIZE)
-                .map(|x| x.to_vec())
-        }
-    }
 
-    #[allow(dead_code)]
-    pub fn reset_read_head(&mut self) {
-        self.read_head = SECTOR_SIZE * 75 * 2;
-    }
 
     pub fn first_track_id(&self) -> u8 {
         self.tracks.first().expect("first track").id
@@ -212,11 +167,11 @@ impl Image {
 
     pub fn last_track_end(&self) -> (u8, u8, u8) {
         let last_track = self.tracks.last().unwrap();
-        let track_idx = last_track.indexes.iter().find(|x| x.id != 0).unwrap();
-        let length = last_track.len + track_idx.lba;
+        // let track_idx = last_track.indexes.iter().find(|x| x.id != 0).unwrap();
+        // let length = last_track.len + track_idx.lba;
         // let length = last_track.len + track_idx.lba;
         // let length = self.file.as_ref().unwrap().metadata().unwrap().len();
-        sectors_to_pos(length)
+        mm_ss_ff(last_track.end_sector)
         // self.mm_ss_ff(self.data.len())
     }
 
@@ -241,46 +196,61 @@ impl Image {
     pub fn current_track(&self) -> Track {
         let current_track = self
             .tracks
-            .partition_point(|t| t.get_start() <= self.read_head)
+            .partition_point(|t| t.pregap_sector <= self.read_head)
             .saturating_sub(1);
         self.tracks[current_track].clone()
     }
 
     pub fn current_position_info(&self) -> [u8; 8] {
+        let sector = self.read_head;
         let current_track = self
             .tracks
-            .partition_point(|t| t.get_start() <= self.read_head)
+            .partition_point(|t| t.pregap_sector <= self.read_head)
             .saturating_sub(1);
 
         let current_track = &self.tracks[current_track];
 
-        let current_index = if current_track.indexes[0].id == 1 {
-            0
-        } else {
-            1
-        };
+        let in_pregap = sector <= current_track.start_sector;
+
+        let current_index = if in_pregap { 0 } else { 1 };
+        // let current_index = if current_track.indexes[0].id == 1 {
+        //     0
+        // } else {
+        //     1
+        // };
 
         // let current_index = current_track
         //     .indexes
         //     .partition_point(|i| i.lba <= self.read_head)
         //     .saturating_sub(1);
 
-        let current_index = &current_track.indexes[current_index];
+        // let track_index = &current_track.indexes[current_index];
 
+        // let track_pos = (0, 0, 59);
         let track_pos = mm_ss_ff(
             self.read_head
-                .saturating_sub(2 * 75 * SECTOR_SIZE)
-                .saturating_sub(current_index.lba),
+                // .saturating_sub(2 * 75 * SECTOR_SIZE)
+                .saturating_sub(current_track.start_sector),
         );
         let disk_pos = mm_ss_ff(self.read_head);
 
-        info!("getlocp: {} {} {} {} {} {} {} {}",
-             current_track.id, current_index.id, track_pos.0, track_pos.1, track_pos.2,
-        disk_pos.0, disk_pos.1, disk_pos.2);
+        info!("getlocp: sector: {} ", self.read_head);
+        info!(
+            "getlocp: {} {} {} {} {} {} {} {}",
+            current_track.id,
+            current_index,
+            track_pos.0,
+            track_pos.1,
+            track_pos.2,
+            disk_pos.0,
+            disk_pos.1,
+            disk_pos.2
+        );
 
         [
             to_bcd(current_track.id).unwrap(),
-            to_bcd(current_index.id).unwrap(),
+            // to_bcd(0).unwrap(),
+            to_bcd(current_index as u8).unwrap(),
             to_bcd(track_pos.0).unwrap(),
             to_bcd(track_pos.1).unwrap(),
             to_bcd(track_pos.2).unwrap(),
@@ -532,6 +502,7 @@ impl CDRom {
                 opcode, active_cmd
             );
         }
+
         if cdrom.cmd.is_none() && cdrom.irq_pending.ints() == 0 {
             Self::begin_command(system, opcode);
         } else {
@@ -675,7 +646,7 @@ impl CDRom {
                 cdrom.stat.set_shell_open(false);
                 cdrom.push_result_byte(stat.0);
 
-                println!("cdrom debug: cmd get_stat()={:?}", stat);
+                info!("cmd_nop {:?}", stat);
                 Self::set_interrupt(system, 3);
                 let cdrom = &mut system.cdrom;
                 cdrom.finish_command();
@@ -990,9 +961,9 @@ impl CDRom {
                         .expect("valid image")
                         .get_track_by_number(track_num)
                         .expect("ok");
-                    cdrom.seekloc = Some(track.get_start() as u32 + 2 * 75 * SECTOR_SIZE as u32);
+                    cdrom.seekloc = Some(track.start_sector as u32 );
                 }
-                let cdrom = &mut system.cdrom;
+                // let cdrom = &mut system.cdrom;
                 cdrom.begin_playing();
 
                 cdrom.push_result_byte(cdrom.stat.0);
@@ -1348,8 +1319,8 @@ impl CDRom {
                 };
 
                 let (mm, ss, _) = if track_num != 0 {
-                    let start = track.get_start();
-                    sectors_to_pos(start)
+                    let start = track.start_sector;
+                    mm_ss_ff(start)
                 } else {
                     disk.last_track_end()
                 };
@@ -1604,18 +1575,18 @@ impl CDRom {
     fn push_play_report(system: &mut System) {
         let cdrom = &mut system.cdrom;
         let disk = cdrom.disk.as_ref().unwrap();
-        let (mm, ss, ff) = sectors_to_pos(disk.read_head);
+        let (mm, ss, ff) = mm_ss_ff(disk.read_head);
         if ff % 10 != 0 {
             return;
         }
         let abs_pos = disk.read_head;
         let track = disk.current_track();
 
-        let in_pregap = abs_pos < track.get_start(); // TODO: wrong! track 1 lba is 0
+        let in_pregap = abs_pos < track.start_sector; // TODO: wrong! track 1 lba is 0
         let track_index = if in_pregap { 0 } else { 1 };
         let rel_pos = abs_pos
-            .saturating_sub(2 * 75 * SECTOR_SIZE)
-            .saturating_sub(track.get_start());
+            // .saturating_sub(2 * 75 * SECTOR_SIZE)
+            .saturating_sub(track.start_sector);
 
         let (rel_mm, rel_ss, rel_ff) = mm_ss_ff(rel_pos);
 
@@ -1685,7 +1656,10 @@ impl CDRom {
                 &mut self.adpcm_history,
                 &mut self.low_res_resamplers,
             ),
-            (cdxa::Channel::Mono, cdxa::SampleRate::Reserved) => unimplemented!(),
+            (cdxa::Channel::Mono, cdxa::SampleRate::Reserved) => {
+                warn!("adpcm reserved channel not impl.");
+                vec![]
+            },
             (cdxa::Channel::Stereo, cdxa::SampleRate::R37800) => decode_audio_sector::<true>(
                 &sector,
                 &mut self.adpcm_history,
@@ -1696,10 +1670,22 @@ impl CDRom {
                 &mut self.adpcm_history,
                 &mut self.low_res_resamplers,
             ),
-            (cdxa::Channel::Stereo, cdxa::SampleRate::Reserved) => todo!(),
-            (cdxa::Channel::Reserved, cdxa::SampleRate::R37800) => unimplemented!(),
-            (cdxa::Channel::Reserved, cdxa::SampleRate::R18900) => unimplemented!(),
-            (cdxa::Channel::Reserved, cdxa::SampleRate::Reserved) => unimplemented!(),
+            (cdxa::Channel::Stereo, cdxa::SampleRate::Reserved) => {
+                warn!("adpcm reserved channel not impl.");
+                vec![]
+            },
+            (cdxa::Channel::Reserved, cdxa::SampleRate::R37800) => {
+                warn!("adpcm reserved channel not impl.");
+                vec![]
+            },
+            (cdxa::Channel::Reserved, cdxa::SampleRate::R18900) => {
+                warn!("adpcm reserved channel not impl.");
+                vec![]
+            },
+            (cdxa::Channel::Reserved, cdxa::SampleRate::Reserved) => {
+                warn!("adpcm reserved channel not impl.");
+                vec![]
+            },
         };
         self.audio_buffer.extend(audio_samples);
     }
@@ -1909,8 +1895,9 @@ bitfield::bitfield! {
 // 1  Spindle Motor (0=Motor off, or in spin-up phase, 1=Motor on)
 // 0  Error         Invalid Command/parameters (followed by Error Byte)
 bitfield::bitfield! {
-    #[derive(Default, Clone, Copy, Serialize, Deserialize, Debug)]
+    #[derive(Default, Clone, Copy, Serialize, Deserialize)]
     pub struct StatusReg(u8);
+    impl Debug;
     playing, set_play: 7;
     _, set_seek: 6;
     _, set_read: 5;
@@ -1921,8 +1908,7 @@ bitfield::bitfield! {
     _, set_error: 0;
 }
 
-impl StatusReg {
-}
+impl StatusReg {}
 
 bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize)]
@@ -2264,8 +2250,8 @@ pub fn pos_to_sectors(mins: u8, secs: u8, sect: u8) -> u32 {
 }
 
 // doesn't add pregap
-pub fn mm_ss_ff(read_head: usize) -> (u8, u8, u8) {
-    let sectors = read_head / SECTOR_SIZE;
+pub fn mm_ss_ff(read_head: u64) -> (u8, u8, u8) {
+    let sectors = read_head;
     let secs = sectors / 75;
     let sect = sectors % 75;
     let mins = secs / 60;
@@ -2274,12 +2260,12 @@ pub fn mm_ss_ff(read_head: usize) -> (u8, u8, u8) {
 }
 
 // adds pregap
-pub fn sectors_to_pos(read_head: usize) -> (u8, u8, u8) {
-    mm_ss_ff(read_head + 2 * 75 * SECTOR_SIZE)
-}
+// pub fn sectors_to_pos(read_head: usize) -> (u8, u8, u8) {
+//     mm_ss_ff(read_head + 2 * 75 * SECTOR_SIZE)
+// }
 
-#[test]
-fn test_sector_to_pos() {
-    let zero = sectors_to_pos(0);
-    assert!(zero == (0, 2, 0))
-}
+// #[test]
+// fn test_sector_to_pos() {
+//     let zero = sectors_to_pos(0);
+//     assert!(zero == (0, 2, 0))
+// }

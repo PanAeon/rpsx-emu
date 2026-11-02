@@ -1027,7 +1027,8 @@ impl State {
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;
             self.paused = false;
-            // self.system.cdrom.begin_playing();
+            crate::cdrom::CDRom::write_command(&mut self.system, 0x3);//play
+            // self.system.cdrom.write_command();
             return;
         }
         loop {

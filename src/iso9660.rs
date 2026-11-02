@@ -37,10 +37,10 @@ impl Directory {
         // let toc = image.toc();
         // let track = toc.track(Bcd::ONE)?;
         // TODO: maybe need to add  lead-in? not sure
-        let mut dp = extent_location as usize * SECTOR_SIZE; //track.disc_position(track_msf)?;
+        let mut dp = extent_location as u64; //track.disc_position(track_msf)?;
 
         while extent_len > 0 {
-            let sector = image.read_sector(dp).expect("ok");
+            let sector = image.read_sector(dp+2*75).expect("ok");
 
             let data = mode2_xa_payload(&sector);
 
@@ -49,7 +49,7 @@ impl Directory {
             dir.parse_entries(&data[0..len])?;
 
             extent_len -= len;
-            dp += SECTOR_SIZE;
+            dp += 1;
         }
 
         Ok(dir)
@@ -164,10 +164,10 @@ impl Entry {
 
         // let toc = image.toc();
         // let track = toc.track(Bcd::ONE)?;
-        let mut dp = extent_location as usize * SECTOR_SIZE; //track.disc_position(track_msf)?;
+        let mut dp = extent_location as u64 ; //track.disc_position(track_msf)?;
 
         while extent_len > 0 {
-            let sector = image.read_sector(dp).expect("ok");
+            let sector = image.read_sector(dp+2*75).expect("ok");
 
             let data = mode2_xa_payload(&sector);
 
@@ -178,7 +178,7 @@ impl Entry {
             }
 
             extent_len -= len;
-            dp += SECTOR_SIZE;
+            dp += 1;
         }
 
         Ok(contents)
@@ -206,14 +206,14 @@ pub fn open_image(image: &mut CdCache) -> Directory {
     // let track = toc.track(Bcd::ONE)?;
     // we have just one track... btw...
     // let mut dp = 0;
-    let mut dp = 16 * SECTOR_SIZE;// ignore lead-in
+    let mut dp = 16  ;// ignore lead-in
     // let mut dp = track.disc_position(Msf::from_bcd(0, 0, 0x16).unwrap())?;
 
     let mut sector;
 
     // Look for the primary volume descriptor
     loop {
-        sector = image.read_sector(dp).expect("ok");
+        sector = image.read_sector(dp+2*75).expect("ok");
 
         let volume_descriptor = mode2_xa_payload(&sector);
 
@@ -233,7 +233,7 @@ pub fn open_image(image: &mut CdCache) -> Directory {
         }
 
         // Not the primary volume descriptor, move on to the next sector
-        dp += SECTOR_SIZE ;
+        dp += 1 ;
     }
 
     let volume_descriptor = mode2_xa_payload(&sector);

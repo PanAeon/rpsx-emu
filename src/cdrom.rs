@@ -1,4 +1,4 @@
-use log::{info, warn};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -17,11 +17,6 @@ pub enum TrackType {
     Mode2352,
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize, Debug, Clone)]
-pub struct TrackIndex {
-    pub id: u8,
-    pub lba: usize,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Track {
@@ -81,7 +76,7 @@ impl Image {
             let tracks = crate::cue::load_cue(cue_tracks);
             (tracks.clone(), CdCache::new(tracks))
         } else {
-            println!("don't know how to read : {}", path);
+            error!("don't know how to read : {}", path);
             std::process::exit(1);
         };
         // let mut data: Vec<u8> = vec![0u8; 2 * 75 * SECTOR_SIZE];
@@ -108,7 +103,7 @@ impl Image {
         let serial = serial.map(|x| String::from_utf8(x.0.to_vec()).expect("ok"));
 
         if let Some(serial) = &serial {
-            println!("serial number: {}", serial);
+            info!("serial number: {}", serial);
         }
 
         // std::process::exit(0);
@@ -135,7 +130,6 @@ impl Image {
 
     pub fn advance_sector(&mut self) -> Option<Vec<u8>> {
         let start = self.read_head;
-        // println!("cdrom debug: advance_sector {}", start/SECTOR_SIZE);
         self.read_head += 1;
         self.cache
             .as_mut()
@@ -269,8 +263,10 @@ impl Image {
     }
 
     fn is_at_valid_location(&self) -> bool {
-        // TODO: implement me
-        true
+        let track = self.tracks.iter().find(|x| {
+            x.end_sector >= self.read_head
+        });
+        track.is_some()
     }
 }
 
@@ -387,12 +383,11 @@ impl CDRom {
 
     pub fn load<T: Addressable>(&mut self, offset: u32) -> T {
         let width = T::width() as usize;
-        // println!("cdrom load offset: {} bank: {}",offset, self.addr.current_bank());
         if offset == 2 {
             return self.read_sector_data::<T>();
         }
         if width != 1 {
-            println!(
+            error!(
                 "cdrom load width other than 1 byte not impl, got: {:?}",
                 T::width()
             );
@@ -420,11 +415,9 @@ impl CDRom {
 
         cdrom.irq_pending.0 &= !ack.int_clear();
         // let ints = cdrom.irq_pending.ints();
-        // println!("ack: int clear: 0b{:b}", ack.int_clear());
         // irq
         // cdrom.irq_pending.set_ints(ints & !ack.int_clear());
         // cdrom.irq_pending.set_ints(ints & !ack.int_clear());
-        // println!("irq_pending: 0b{:0}", cdrom.irq_pending.ints());
         // cdrom.irq_pending.set_ints(0);
 
         if ack.param_clear() {
@@ -462,10 +455,10 @@ impl CDRom {
             1 => match bank_index {
                 0 => Self::write_command(system, v),
                 1 => {
-                    println!("WRDATA not implemented");
+                    warn!("WRDATA not implemented");
                 } // wrdata
                 2 => {
-                    println!("CI not implemented!")
+                    warn!("CI not implemented!")
                 }
                 3 => cdrom.pending_volume.r2r_volume = v, // FIXME: volume pending?
                 _ => unreachable!(),
@@ -473,10 +466,8 @@ impl CDRom {
             2 => match bank_index {
                 0 => cdrom.write_param(v),
                 1 => {
-                    // println!("cdrom debug: set int enable: {}", v);
                     cdrom.irq_mask.0 = v;
                     // cdrom.irq_mask = cdrom.irq_mask.set_int_enable(v);
-                    // println!("irq mask: 0b{:b}", cdrom.irq_mask.int_enable());
                 }
                 2 => cdrom.pending_volume.l2l_volume = v,
                 3 => cdrom.pending_volume.r2l_volume = v,
@@ -497,8 +488,8 @@ impl CDRom {
         let cdrom = &mut system.cdrom;
         if cdrom.cmd.is_some() && opcode != 0x09 {
             let active_cmd = cdrom.cmd.unwrap();
-            println!(
-                "warn, new command {:X} when another in progress ({:X})",
+            warn!(
+                "new command {:X} when another in progress ({:X})",
                 opcode, active_cmd
             );
         }
@@ -532,7 +523,6 @@ impl CDRom {
             return;
         };
         cdrom.results.clear();
-        // println!(">>Unhandled command?: 0x{:x}", cmd);
 
         match cmd {
             // 0x00 => self.cmd_unused(),
@@ -576,7 +566,7 @@ impl CDRom {
 
     pub fn push_result_byte(&mut self, byte: u8) {
         if self.results.is_full() {
-            println!("cdrom warn: fifo is full");
+            warn!("fifo is full");
             self.results.pop();
         }
         self.results.push(byte);
@@ -591,8 +581,8 @@ impl CDRom {
     pub fn set_interrupt(system: &mut System, it: u8) {
         let cdrom = &mut system.cdrom;
         if cdrom.irq_pending.ints() != 0 {
-            println!(
-                "cdrom warn: unacknowledged interrupt: {:X} -> {:X}",
+            warn!(
+                "unacknowledged interrupt: {:X} -> {:X}",
                 cdrom.irq_pending.ints(),
                 it
             );
@@ -602,9 +592,7 @@ impl CDRom {
 
         // let pending = cdrom.irq_pending.ints();
         // let mask = cdrom.irq_mask.int_enable();
-        // println!("pending: {:b}, mask: {:b}", pending, mask);
         if cdrom.irq_pending.0 & cdrom.irq_mask.0 != 0 {
-            // println!("setting irq ({})", it);
             system.irqctl.set_cdrom();
         }
     }
@@ -621,7 +609,7 @@ impl CDRom {
         if system.cdrom.cmd_params.len() == expected {
             return true;
         }
-        println!(
+        warn!(
             "{}: wrong parameter count: expectd {}, got {}",
             cmd_name,
             expected,
@@ -675,7 +663,7 @@ impl CDRom {
                 let ff = from_bcd(cdrom.cmd_params.pop().unwrap()).expect("ok");
                 let ss = from_bcd(cdrom.cmd_params.pop().unwrap()).expect("ok");
                 let mm = from_bcd(cdrom.cmd_params.pop().unwrap()).expect("ok");
-                println!("cdrom debug: setloc amm: {mm} ass: {ss} asect: {ff}");
+                info!("setloc amm: {mm} ass: {ss} asect: {ff}");
 
                 cdrom.seekloc = Some(pos_to_sectors(mm, ss, ff));
                 cdrom.push_result_byte(cdrom.stat.0);
@@ -702,7 +690,7 @@ impl CDRom {
                 match subcmd {
                     0x20 => {
                         // INT3(yy,mm,dd,ver) ;Get cdrom BIOS date/version (yy,mm,dd,ver) INT3(yy,mm,dd,ver) ;Get cdrom BIOS date/version (yy,mm,dd,ver)
-                        println!("cdrom get version");
+                        info!("get version");
                         cdrom.push_result_slice(&CDROM_DATE_VERSION);
                         Self::set_interrupt(system, 3);
                         system.cdrom.finish_command();
@@ -728,7 +716,7 @@ impl CDRom {
                 let Some(loc) = cdrom.seekloc else {
                     panic!("no seekloc!")
                 };
-                println!("cdrom debug seekl: loc={}", loc);
+                info!("debug seekl: loc={}", loc);
                 let cdrom = &mut system.cdrom;
                 cdrom.push_result_byte(cdrom.stat.0);
                 cdrom.cmd_delay = CDROM_SEEKL_DELAY_CYCLES;
@@ -751,7 +739,6 @@ impl CDRom {
     //     let mut seeking = self.stat.clone();
     //     seeking.set_seek(true);
     //     self.stat.set_seek(false);
-    //     println!("CDROM seekl");
     //     CommandResponse::new()
     //         .int3([seeking.0], AVG_1ST_RESP_GENERIC)
     //         .int2([self.stat.0], AVG_1ST_RESP_GENERIC + AVG_2ND_RESP_SEEKL)
@@ -765,7 +752,6 @@ impl CDRom {
     //
     //     self.mode.0 = mode;
     //
-    //     println!("CDROM setmode 0x{:X}, {:?}", mode, self.mode);
     //
     //     CommandResponse::new().int3([self.stat.0], AVG_1ST_RESP_GENERIC)
     // }
@@ -784,10 +770,10 @@ impl CDRom {
                 let cdrom = &mut system.cdrom;
                 let mode_byte = cdrom.cmd_params.pop().unwrap();
                 cdrom.mode.0 = mode_byte;
-                println!("cdrom debug: setMode mode={:?}", cdrom.mode);
+                info!("setMode mode={:?}", cdrom.mode);
                 cdrom.push_result_byte(cdrom.stat.0);
                 if cdrom.mode.auto_pause() {
-                    println!("cdrom WARN: auto pause not implemented");
+                    warn!("auto pause not implemented");
                 }
                 // TODO: xa set mode...
                 Self::set_interrupt(system, 3);
@@ -811,7 +797,7 @@ impl CDRom {
                 let channel = cdrom.cmd_params.pop().unwrap();
                 let file = cdrom.cmd_params.pop().unwrap();
 
-                println!("DEBUG CDROM: setfilter 0x{:X}, 0x{:X}", file, channel);
+                info!("setfilter 0x{:X}, 0x{:X}", file, channel);
                 cdrom.filter_file = file;
                 cdrom.filter_channel = channel;
                 cdrom.push_result_byte(cdrom.stat.0);
@@ -831,7 +817,6 @@ impl CDRom {
     //     self.filter_file = file;
     //     self.filter_channel = channel;
     //
-    //     println!("CDROM setfilter 0x{:X}, 0x{:X}", file, channel);
     //
     //     CommandResponse::new().int3([self.stat.0], AVG_1ST_RESP_GENERIC)
     // }
@@ -847,7 +832,7 @@ impl CDRom {
                 let cdrom = &mut system.cdrom;
                 let Some(disk) = cdrom.disk.as_ref() else {
                     cdrom.push_error(DriveError::CannotRespond);
-                    println!("warn locp while no disk");
+                    warn!("locp while no disk");
                     Self::set_interrupt(system, 5);
                     system.cdrom.finish_command();
                     return;
@@ -856,7 +841,6 @@ impl CDRom {
                 let bytes = disk.current_position_info();
                 cdrom.push_result_slice(&bytes);
 
-                // println!("DEBUG CDROM: get_locp ");
                 Self::set_interrupt(system, 3);
                 system.cdrom.finish_command();
             }
@@ -867,7 +851,6 @@ impl CDRom {
     //     if !self.parameters.is_empty() {
     //         return error_response(&self.stat, 0x20, "get_locp doesn't takes parameters");
     //     }
-    //     println!("CDROM get_locp!!");
     //
     //     let disk = self.disk.as_ref().expect("get_locp inserted disk");
     //
@@ -930,7 +913,7 @@ impl CDRom {
             }
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
-                println!("DEBUG CDROM: cmd_readn ");
+                info!("cmd_readn ");
                 cdrom.begin_reading();
 
                 cdrom.push_result_byte(cdrom.stat.0);
@@ -950,7 +933,7 @@ impl CDRom {
             }
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
-                println!("DEBUG CDROM: cmd_play ");
+                info!("cmd_play ");
                 cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
                 let track_num = cdrom.cmd_params.pop();
                 if let Some(track_id) = track_num {
@@ -977,7 +960,6 @@ impl CDRom {
     //     if !self.parameters.is_empty() {
     //         return error_response(&self.stat, 0x20, "readn doesn't takes parameters");
     //     }
-    //     println!("CDROM readn!!");
     //
     //     self.stat.set_read(true);
     //     CommandResponse::new()
@@ -988,12 +970,10 @@ impl CDRom {
     // pub fn cmd_play(&mut self) -> CommandResponse {
     //     if !self.parameters.is_empty() {
     //         let track = from_bcd(self.parameters[0]).expect("ok");
-    //         println!("play set loc");
     //     };
     //
     //     // TODO: play not implemented
     //
-    //     println!("CDROM play!!");
     //
     //     self.stat.set_read(true);
     //     self.stat.set_play(true);
@@ -1005,7 +985,6 @@ impl CDRom {
     //     if !self.parameters.is_empty() {
     //         return error_response(&self.stat, 0x20, "reads doesn't takes parameters");
     //     }
-    //     println!("CDROM reads!!");
     //
     //     self.stat.set_read(true);
     //     CommandResponse::new()
@@ -1022,7 +1001,7 @@ impl CDRom {
             }
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
-                println!("DEBUG CDROM: cmd_demute");
+                info!("cmd_demute");
                 cdrom.mute = false;
 
                 cdrom.push_result_byte(cdrom.stat.0);
@@ -1041,7 +1020,7 @@ impl CDRom {
             }
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
-                println!("DEBUG CDROM: cmd_mute");
+                info!("cmd_mute");
                 cdrom.mute = true;
 
                 cdrom.push_result_byte(cdrom.stat.0);
@@ -1056,7 +1035,6 @@ impl CDRom {
     //         return error_response(&self.stat, 0x20, "pause doesn't takes parameters");
     //     }
     //     // turn on audio streaming to spu
-    //     println!("CDROM demute");
     //     self.audio_muted = false;
     //
     //     CommandResponse::new().int3([self.stat.0], AVG_1ST_RESP_GENERIC)
@@ -1070,7 +1048,7 @@ impl CDRom {
             }
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
-                println!("DEBUG CDROM: pause");
+                info!(" pause");
                 cdrom.push_result_byte(cdrom.stat.0);
                 cdrom.cmd_delay = match cdrom.mode.speed() {
                     Speed::Normal => CDROM_PAUSE_DELAY_CYCLES,
@@ -1092,7 +1070,6 @@ impl CDRom {
     //     if !self.parameters.is_empty() {
     //         return error_response(&self.stat, 0x20, "pause doesn't takes parameters");
     //     }
-    //     println!("CDROM pause!!");
     //
     //     let current = self.stat.clone();
     //     self.stat.set_read(false);
@@ -1111,14 +1088,13 @@ impl CDRom {
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
                 cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
-                println!("DEBUG CDROM: getid");
+                info!("getid");
                 cdrom.push_result_byte(cdrom.stat.0);
                 Self::set_interrupt(system, 3);
                 system.cdrom.cmd_state = CmdState::Resp2;
             }
             CmdState::Resp2 => {
                 if cdrom.disk.is_some() {
-                    // println!(">>got licensed");
                     cdrom.push_result_slice(&CDROM_GETID_LICENSED);
                     Self::set_interrupt(system, 2);
                 } else {
@@ -1131,7 +1107,6 @@ impl CDRom {
     }
     // pub fn cmd_getid(&mut self) -> CommandResponse {
     //     if !self.parameters.is_empty() {
-    //         println!("WARN: getid extra params");
     //         return error_response(&self.stat, 0x20, "get id takes no params");
     //     }
     //     println!("CDROM get id");
@@ -1170,7 +1145,7 @@ impl CDRom {
                 cdrom.cmd_state = CmdState::Resp1;
             }
             CmdState::Resp1 => {
-                println!("DEBUG CDROM: cmd_init");
+                info!("cmd_init");
                 cdrom.push_result_byte(cdrom.stat.0);
                 cdrom.cmd_delay = CDROM_INIT_DELAY_CYCLES;
                 cdrom.cmd_state = CmdState::Resp2;
@@ -1194,7 +1169,7 @@ impl CDRom {
                 cdrom.cmd_state = CmdState::Resp1;
             }
             CmdState::Resp1 => {
-                println!("DEBUG CDROM: cmd_readtoc");
+                info!("cmd_readtoc");
                 cdrom.push_result_byte(cdrom.stat.0);
                 cdrom.cmd_delay = 5 * CDROM_INIT_DELAY_CYCLES;
                 cdrom.cmd_state = CmdState::Resp2;
@@ -1211,7 +1186,6 @@ impl CDRom {
     //     if !self.parameters.is_empty() {
     //         return error_response(&self.stat, 0x20, "init takes no params");
     //     }
-    //     println!("CDROM init");
     //     // Sets mode=20h, activates drive motor, Standby, abort all commands.
     //     self.mode.0 = 0x20;
     //
@@ -1233,7 +1207,7 @@ impl CDRom {
         // cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
         let Some(disk) = cdrom.disk.as_ref() else {
             cdrom.push_error(DriveError::CannotRespond);
-            println!("warn gettn while no disk");
+            warn!("gettn while no disk");
             Self::set_interrupt(system, 5);
             system.cdrom.finish_command();
             return;
@@ -1243,8 +1217,8 @@ impl CDRom {
         cdrom.push_result_byte(cdrom.stat.0);
         cdrom.push_result_byte(first_track);
         cdrom.push_result_byte(last_track);
-        println!(
-            "cdrom debug gettn, first: {}, last: {}",
+        info!(
+            "gettn, first: {}, last: {}",
             first_track, last_track
         );
         Self::set_interrupt(system, 3);
@@ -1252,7 +1226,6 @@ impl CDRom {
     }
     // pub fn cmd_gettn(&mut self) -> CommandResponse {
     //     // int3 bcd
-    //     println!("cdrom gettn");
     //     if !self.parameters.is_empty() {
     //         return error_response(&self.stat, 0x20, "gettn takes no params");
     //     }
@@ -1264,7 +1237,6 @@ impl CDRom {
     // }
     // pub fn cmd_gettd(&mut self) -> CommandResponse {
     //     // int3 bcd
-    //     println!("cdrom gettd");
     //     if self.parameters.len() != 1 {
     //         return error_response(&self.stat, 0x20, "gettd takes 1 param");
     //     }
@@ -1304,7 +1276,7 @@ impl CDRom {
                 info!("get_td (track_num: {})", track_num);
                 let Some(disk) = cdrom.disk.as_ref() else {
                     cdrom.push_error(DriveError::CannotRespond);
-                    println!("warn gettd while no disk");
+                    warn!("gettd while no disk");
                     Self::set_interrupt(system, 5);
                     system.cdrom.finish_command();
                     return;
@@ -1312,7 +1284,7 @@ impl CDRom {
 
                 let Some(track) = disk.get_track_by_number(track_num) else {
                     cdrom.push_error(DriveError::InvalidParameter);
-                    println!("warn gettd invalid track number: {}", track_num);
+                    warn!("gettd invalid track number: {}", track_num);
                     Self::set_interrupt(system, 5);
                     system.cdrom.finish_command();
                     return;
@@ -1345,7 +1317,7 @@ impl CDRom {
                 cdrom.cmd_state = CmdState::Resp1;
             }
             CmdState::Resp1 => {
-                println!("DEBUG CDROM: cmd_stop");
+                info!("cmd_stop");
                 cdrom.push_result_byte(cdrom.stat.0);
                 cdrom.stat.set_read(false);
                 cdrom.stat.set_play(false);
@@ -1400,14 +1372,14 @@ impl CDRom {
             // self.results.pop().expect("ok");
             self.results.remove(0)
         } else {
-            println!("cdrom warn: read from empty result fifo");
+            warn!("read from empty result fifo");
             0
         }
     }
 
     pub fn pop_from_data_buffer(&mut self) -> u8 {
         let data = self.data_buffer.pop_front().unwrap_or_else(|| {
-            println!("CDROM warn! pop from empty buffer");
+            warn!("pop from empty buffer");
             0
         });
         // if self.data_buffer.is_empty() {
@@ -1503,7 +1475,7 @@ impl CDRom {
         } else {
             let disk = cdrom.disk.as_mut().unwrap();
             if !disk.is_at_valid_location() {
-                println!("WARN cdrom: play/read failed: invalid disc location");
+                warn!("play/read failed: invalid disc location");
                 cdrom.stat.set_spindle_motor(false);
                 cdrom.push_error(DriveError::SeekFailed);
                 cdrom.reset_read_state();
@@ -1554,7 +1526,13 @@ impl CDRom {
             cdrom.stat.set_seek(false);
             cdrom.read_delay = CDROM_READ_DELAY_CYCLES;
         } else {
-            // FIXME: check valid location..
+            if !cdrom.disk.as_ref().unwrap().is_at_valid_location() {
+                warn!("play/read failed: invalid disc location");
+                cdrom.stat.set_spindle_motor(false);
+                cdrom.push_error(DriveError::SeekFailed);
+                cdrom.reset_read_state();
+                return;
+            }
             cdrom.stat.set_play(true);
             let sector = cdrom.disk.as_mut().unwrap().advance_sector();
             let Some(sector) = sector else {

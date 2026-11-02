@@ -44,6 +44,7 @@ impl Mdec {
          if T::width() as u8 != 4 {
             panic!("Unhandled MDEC load ({})", T::width() as u8);
         }
+        // println!("mdec load");
         match offset {
             0 => T::from_u32(self.get_response_data()),
             4 => T::from_u32(self.get_status()),
@@ -71,7 +72,7 @@ impl Mdec {
     }
 
     pub fn dma_can_read(&self) -> bool {
-        self.control.enable_data_out() && !self.output_fifo.is_empty()
+       self.control.enable_data_out() && !self.output_fifo.is_empty()
     }
 
     pub fn get_status(&mut self) -> u32 {

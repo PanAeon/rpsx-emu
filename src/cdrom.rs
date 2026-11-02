@@ -1,7 +1,6 @@
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::ops::Div;
 
 use arrayvec::ArrayVec;
 
@@ -174,6 +173,7 @@ impl Image {
         }
     }
 
+    #[allow(dead_code)]
     pub fn current_sector(&mut self) -> Option<Vec<u8>> {
         let start = self.read_head;
         if start < 2 * 75 * SECTOR_SIZE {
@@ -187,6 +187,7 @@ impl Image {
         }
     }
 
+    #[allow(dead_code)]
     pub fn reset_read_head(&mut self) {
         self.read_head = SECTOR_SIZE * 75 * 2;
     }
@@ -405,7 +406,7 @@ impl CDRom {
     }
 
     pub fn read_addr(&mut self) -> u8 {
-        let addr = &mut self.addr;
+        let mut addr = self.addr.clone();
         addr.set_param_empty(self.pending_params.is_empty());
         addr.set_param_write_ready(!self.pending_params.is_full());
         addr.set_result_read_ready(!self.results.is_empty());
@@ -416,7 +417,7 @@ impl CDRom {
 
     pub fn load<T: Addressable>(&mut self, offset: u32) -> T {
         let width = T::width() as usize;
-        // println!("cdrom load {}",offset);
+        // println!("cdrom load offset: {} bank: {}",offset, self.addr.current_bank());
         if offset == 2 {
             return self.read_sector_data::<T>();
         }
@@ -447,7 +448,7 @@ impl CDRom {
         let cdrom = &mut system.cdrom;
         let ack = AckInterrupt(v);
 
-        cdrom.irq_pending.0 &= !ack.0;
+        cdrom.irq_pending.0 &= !ack.int_clear();
         // let ints = cdrom.irq_pending.ints();
         // println!("ack: int clear: 0b{:b}", ack.int_clear());
         // irq
@@ -979,16 +980,17 @@ impl CDRom {
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
                 println!("DEBUG CDROM: cmd_play ");
+                cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
                 let track_num = cdrom.cmd_params.pop();
                 if let Some(track_id) = track_num {
-                    let track_num = from_bcd(track_id).unwrap();
+                    let track_num = from_bcd(track_id).expect("valid bcd");
                     let track = cdrom
                         .disk
                         .as_ref()
-                        .unwrap()
+                        .expect("valid image")
                         .get_track_by_number(track_num)
                         .expect("ok");
-                    cdrom.seekloc = Some(track.get_start() as u32);
+                    cdrom.seekloc = Some(track.get_start() as u32 + 2 * 75 * SECTOR_SIZE as u32);
                 }
                 let cdrom = &mut system.cdrom;
                 cdrom.begin_playing();
@@ -1424,6 +1426,7 @@ impl CDRom {
 
     pub fn consume_result_byte(&mut self) -> u8 {
         if self.results.len() > 0 {
+            // self.results.pop().expect("ok");
             self.results.remove(0)
         } else {
             println!("cdrom warn: read from empty result fifo");
@@ -1849,7 +1852,7 @@ impl CDRom {
 // 6   DRQSTS   Data request          (R, 1=one or more RDDATA reads or WRDATA writes pending)
 // 7   BUSYSTS  Busy status           (R, 1=HC05 busy acknowledging command)
 bitfield::bitfield! {
-    #[derive(Default, Serialize, Deserialize)]
+    #[derive(Default, Serialize, Deserialize, Clone)]
     pub struct AddressReg(u8);
     current_bank, set_current_bank: 1,0;
     _, set_adpcm_busy: 2;
@@ -1919,9 +1922,6 @@ bitfield::bitfield! {
 }
 
 impl StatusReg {
-    pub fn with_error(&self) -> u8 {
-        self.0 | 0x01
-    }
 }
 
 bitfield::bitfield! {
@@ -1965,15 +1965,15 @@ impl From<u8> for SectorSize {
 }
 
 impl Speed {
-    fn transform<T>(self, value: T) -> T
-    where
-        T: Div<u64, Output = T>,
-    {
-        match self {
-            Speed::Normal => value,
-            Speed::Double => value / 2,
-        }
-    }
+    // fn transform<T>(self, value: T) -> T
+    // where
+    //     T: Div<u64, Output = T>,
+    // {
+    //     match self {
+    //         Speed::Normal => value,
+    //         Speed::Double => value / 2,
+    //     }
+    // }
 }
 // 7   Speed       (0=Normal speed, 1=Double speed)
 // 6   XA-ADPCM    (0=Off, 1=Send XA-ADPCM sectors to SPU Audio Input)
@@ -2034,7 +2034,7 @@ const CDROM_READ_DELAY_CYCLES: u32 = 33_868_800 / 75;
 const CDROM_READ_2X_DELAY_CYCLES: u32 = 33_868_800 / 150;
 const CDROM_PAUSE_DELAY_CYCLES: u32 = 2_168_860;
 const CDROM_PAUSE_2X_DELAY_CYCLES: u32 = 1_097_107;
-const CDROM_SPINUP_DELAY_CYCLES: u32 = 33_868_800; // 1 second
+// const CDROM_SPINUP_DELAY_CYCLES: u32 = 33_868_800; // 1 second
 
 const CDROM_GETID_NODISK: [u8; 8] = [0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 const CDROM_GETID_REGION: u8 = b'A'; // A=America, I=Japan, E=Europe
@@ -2043,14 +2043,14 @@ const CDROM_GETID_LICENSED: [u8; 8] =
 const CDROM_DATE_VERSION: [u8; 4] = [0x94, 0x09, 0x19, 0xC0];
 // const CDROM_DATE_VERSION: [u8; 4] = [0x94, 0x09, 0x19, 0xC0];
 
-pub const AVG_1ST_RESP_GENERIC: u64 = 0xC4E1;
-pub const AVG_1ST_RESP_INIT: u64 = 0x13CCE;
+// pub const AVG_1ST_RESP_GENERIC: u64 = 0xC4E1;
+// pub const AVG_1ST_RESP_INIT: u64 = 0x13CCE;
 
-pub const AVG_2ND_RESP_GET_ID: u64 = 0x4A00;
-pub const AVG_2ND_RESP_PAUSE: u64 = 0x0021_181C;
-pub const AVG_2ND_RESP_SEEKL: u64 = 0x6E1CD;
+// pub const AVG_2ND_RESP_GET_ID: u64 = 0x4A00;
+// pub const AVG_2ND_RESP_PAUSE: u64 = 0x0021_181C;
+// pub const AVG_2ND_RESP_SEEKL: u64 = 0x6E1CD;
 
-pub const AVG_RATE_INT1: u64 = 0x6E1CD;
+// pub const AVG_RATE_INT1: u64 = 0x6E1CD;
 
 const fn from_bcd(val: u8) -> Option<u8> {
     let ones = val & 0xF;
@@ -2118,6 +2118,7 @@ impl SerialNumber {
         Some(SerialNumber(serial))
     }
 
+    #[allow(dead_code)]
     pub fn region(&self) -> Option<Region> {
         match &self.0[0..4] {
             b"SCPS" | b"SLPS" | b"SLPM" | b"PAPX" => Some(Region::Japan),
@@ -2247,7 +2248,7 @@ fn read_system_cnf(image: &mut CdCache) -> Vec<u8> {
 
     if len > 1024 * 1024 {
         let desc = format!("SYSTEM.CNF is too big: {}B", len);
-        return panic!("bad disc format");
+        panic!("bad disc format: {}", desc);
     }
 
     let system_cnf = system_cnf.read_file(image).expect("ok");
@@ -2264,8 +2265,8 @@ pub fn pos_to_sectors(mins: u8, secs: u8, sect: u8) -> u32 {
 
 // doesn't add pregap
 pub fn mm_ss_ff(read_head: usize) -> (u8, u8, u8) {
-    let sectors = (read_head / SECTOR_SIZE);
-    let secs = (sectors / 75);
+    let sectors = read_head / SECTOR_SIZE;
+    let secs = sectors / 75;
     let sect = sectors % 75;
     let mins = secs / 60;
     let secs = secs % 60;

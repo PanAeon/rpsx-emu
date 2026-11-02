@@ -87,6 +87,8 @@ pub struct Cli {
     profilegpu: bool,
     #[arg(long)]
     enable_crt_shader: bool,
+    #[arg(long)]
+    negcon: bool,
 }
 
 fn main() {
@@ -246,6 +248,7 @@ pub struct State {
     draw_texture: wgpu::Texture,
     draw_vertex_buffer: wgpu::Buffer,
     draw_texture_bind_group: wgpu::BindGroup,
+    negcon: bool,
 }
 
 impl State {
@@ -543,7 +546,7 @@ impl State {
         });
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
-        let sio = sio::Sio::new();
+        let sio = sio::Sio::new(cli.negcon);
         let sio2 = sio2::Sio2::new();
         let mdec = mdec::Mdec::new();
         let mut scheduler = scheduler::Scheduler::default();
@@ -689,6 +692,7 @@ impl State {
                 .sideload
                 .then(|| cli.filename.expect("sideload binary to be present")),
             ctrl_pressed: false,
+            negcon: cli.negcon,
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -1429,8 +1433,13 @@ impl State {
             }
         }
     }
+
     pub fn update_gamepad(&mut self) {
-        let mut prev_buttons = self.system.sio.gamepad1.digital_switches;
+        if self.negcon {
+            Self::update_negcon(self);
+            return;
+        }
+        let mut prev_buttons = self.system.sio.gamepad1.get_buttons();
         while let Some(Event {
             id: _,
             event,
@@ -1518,13 +1527,13 @@ impl State {
                     }
                     gilrs::Button::Mode => {
                         info!("analog mode changed!");
-                        let prev = self.system.sio.gamepad1.mode.get();
+                        let prev = self.system.sio.gamepad1.get_analog_mode();
                         self.system.sio.gamepad1.set_analog_mode(!prev);
                     }
                     _ => {} // ignore..
                 },
                 gilrs::EventType::AxisChanged(axis, value, _) => {
-                    let axes = &mut self.system.sio.gamepad1.joystick_axes;
+                    let axes = self.system.sio.gamepad1.get_stick_axis();
                     let byte = value.mul_add(127.5, 127.5) as u8;
                     if axis == Axis::LeftStickX {
                         axes[2] = byte;
@@ -1534,6 +1543,125 @@ impl State {
                         axes[0] = byte;
                     } else if axis == Axis::RightStickY {
                         axes[3] = byte; // correct
+                    }
+                    // self.system.sio.gamepad1.set_stick_axis(left, right);
+                }
+                gilrs::EventType::Connected => {}
+                gilrs::EventType::Disconnected => {}
+                _ => {} //println!("gamepad evvent ignored {:?} ", event)
+            }
+        }
+        // println!("0x{:X}", prev_buttons);
+        self.system.sio.gamepad1.set_buttons(prev_buttons);
+    }
+
+    pub fn update_negcon(&mut self) {
+        let mut prev_buttons = self.system.sio.gamepad1.get_buttons();
+        let axes = self.system.sio.gamepad1.get_stick_axis();
+        while let Some(Event {
+            id: _,
+            event,
+            time: _,
+            ..
+        }) = self.gilrs.next_event()
+        {
+            // println!("{:?} New event from {}: {:?}", time, id, event);
+            match event {
+                gilrs::EventType::ButtonPressed(button, _) => match button {
+                    gilrs::Button::South => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Cross as usize));
+                    } // Cross
+                    gilrs::Button::East => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Circle as usize));
+                    } // Circle
+                    gilrs::Button::North => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Triangle as usize));
+                    } // Triangle
+                    gilrs::Button::West => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Square as usize));
+                    } // Square
+                    gilrs::Button::Select => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Select as usize));
+                    }
+                    gilrs::Button::Start => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Start as usize));
+                    }
+                    gilrs::Button::DPadUp => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Up as usize));
+                    }
+                    gilrs::Button::DPadDown => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Down as usize));
+                    }
+                    gilrs::Button::DPadLeft => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Left as usize));
+                    }
+                    gilrs::Button::DPadRight => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::Right as usize));
+                    }
+                    gilrs::Button::LeftTrigger => {
+                        axes[3] = 0xff;
+                        // prev_buttons &= !(0x1 << (crate::sio::Button::L1 as usize));
+                    }
+                    gilrs::Button::RightTrigger => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::R1 as usize));
+                    }
+                    _ => {} // ignore..
+                },
+                gilrs::EventType::ButtonReleased(button, _) => match button {
+                    gilrs::Button::South => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Cross as usize);
+                    } // Cross
+                    gilrs::Button::East => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Circle as usize);
+                    } // Circle
+                    gilrs::Button::North => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Triangle as usize);
+                    } // Triangle
+                    gilrs::Button::West => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Square as usize);
+                    } // Square
+                    gilrs::Button::Select => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Select as usize);
+                    }
+                    gilrs::Button::Start => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Start as usize);
+                    }
+                    gilrs::Button::DPadUp => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Up as usize);
+                    }
+                    gilrs::Button::DPadDown => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Down as usize);
+                    }
+                    gilrs::Button::DPadLeft => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Left as usize);
+                    }
+                    gilrs::Button::DPadRight => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::Right as usize);
+                    }
+                    gilrs::Button::LeftTrigger => {
+                        axes[3]=0x00;
+                        // prev_buttons |= 0x1 << (crate::sio::Button::L1 as usize);
+                    }
+                    gilrs::Button::RightTrigger => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::R1 as usize);
+                    }
+                    gilrs::Button::Mode => {
+                        info!("analog mode changed!");
+                        // let prev = self.system.sio.gamepad1.mode.get();
+                        // self.system.sio.gamepad1.set_analog_mode(!prev);
+                    }
+                    _ => {} // ignore..
+                },
+                gilrs::EventType::AxisChanged(axis, value, _) => {
+                    let byte = value.mul_add(127.5, 127.5) as u8;
+                    if axis == Axis::RightZ {
+                        axes[2] = byte;
+                    } else if axis == Axis::LeftZ {
+                        axes[1] = byte;
+                    } else if axis == Axis::LeftStickX {
+                        axes[0] = byte;
+                    } else if axis == Axis::RightStickY {
+                        // axes[3] = byte; // correct
                     }
                     // self.system.sio.gamepad1.set_stick_axis(left, right);
                 }

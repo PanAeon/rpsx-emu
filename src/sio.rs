@@ -1,7 +1,7 @@
 use std::fs::File;
 
 use arrayvec::ArrayVec;
-use log::warn;
+use log::info;
 use serde::{Deserialize, Serialize};
 
 use crate::system::{Addressable, System};
@@ -17,14 +17,19 @@ pub struct Sio {
 
     // move out?
     state: State,
-    pub gamepad1: Gamepad,
-    pub gamepad2: Gamepad,
+    pub gamepad1: Box<dyn Controller>,
+    pub gamepad2: Box<dyn Controller>,
     pub memcard1: Memcard,
     pub memcard2: Memcard,
 }
 
 impl Sio {
-    pub fn new() -> Self {
+    pub fn new(negcon: bool) -> Self {
+        let gamepad1: Box<dyn Controller> = if negcon {
+            Box::new(NegCon::default())
+        } else {
+            Box::new(Gamepad::default())
+        };
         Sio {
             control: Control::default(),
             boudrate_reload: 0,
@@ -33,8 +38,8 @@ impl Sio {
             transfer: None,
             received: ArrayVec::new(),
             state: State::None,
-            gamepad1: Gamepad::default(),
-            gamepad2: Gamepad::default(),
+            gamepad1,
+            gamepad2: Box::new(Gamepad::default()),
             memcard1: Memcard::new("/foo/memcard1.mcd"),
             memcard2: Memcard::new("/foo/memcard2.mcd"),
         }
@@ -330,6 +335,152 @@ pub enum State {
     MemcardComm,
 }
 
+#[typetag::serde(tag = "type")]
+pub trait Controller {
+    fn send_and_receive_byte(&mut self, data: u8) -> u8;
+    fn in_ack(&self) -> bool;
+
+    fn reset(&mut self);
+
+    fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8));
+
+    fn get_stick_axis(&mut self) -> &mut[u8;4];
+
+    fn set_buttons(&mut self, buttons: u16);
+
+    fn get_buttons(&self) -> u16;
+
+    fn set_analog_mode(&mut self, is_analog: bool);
+    fn get_analog_mode(&self) -> bool;
+
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NegCon {
+    state: NegConState,
+    in_ack: bool,
+    pub digital_switches: u16,
+    pub joystick_axes: [u8; 4],
+}
+impl Default for NegCon {
+    fn default() -> Self {
+        Self {
+            state: NegConState::default(),
+            digital_switches: 0xFFFF,
+            joystick_axes: [0x80; 4],
+            in_ack: Default::default(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum NegConState {
+    #[default]
+    Init,
+    IdLow,
+    IdHigh,
+    SwitchLow,
+    SwitchHigh,
+    AnalogInput0,
+    AnalogInput1,
+    AnalogInput2,
+    AnalogInput3,
+}
+
+#[typetag::serde]
+impl Controller for NegCon {
+    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
+        const ID: [u8;2] = 0x5A23_u16.to_le_bytes();
+        let received = match self.state {
+            NegConState::Init => 0xFF,
+
+            NegConState::IdLow => ID[0],
+            NegConState::IdHigh => ID[1],
+
+            NegConState::SwitchLow => self.digital_switches as u8,
+            NegConState::SwitchHigh => (self.digital_switches >> 8) as u8,
+
+            NegConState::AnalogInput0 => self.joystick_axes[Axis::RightX as usize],
+            NegConState::AnalogInput1 => self.joystick_axes[Axis::RightY as usize],
+            NegConState::AnalogInput2 => self.joystick_axes[Axis::LeftX as usize],
+            NegConState::AnalogInput3 => self.joystick_axes[Axis::LeftY as usize],
+        };
+
+        // if self.state == NegConState::SwitchLow {
+        //     println!("buttons: 0x{:X}", self.digital_switches);
+        // }
+
+
+        if let Some(state) = self.next(self.state, data) {
+            self.state = state;
+            self.in_ack = state != NegConState::Init;
+            received
+        } else {
+            self.reset();
+            0xFF
+        }
+    }
+
+    fn in_ack(&self) -> bool {
+        self.in_ack
+    }
+
+    fn reset(&mut self) {
+        self.in_ack = false;
+        self.state = NegConState::Init;
+    }
+
+    fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
+        self.joystick_axes = [right.0, right.1, left.0, left.1];
+    }
+
+    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+        &mut self.joystick_axes
+    }
+
+
+    fn set_buttons(&mut self, buttons: u16) {
+        self.digital_switches = buttons;
+    }
+    fn get_buttons(&self) -> u16 {
+        self.digital_switches
+    }
+    fn set_analog_mode(&mut self, _is_analog: bool) {
+        info!("analog mode is ignored for negcon")
+    }
+    fn get_analog_mode(&self) -> bool {
+        true
+    }
+
+}
+
+impl NegCon {
+    const ANALOG_STATES: [(NegConState, Option<u8>); 9] = [
+        (NegConState::Init, Some(0x00)),
+        (NegConState::IdLow, Some(0x01)),
+        (NegConState::IdHigh, Some(0x42)),
+        (NegConState::SwitchLow, None),
+        (NegConState::SwitchHigh, None),
+        (NegConState::AnalogInput0, None),
+        (NegConState::AnalogInput1, Some(0x00)),
+        (NegConState::AnalogInput2, Some(0x00)),
+        (NegConState::AnalogInput3, Some(0x00)),
+    ];
+    fn next(&self, current_state: NegConState, received_byte: u8) -> Option<NegConState> {
+        let idx = current_state as usize;
+
+
+        let (next_state, check_byte) = Self::ANALOG_STATES[(idx + 1) % Self::ANALOG_STATES.len()];
+        // if current_state == GamepadState::IdLow {
+            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        // }
+        let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
+        next_state_is_valid.then_some(next_state)
+    }
+}
+
+
 #[derive(Serialize, Deserialize)]
 pub struct Gamepad {
     state: GamepadState,
@@ -339,8 +490,9 @@ pub struct Gamepad {
     pub joystick_axes: [u8; 4],
 }
 
-impl Gamepad {
-    pub fn send_and_receive_byte(&mut self, data: u8) -> u8 {
+#[typetag::serde]
+impl Controller for Gamepad {
+    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
         let received = match self.state {
             GamepadState::Init => 0xFF,
 
@@ -371,29 +523,41 @@ impl Gamepad {
         }
     }
 
-    pub fn in_ack(&self) -> bool {
+    fn in_ack(&self) -> bool {
         self.in_ack
     }
 
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         // println!("reset");
         self.in_ack = false;
         self.state = GamepadState::Init;
     }
 
-    pub fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
+    fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
         self.joystick_axes = [right.0, right.1, left.0, left.1];
     }
 
-    pub fn set_analog_mode(&mut self, is_analog: bool) {
+    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+        &mut self.joystick_axes
+    }
+
+
+    fn get_buttons(&self) -> u16 {
+        self.digital_switches
+    }
+
+    fn set_analog_mode(&mut self, is_analog: bool) {
         if self.mode.get() == is_analog {
             return;
         }
         self.mode.set(is_analog);
         self.reset();
     }
+    fn get_analog_mode(&self) -> bool {
+        self.mode.get()
+    }
 
-    pub fn set_buttons(&mut self, buttons: u16) {
+    fn set_buttons(&mut self, buttons: u16) {
         self.digital_switches = buttons;
     }
 }

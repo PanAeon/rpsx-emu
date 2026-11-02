@@ -1281,7 +1281,7 @@ impl Gpu {
 
         // let dot_clock_dividers = [10, 8, 5, 4, 7, 7, 7, 7];
         // let horizontal_resolution_index =
-    // self.hres.2 | (self.hres.3);
+        // self.hres.2 | (self.hres.3);
         // let dot_clock_divider = dot_clock_dividers[horizontal_resolution_index as usize];
         let dot_clock_divider = self.get_clock_divider();
 
@@ -1316,7 +1316,9 @@ impl Gpu {
         };
         let horizontal_display_pixels = horizontal_display_ticks / dot_clock_divider;
 
-        let mut display_vram_width = if horizontal_display_pixels == 1 { 4 } else {
+        let mut display_vram_width = if horizontal_display_pixels == 1 {
+            4
+        } else {
             (horizontal_display_pixels + 2) & !3
         };
 
@@ -1327,11 +1329,13 @@ impl Gpu {
         let mut display_origin_left: u16 = 0;
         let mut display_origin_top: u16 = 0;
         if horizontal_display_start >= horizontal_visible_start {
-            display_origin_left = (horizontal_display_start - horizontal_visible_start) / dot_clock_divider;
+            display_origin_left =
+                (horizontal_display_start - horizontal_visible_start) / dot_clock_divider;
             display_vram_left = self.display_vram_x_start;
             horizontal_skip_pixels = 0;
         } else {
-            horizontal_skip_pixels = (horizontal_visible_start - horizontal_display_start) / dot_clock_divider;
+            horizontal_skip_pixels =
+                (horizontal_visible_start - horizontal_display_start) / dot_clock_divider;
             display_origin_left = 0;
             display_vram_left = (self.display_vram_x_start + horizontal_skip_pixels) % VRAM_WIDTH;
         }
@@ -1344,22 +1348,28 @@ impl Gpu {
             display_vram_top = self.display_vram_y_start;
         } else {
             display_origin_top = 0;
-            display_vram_top = (self.display_vram_y_start + (vertical_visible_start - vertical_display_start)) % VRAM_HEIGHT;
+            display_vram_top = (self.display_vram_y_start
+                + (vertical_visible_start - vertical_display_start))
+                % VRAM_HEIGHT;
         }
 
-        let mut  display_vram_height = 0;
+        let mut display_vram_height = 0;
         if vertical_display_end <= vertical_visible_end {
-            display_vram_height =
-                (vertical_display_end - 
-                vertical_display_end.min(vertical_display_start.max(vertical_visible_start))) << height_shift;
+            display_vram_height = (vertical_display_end
+                - vertical_display_end.min(vertical_display_start.max(vertical_visible_start)))
+                << height_shift;
         } else {
-            display_vram_height =
-                (vertical_visible_end -
-               vertical_visible_end.min(vertical_display_start.max(vertical_visible_start))) << height_shift;
+            display_vram_height = (vertical_visible_end
+                - vertical_visible_end.min(vertical_display_start.max(vertical_visible_start)))
+                << height_shift;
         }
 
-        (display_vram_left, display_vram_top,
-          display_vram_width, display_vram_height)
+        (
+            display_vram_left,
+            display_vram_top,
+            display_vram_width,
+            display_vram_height,
+        )
     }
 
     pub fn get_crt_vram_source_rect(&self) {
@@ -1400,17 +1410,27 @@ impl Gpu {
         //     },
         // };
 
-        let (sx, sy, width, height) = self.update_crt_display_params();
-        let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
-        match msg {
-            RendererResponse::FBUpdated {
-                width:_,
-                height:_,
-                sx:_,
-                sy:_,
-                depth,
-            } => (width as usize, height as usize, sx as usize, sy as usize, depth),
-            _ => panic!("something went wrong.. sync call returned wrong response"),
+        if display_vram {
+            (1024, 512, 0, 0, self.display_depth)
+        } else {
+            let (sx, sy, width, height) = self.update_crt_display_params();
+            let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
+            match msg {
+                RendererResponse::FBUpdated {
+                    width: _,
+                    height: _,
+                    sx: _,
+                    sy: _,
+                    depth,
+                } => (
+                    width as usize,
+                    height as usize,
+                    sx as usize,
+                    sy as usize,
+                    depth,
+                ),
+                _ => panic!("something went wrong.. sync call returned wrong response"),
+            }
         }
     }
 
@@ -1432,16 +1452,16 @@ impl Gpu {
         self.in_hblank = false;
     }
     pub fn get_clock_divider(&self) -> u16 {
-        const DOT_CLOCK_DIVIDERS: [u16;8] = [10, 8, 5, 4, 7, 7, 7, 7];
+        const DOT_CLOCK_DIVIDERS: [u16; 8] = [10, 8, 5, 4, 7, 7, 7, 7];
         DOT_CLOCK_DIVIDERS[(self.hres.2 | self.hres.3) as usize]
 
         // match self.hres.0 {
         //     0 => 10,            // 256
         //     1 => 8,             // 320
         //     2 => 7,             // 512
-            // 3 => 5,             // 640
-            // 4 | 5 | 6 | 7 => 4, // 368
-            // _ => panic!("not implemented"),
+        // 3 => 5,             // 640
+        // 4 | 5 | 6 | 7 => 4, // 368
+        // _ => panic!("not implemented"),
         // }
     }
 
@@ -1538,7 +1558,7 @@ impl HorizontalRes {
         HorizontalRes(hr, st, hr1, hr2)
     }
     fn into_status(self) -> u32 {
-        let HorizontalRes(_, st,_,_) = self;
+        let HorizontalRes(_, st, _, _) = self;
 
         (st as u32) << 16
     }

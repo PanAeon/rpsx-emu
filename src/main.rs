@@ -533,7 +533,7 @@ impl State {
 
         let (ram_slice, bios_slice) = fastmem::create_memory_mappings();
         let bios = bios::Bios::new(bios_slice, Path::new("/foo/SCPH1001.BIN"))?;
-        // let bios = bios::Bios::new(Path::new("/foo/openbios.bin"))?;
+        // let bios = bios::Bios::new(bios_slice, Path::new("/foo/openbios.bin"))?;
         let ram = ram::Ram::new(ram_slice);
         let scratchpad = scratchpad::Scratchpad::new();
         let dma = dma::Dma::new();

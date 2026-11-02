@@ -1469,6 +1469,9 @@ impl ComputeRenderer {
         if top_left.0 > 1024 || top_left.1 > 512 {
             return;
         }
+        if top_left.0 + size.0 > 1024 || top_left.1 + size.1 > 512 {
+            return;
+        }
         let unaligned_data: &mut [u16] = bytemuck::cast_slice_mut(&mut unaligned_data[0..]);
         // if ctx.force_set_mask_bit {
         //     for d in &mut *unaligned_data {

@@ -1,6 +1,6 @@
-use std::{borrow::Cow, num::NonZeroU64};
+use std::{borrow::Cow};
 
-use crate::{DisplayUniforms, TextureBuffer, VERTICES, Vertex};
+use crate::{VERTICES, Vertex};
 use wgpu::util::DeviceExt;
 
 pub fn create_draw_pipeline(
@@ -14,7 +14,7 @@ pub fn create_draw_pipeline(
     wgpu::Buffer,
     wgpu::BindGroup,
 ) {
-    let render_texture = device.create_texture(&wgpu::TextureDescriptor {
+    let draw_texture = device.create_texture(&wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
             width: 1920,
             height: 1080,
@@ -134,7 +134,7 @@ pub fn create_draw_pipeline(
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
-    let texture_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture_view = draw_texture.create_view(&wgpu::TextureViewDescriptor::default());
     let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("draw  texture bind_group"),
         layout: &texture_bind_group_layout,
@@ -150,5 +150,8 @@ pub fn create_draw_pipeline(
         ],
     });
 
-    (pipeline, render_texture, vertex_buffer, texture_bind_group)
+    (pipeline, draw_texture, vertex_buffer, texture_bind_group)
+}
+
+fn update_offscreen_texture() {
 }

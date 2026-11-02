@@ -1027,7 +1027,7 @@ impl State {
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;
             self.paused = false;
-            crate::cdrom::CDRom::write_command(&mut self.system, 0x3);//play
+            crate::cdrom::CDRom::write_command(&mut self.system, 0x3); //play
             // self.system.cdrom.write_command();
             return;
         }
@@ -1219,13 +1219,107 @@ impl State {
         // }
     }
 
+    fn update_draw_texture_if_needed(
+        &mut self,
+        width: u32,
+        height: u32,
+        texture_format: wgpu::TextureFormat,
+    ) {
+        if self.draw_texture.width() != width || self.draw_texture.height() != height {
+            info!("updating offscreen render (draw) texture");
+            let draw_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    // All textures are stored as 3D, we represent our 2D texture
+                    // by setting depth to 1.
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // Most images are stored using sRGB, so we need to reflect that here.
+                format: texture_format,
+                // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
+                // COPY_DST means that we want to copy data to this texture
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+            // | wgpu::TextureUsages::COPY_DST
+            // | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                label: Some("render texture"),
+                // This is the same as with the SurfaceConfig. It
+                // specifies what texture formats can be used to
+                // create TextureViews for this texture. The base
+                // texture format (Rgba8UnormSrgb in this case) is
+                // always supported. Note that using a different
+                // texture format is not supported on the WebGL2
+                // backend.
+                view_formats: &[texture_format],
+            });
+            self.draw_texture = draw_texture;
+
+            // updating texture bind group....
+            let texture_bind_group_layout =
+                self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("draw_texture_bind_group_layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+            let diffuse_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Nearest,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            });
+            let texture_view = self.draw_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let texture_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("draw  texture bind_group"),
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                    },
+                ],
+            });
+            self.draw_texture_bind_group = texture_bind_group;
+        }
+    }
     fn render(&mut self, view: &wgpu::TextureView) {
         self.upload_framebuffer();
         self.window.request_redraw();
 
-        {
+        let w = view.texture().width();
+        let h = view.texture().height();
+        self.update_draw_texture_if_needed(w, h, view.texture().format());
 
-            let draw_texture_view = self.draw_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        {
+            let draw_texture_view = self
+                .draw_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1252,7 +1346,6 @@ impl State {
 
                 rpass.set_bind_group(1, &self.texture_bind_group, &[]);
                 rpass.draw(0..6, 0..1);
-                // render(self, &self.device, &mut rpass);
             }
             self.queue.submit(vec![encoder.finish()]);
         }
@@ -1640,7 +1733,7 @@ impl State {
                         prev_buttons |= 0x1 << (crate::sio::Button::Right as usize);
                     }
                     gilrs::Button::LeftTrigger => {
-                        axes[3]=0x00;
+                        axes[3] = 0x00;
                         // prev_buttons |= 0x1 << (crate::sio::Button::L1 as usize);
                     }
                     gilrs::Button::RightTrigger => {

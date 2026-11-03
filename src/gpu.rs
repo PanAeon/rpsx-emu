@@ -1307,7 +1307,7 @@ impl Gpu {
         let height_shift = y_shift;
 
         let display_width = (horizontal_visible_end - horizontal_visible_start) / dot_clock_divider;
-        let display_height = (vertical_visible_end - vertical_visible_start) << height_shift;
+        let display_height = (vertical_visible_end.saturating_sub(vertical_visible_start)) << height_shift;
 
         // determine number of pixels outputted from vram
         let horizontal_display_ticks = if horizontal_display_end < horizontal_display_start {

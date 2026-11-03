@@ -17,13 +17,16 @@ impl CdCache {
 
         let thread_reader = reader.clone();
 
-        let handle = std::thread::spawn(move || {
+        let bldr = std::thread::Builder::new()
+            .name("cdcache".to_string());
+
+        let handle = bldr.spawn(move || {
             run_prefetcher( thread_reader);
         });
 
         CdCache {
             reader,
-            handle: Some(handle),
+            handle: Some(handle.expect("ok")),
             tracks
         }
     }

@@ -56,6 +56,8 @@ mod timers;
 mod block_cache;
 mod cd_cache;
 mod cdxa;
+mod cdrom_xa;
+mod adpcm;
 mod cue;
 mod dummy_renderer;
 mod dynarec;
@@ -308,9 +310,9 @@ impl State {
             })
             .await?;
 
-        // device.on_uncaptured_error(Arc::new(|error| {
-        //     eprintln!("Uncaptured wgpu error: {:#?}", error);
-        // }));
+        device.on_uncaptured_error(Arc::new(|error| {
+            eprintln!("Uncaptured wgpu error: {:#?}", error);
+        }));
 
         let surface_caps = surface.get_capabilities(&adapter);
 
@@ -1027,7 +1029,7 @@ impl State {
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;
             self.paused = false;
-            crate::cdrom::CDRom::write_command(&mut self.system, 0x3); //play
+            // crate::cdrom::CDRom::write_command(&mut self.system, 0x3); //play
             // self.system.cdrom.write_command();
             return;
         }

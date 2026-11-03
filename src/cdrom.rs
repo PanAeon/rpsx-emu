@@ -5,7 +5,8 @@ use std::collections::VecDeque;
 use arrayvec::ArrayVec;
 
 use crate::cd_cache::CdCache;
-use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
+use crate::cdrom_xa::XaState;
+// use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
 use crate::iso9660;
 use crate::system::{Addressable, System};
 
@@ -120,14 +121,21 @@ impl Image {
         }
     }
 
-    pub fn seek(&mut self, sectors: u32) {
-        self.read_head = sectors as u64;
+    pub fn seek(&mut self, sectors: u64) {
+        self.read_head = sectors;
     }
     // pub fn seek_location(&mut self, mins: u8, secs: u8, sect: u8) {
     //     let sectors = ((mins as usize) * 75 * 60) + ((secs as usize) * 75) + (sect as usize);
     //     self.read_head = sectors * SECTOR_SIZE;
     // }
 
+    pub fn read_sector_raw_at(&mut self, lba: u64) -> Option<Vec<u8>> {
+        self.cache
+            .as_mut()
+            .unwrap()
+            .read_sector(lba)
+            .map(|x| x.to_vec())
+    }
     pub fn advance_sector(&mut self) -> Option<Vec<u8>> {
         let start = self.read_head;
         self.read_head += 1;
@@ -288,7 +296,7 @@ pub struct CDRom {
     results: ArrayVec<u8, 16>,
 
     pub disk: Option<Image>,
-    pub seekloc: Option<u32>,
+    pub seekloc: Option<u64>,
     data_buffer: VecDeque<u8>,
     data_pos: u32,
     last_sector_header: [u8; 8],
@@ -301,14 +309,16 @@ pub struct CDRom {
     volume: VolumeReg,
     // hinsts: HINTSTS,
     // audio_muted: bool,
-    filter_file: u8,
-    filter_channel: u8,
-    audio_buffer: VecDeque<i16>,
+    // filter_file: u8,
+    // filter_channel: u8,
+    audio_buffer: VecDeque<[i16;2]>,
 
+    xa: XaState,
+    last_sample: [i16;2]
     // Left, Right, Mono
-    adpcm_history: [AdpcmHistory; 3],
-    high_res_resamplers: [HighResResampler; 3],
-    low_res_resamplers: [LowResResampler; 3],
+    // adpcm_history: [AdpcmHistory; 3],
+    // high_res_resamplers: [HighResResampler; 3],
+    // low_res_resamplers: [LowResResampler; 3],
 }
 
 impl CDRom {
@@ -353,12 +363,14 @@ impl CDRom {
                 r2r_volume: 0x0,
             },
 
-            filter_file: 0,
-            filter_channel: 0,
+            // filter_file: 0,
+            // filter_channel: 0,
             audio_buffer: VecDeque::default(),
-            adpcm_history: Default::default(),
-            high_res_resamplers: Default::default(),
-            low_res_resamplers: Default::default(),
+            xa: XaState::new(),
+            last_sample: [0, 0]
+            // adpcm_history: Default::default(),
+            // high_res_resamplers: Default::default(),
+            // low_res_resamplers: Default::default(),
         }
     }
 
@@ -775,7 +787,7 @@ impl CDRom {
                 if cdrom.mode.auto_pause() {
                     warn!("auto pause not implemented");
                 }
-                // TODO: xa set mode...
+                cdrom.xa.set_mode(cdrom.mode.xa_adpcm(), cdrom.mode.xa_filter());
                 Self::set_interrupt(system, 3);
                 system.cdrom.finish_command();
             }
@@ -797,9 +809,10 @@ impl CDRom {
                 let channel = cdrom.cmd_params.pop().unwrap();
                 let file = cdrom.cmd_params.pop().unwrap();
 
-                info!("setfilter 0x{:X}, 0x{:X}", file, channel);
-                cdrom.filter_file = file;
-                cdrom.filter_channel = channel;
+                info!("setfilter file: 0x{:X} channel: 0x{:X}", file, channel);
+                cdrom.xa.set_filter(file, channel);
+                // cdrom.filter_file = file;
+                // cdrom.filter_channel = channel;
                 cdrom.push_result_byte(cdrom.stat.0);
                 Self::set_interrupt(system, 3);
                 system.cdrom.finish_command();
@@ -944,7 +957,7 @@ impl CDRom {
                         .expect("valid image")
                         .get_track_by_number(track_num)
                         .expect("ok");
-                    cdrom.seekloc = Some(track.start_sector as u32 );
+                    cdrom.seekloc = Some(track.start_sector);
                 }
                 // let cdrom = &mut system.cdrom;
                 cdrom.begin_playing();
@@ -1415,7 +1428,9 @@ impl CDRom {
     }
     pub fn begin_reading(&mut self) {
         self.read_state = ReadState::Reading;
-        // advance XA...
+        if self.mode.xa_adpcm() {
+            self.xa.begin_at(self.seekloc.unwrap_or(self.disk.as_ref().unwrap().read_head));
+        }
         if self.seekloc.is_some() {
             self.stat.set_seek(true);
             self.read_delay = CDROM_SEEKL_DELAY_CYCLES;
@@ -1450,17 +1465,42 @@ impl CDRom {
         }
     }
 
+    // TODO: limit buffer to 1 sec
     pub fn push_to_audio_buffer(&mut self, data: &[u8]) {
         let samples: Vec<i16> = data
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
+        let samples: Vec<[i16;2]> = samples.chunks_exact(2)
+            .map(|c| [c[0], c[1]]).collect();
         self.audio_buffer.extend(samples);
     }
 
-    pub fn get_audio_sample(&mut self) -> i16 {
-        let sample = self.audio_buffer.pop_front().unwrap_or(0);
-        if self.mute { 0 } else { sample }
+    pub fn apply_volume(&self, sample: [i16;2]) -> [i16;2] {
+        let l = sample[0] as i32;
+        let r = sample[1] as i32;
+        let out_l = (l * self.volume.l2l_volume as i32 + r * self.volume.r2l_volume as i32) >> 7;
+        let out_r = (r * self.volume.r2r_volume as i32 + l * self.volume.l2r_volume as i32) >> 7;
+        [out_l.clamp(-0x8000, 0x7fff) as i16,
+        out_r.clamp(-0x8000, 0x7fff) as i16]
+
+    }
+
+    pub fn consume_audio_sample(&mut self) -> [i16;2] {
+        if self.read_state == ReadState::Playing && self.mode.cdda() {
+            // let sample = self.audio_buffer.pop_front().unwrap_or(self.last_sample);
+            let sample = self.audio_buffer.pop_back().unwrap_or(self.last_sample);
+            if self.mute { return [0,0]; }
+            self.last_sample = sample;
+            return self.apply_volume(sample);
+        }
+
+        if self.read_state == ReadState::Reading && self.mode.xa_adpcm() {
+            let sample = self.xa.consume_sample(self.disk.as_mut().unwrap());
+            if self.mute { return [0,0]; }
+            return self.apply_volume(sample);
+        }
+        return [0,0];
     }
 
     fn step_reading(system: &mut System) {
@@ -1499,8 +1539,8 @@ impl CDRom {
                 Speed::Double => CDROM_READ_2X_DELAY_CYCLES,
             };
 
-            if cdrom.is_xa_audio_sector(&sector) {
-                cdrom.process_xa_audio_sector(&sector);
+            if cdrom.xa.is_xa_audio_sector(&sector) {
+                // cdrom.process_xa_audio_sector(&sector);
                 return;
             }
             let mut sector_data = VecDeque::from(sector);
@@ -1589,6 +1629,7 @@ impl CDRom {
         Self::set_interrupt(system, 1);
     }
 
+    /*
     fn is_xa_audio_sector(&self, sector: &Vec<u8>) -> bool {
         if !self.mode.xa_adpcm() {
             return false;
@@ -1666,7 +1707,7 @@ impl CDRom {
             },
         };
         self.audio_buffer.extend(audio_samples);
-    }
+    }*/
     /*
         pub fn process_sector(&mut self, sector: Vec<u8>) -> bool {
             if self.stat.playing() {
@@ -2223,8 +2264,8 @@ fn read_system_cnf(image: &mut CdCache) -> Vec<u8> {
     system_cnf
 }
 
-pub fn pos_to_sectors(mins: u8, secs: u8, sect: u8) -> u32 {
-    ((mins as u32) * 75 * 60) + ((secs as u32) * 75) + (sect as u32)
+pub fn pos_to_sectors(mins: u8, secs: u8, sect: u8) -> u64 {
+    ((mins as u64) * 75 * 60) + ((secs as u64) * 75) + (sect as u64)
 }
 
 // doesn't add pregap

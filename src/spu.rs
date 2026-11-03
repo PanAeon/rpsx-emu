@@ -496,10 +496,10 @@ impl Spu {
         let mut mixed_sample_r: i32 = 0;
         let mut mixed_reverb = [0i32;2];
 
-        let (cd_l, cd_r) = if spu.control.cd_audio_enabled() {
-            (cdrom.get_audio_sample(), cdrom.get_audio_sample())
+        let [cd_l, cd_r] = if spu.control.cd_audio_enabled() {
+            cdrom.consume_audio_sample()
         } else 
-        { (0_i16, 0_i16) };
+        { [0_i16, 0_i16] };
 
         spu.write_capture_buffer(cd_l, 0x000);
         spu.write_capture_buffer(cd_r, 0x400);

@@ -1131,6 +1131,7 @@ impl State {
             // // let instr = crate::cpu::Instruction(self.system.load(_pc));
             // let is_gte = (instr.0 & 0xFE00_0000) == 0x4A00_0000;
             // if Dynarec::check_for_pending_interrupts(&mut self.system) && !is_gte {
+            
             if Dynarec::check_for_pending_interrupts(&mut self.system) {
                 self.system.cpu.external_interrupt();
             }

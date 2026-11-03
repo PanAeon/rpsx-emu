@@ -170,6 +170,6 @@ fn run_prefetcher( reader: Arc<(Mutex<Reader>, Condvar)>) {
 }
 
 
-const PREFETCH_READAHEAD_SECTORS: u32 = 75;
+const PREFETCH_READAHEAD_SECTORS: u32 = 5;
 
 const CACHE_CAPACITY : usize = 1024;

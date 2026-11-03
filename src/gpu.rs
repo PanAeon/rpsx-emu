@@ -919,7 +919,8 @@ impl Gpu {
 
         let msg = self.renderer_receiver.as_mut().unwrap().recv().expect("ok");
         let RendererResponse::VramToCpuData { data } = msg else {
-            panic!("wrong response in sync code...");
+            println!("panic! wrong response in sync code...");
+            return;
         };
 
         self.gp0_mode = Gp0Mode::ImageStore {

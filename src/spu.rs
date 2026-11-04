@@ -747,8 +747,10 @@ impl Spu {
             0x1F801D9A => self.reverb_mode::<1>(val),
             0x1F801D9C => {},// ro
             0x1F801D9E => {},// ro
+            0x1F801DA0 => {}, // TODO: wtf?
             0x1F801DA2 => self.reverb.set_base_address(val),
             0x1F801DA4 => self.memory.irq_address = (val as usize) * 8,
+            0x1F801DAE => {}, // TODO: wtf?
             0x1F801DB0 => self.cd_audio_input_volume_left = val as i16, //  (for normal CD-DA, and compressed XA-ADPCM)
             0x1F801DB2 => self.cd_audio_input_volume_right = val as i16, //  (for normal CD-DA, and compressed XA-ADPCM)
             0x1F801DB4 => self.external_audio_input_volume_left = val as i16,
@@ -759,6 +761,8 @@ impl Spu {
             0x1F801DA8 => self.push_to_data_transfer_fifo(val),
             0x1F801DAC => self.set_sound_ram_data_transfer_control(val), // Sound ram data transfer control (should be 0004h)
             0x1F801DAA => self.set_control(val),
+            0x1F801DB8 => {},
+            0x1F801DBA => {},
             0x1F801DC4 => self.reverb.v_iir = val as i16 as i32,
             0x1F801DC6 => self.reverb.v_comb1 = val as i16 as i32,
             0x1F801DC8 => self.reverb.v_comb2 = val as i16 as i32,
@@ -789,7 +793,7 @@ impl Spu {
             0x1f801DFA => self.reverb.mr_apf2 = (val as usize) * 8,
             0x1f801DFC => self.reverb.input_volume_left = val as i16,
             0x1f801DFE => self.reverb.input_volume_right = val as i16,
-            _ => panic!(
+            _ => println!(
                 "unhandled {:?} store to spu, address: 0x{:X}, value: 0x{:X}",
                 T::width(),
                 address,

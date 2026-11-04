@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use log::error;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -55,7 +56,13 @@ pub fn load_state(idx: u32, system: &mut System) {
     let data = std::fs::read(path).expect("ok");
 
     let reader = flexbuffers::Reader::get_root(data.as_slice()).expect("ok");
-    let state = SystemState::deserialize(reader).expect("ok");
+    let state = match SystemState::deserialize(reader)  {
+        Ok(s) => s,
+        Err(err) => {
+            error!("can't load savestate: {}", err);
+            return;
+        }
+    };
     let SystemState {
         ram,
         scratchpad,

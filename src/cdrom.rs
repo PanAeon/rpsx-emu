@@ -270,6 +270,17 @@ impl Image {
         }
     }
 
+    fn is_at_end_of_a_track(&self) -> bool {
+        let sector = self.read_head;
+        let current_track = self
+            .tracks
+            .partition_point(|t| t.pregap_sector <= self.read_head)
+            .saturating_sub(1);
+
+        let current_track = &self.tracks[current_track];
+
+        sector >= current_track.end_sector - 1 //2 * 75
+    }
     fn is_at_valid_location(&self) -> bool {
         let track = self.tracks.iter().find(|x| {
             x.end_sector >= self.read_head
@@ -784,9 +795,9 @@ impl CDRom {
                 cdrom.mode.0 = mode_byte;
                 info!("setMode mode={:?}", cdrom.mode);
                 cdrom.push_result_byte(cdrom.stat.0);
-                if cdrom.mode.auto_pause() {
-                    warn!("auto pause not implemented");
-                }
+                // if cdrom.mode.auto_pause() {
+                //     warn!("auto pause not implemented");
+                // }
                 cdrom.xa.set_mode(cdrom.mode.xa_adpcm(), cdrom.mode.xa_filter());
                 Self::set_interrupt(system, 3);
                 system.cdrom.finish_command();
@@ -883,13 +894,13 @@ impl CDRom {
             }
             CmdState::Resp1 => {
                 let cdrom = &mut system.cdrom;
-                if cdrom.read_state != ReadState::Reading {
-                    warn!("getlocl while not reading..");
-                    cdrom.push_error(DriveError::CannotRespond);
-                    Self::set_interrupt(system, 5);
-                    system.cdrom.finish_command();
-                    return;
-                };
+                // if cdrom.read_state != ReadState::Reading {
+                //     warn!("getlocl while not reading..");
+                //     cdrom.push_error(DriveError::CannotRespond);
+                //     Self::set_interrupt(system, 5);
+                //     system.cdrom.finish_command();
+                //     return;
+                // };
 
                 info!("get_locl");
                 let header = cdrom.last_sector_header;
@@ -1573,6 +1584,15 @@ impl CDRom {
                 cdrom.reset_read_state();
                 return;
             }
+
+            if cdrom.mode.auto_pause() && cdrom.disk.as_ref().unwrap().is_at_end_of_a_track() {
+                info!("auto pause!");
+                cdrom.push_result_byte(cdrom.stat.0);
+                cdrom.reset_read_state();
+                Self::set_interrupt(system, 4);
+                return;
+            }
+
             cdrom.stat.set_play(true);
             let sector = cdrom.disk.as_mut().unwrap().advance_sector();
             let Some(sector) = sector else {

@@ -141,6 +141,10 @@ pub fn is_block_valid(system: &System, block: &Block) -> bool {
     let addr = mask_region(block.addr);
     if let Some(_) = crate::system::map::RAM.contains(addr) {
         let addr = addr as usize;
+        if addr + block.mem.len() >= system.ram.data.len() {
+            println!("OVERRUN");
+            panic!("OVERRUN, addr: {:X}", addr);
+        }
         // let addr = addr & 0x1f_ffff;
         // let end = (system.ram.data.len() - 1).min(addr + block.mem.len())
         let current = &system.ram.data[addr..addr + block.mem.len()];

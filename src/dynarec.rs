@@ -37,7 +37,7 @@ const REG_BADDR: u32 = 38;
 const REG_LOAD_REG: u32 = 39;
 const REG_LOAD_VAL: u32 = 40;
 
-const BLOCK_LEN: usize = 471;
+const BLOCK_LEN: usize = 2371;
 
 #[repr(C)]
 #[derive(Serialize, Deserialize, Debug)]
@@ -55,6 +55,28 @@ pub struct Registers {
     pub load: (u32, u32), // load initiated by the current instruction
                           //branch: bool, // set by the current instruction if the branch occurred
                           //delay_slot:bool, // set if the current instruction executes in the delay slot
+}
+
+const REGISTER_NAMES: [&str;32] = ["zero", "at",
+ "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1",
+ "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1",
+  "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9",
+   "k0", "k1", "gp", "sp", "fp", "ra"];
+impl Registers {
+    pub fn pretty_print(&self) {
+        for (i, r) in self.regs.iter().enumerate() {
+            println!("{}: 0x{:X}", REGISTER_NAMES[i], r);
+        }
+        println!("hi: 0x{:X}",  self.hi);
+        println!("lo: 0x{:X}",  self.lo);
+        println!("pc: 0x{:X}",  self.pc);
+        println!("sr: 0x{:X}",  self.sr);
+        println!("cause: 0x{:X}",  self.cause);
+        println!("epc: 0x{:X}",  self.epc);
+        println!("baddr: 0x{:X}",  self.baddr);
+        println!("load: {:?}",  self.load);
+    }
+
 }
 pub struct Constants {
     regs: u64,
@@ -125,6 +147,7 @@ impl Dynarec {
         }
     }
 
+    #[inline]
     pub fn pc(&self) -> u32 {
         self.regs.pc
     }
@@ -138,7 +161,7 @@ impl Dynarec {
 
     pub fn schedule_compile_block(system: &mut System, addr: u32) {
         if system.block_cache.in_flight.insert(addr) {
-            let mut buff = [Instruction(0); BLOCK_LEN+1];
+            let mut buff = [Instruction(0); BLOCK_LEN + 1];
             let xs = Self::parse_block(system, addr, &mut buff);
             system
                 .cpu
@@ -246,7 +269,7 @@ impl Dynarec {
                 break;
             }
         }
-        if len == BLOCK_LEN && buff[BLOCK_LEN-1].is_conditional_jump() {
+        if len == BLOCK_LEN && buff[BLOCK_LEN - 1].is_conditional_jump() {
             buff[BLOCK_LEN] = Instruction(system.load::<u32>(addr + (BLOCK_LEN) as u32 * 4));
             len = BLOCK_LEN + 1;
         }
@@ -340,6 +363,40 @@ fn create_compiler_thread(
                 panic!("unsupported msg");
             };
 
+            // let foo: [u32; _] = [
+            //     0x8003C9E8, 0x8003CA10, 0x8003CA5C, 0x8003CA84, 0x8003CBC8, 0x8003CC98, 0x8003D228,
+            //     0x800A94D8, 0x800A9908, 0x800A9950, 0x800A9964, 0x800A998C, 0x800A9E10, 0x800A9E58,
+            //     0x800A9E74, 0x800A9F08, 0x800A9F44, 0x800A9F68, 0x800AACC4, 0x800AAD40, 0x800AAD94,
+            //     0x800AC350, 0x800AC9DC, 0x801019B4, 0x801019D4,
+            //     0x800A2214, 0x800A21EC,
+            //     0x800A219C, 0x800A21C4, 0x800A2174, 0x800A44AC
+            // ];
+            // let mut blocklist = HashSet::new();
+            // blocklist.extend(foo);
+
+    //         if pc == 0x80041760 || pc == 0x8004AB00 || pc == 0x8004AA34 {
+    //             continue;
+    // }
+            //  pc == 0x8003CC98 || pc == 0x800418BC || pc == 0x8003CBC8 {
+            // if pc > 0x8003CC98 {
+
+            // if (pc > 0x8003CA00)
+            // //     // || pc == 0x800A5658
+            // //     // || pc == 0x800418BC
+            // //     // || pc == 0x800429A4
+            // if pc == 0x8004A878
+            // {
+            //     continue;
+            // }
+            // if block.len() * 4 >= 15 && block.len() * 4 <= 26 {
+            //     continue
+            // }
+            // if blocklist.contains(&pc) {
+            //     continue;
+            // }
+            // println!("{:X}", pc);
+            // println!("last compiled pc: {:X}, block len: {}", pc, block.len() * 4);
+
             // if in_flight.contains(&pc) {
             //     continue;
             // }
@@ -347,6 +404,11 @@ fn create_compiler_thread(
 
             let block = compiler.compile_block(pc, block);
             compiler.patch_block(&block);
+            // println!(
+            //     "finished compiling pc: {:X}, block len: {}",
+            //     pc,
+            //     block.mem.len()
+            // );
             compiler.num_functions += 1;
             match code_sender.send(BlockMsg::Block(block)) {
                 Ok(()) => {}
@@ -561,14 +623,6 @@ impl Compiler {
     }
 
     pub fn compile_block(&mut self, addr: u32, xs: Vec<Instruction>) -> block_cache::Block {
-        // woot?
-        // if addr == 0x80000080 {
-        //     panic!("at exception handler");
-        // }
-        // let mut buff = [Instruction(0); 256];
-        // I guess first parse the block
-        // let xs = Self::parse_block(system, addr, &mut buff);
-
         self.ctx
             .func
             .signature
@@ -637,7 +691,7 @@ impl Compiler {
 
         bldr.push_delay_load_to_regs();
         if !last_jmp {
-            // println!("not last jump, start addr: {:X}, len: {}", addr, xs.len());
+            println!("not last jump, start addr: {:X}, len: {}", addr, xs.len());
             bldr.save_context();
             bldr.set_pc_imm(addr + (xs.len() as u32 * 4) + 4);
             let cycles = bldr.get_cycles();
@@ -661,7 +715,7 @@ impl Compiler {
             }
         };
         if addr == 0x80011028 {
-                println!("{}", self.ctx.func.display());
+            println!("{}", self.ctx.func.display());
         }
         if !last_jmp {
             // println!("{}", self.ctx.func.display());
@@ -840,6 +894,8 @@ impl Compiler {
                         && (instruction.immediate64() == store_byte_addr)
                     {
                         let pos = decoder.position();
+                        // let reg = instruction.op0_register();
+                        // println!("reg: {:?}", reg);
                         decoder.decode_out(&mut instruction); // should be callq %eax
                         //instruction.op0_register() == iced_x86::Register::RDI &&
                         // Format the instruction ("disassemble" it)
@@ -927,15 +983,16 @@ impl Compiler {
                                 bytes[12] = 0x90;
                             }
                         }
-                        MemAccess::StoreByte => {
-                            // mov %dl, (%rsi)
+                        MemAccess::StoreByte => { //  impl is fine, but... ...breaks castlevania
+                            continue;
+                            // movb %dl, (%rsi)
 
-                            let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
-                            bytes[0] = 0x88;
-                            bytes[1] = 0x16;
-                            if len == 3 {
-                                bytes[2] = 0x90;
-                            }
+                            // let bytes = std::slice::from_raw_parts_mut(p as *mut u8, 3);
+                            // bytes[0] = 0x88;
+                            // bytes[1] = 0x16;
+                            // if len == 3 {
+                            //     bytes[2] = 0x90;
+                            // }
                         }
                     }
                     // bytes[2] = 0x06;
@@ -1039,7 +1096,7 @@ impl<'a> BlockBuilder<'a> {
             0x2E => self.compile_swr(instr),
             0x32 => self.compile_lwc2(instr),
             0x3A => self.compile_swc2(instr),
-            _  => self.compile_illegal(instr),
+            _ => self.compile_illegal(instr),
             // _ => panic!(
             //     "Unhandled instruction: {:08X}, opcode: {:02X}, address: {:X}",
             //     instr.0,
@@ -1218,7 +1275,7 @@ impl<'a> BlockBuilder<'a> {
                     self.regs.insert(instr.rs());
                     self.regs.insert(instr.rd());
                 }
-                _ =>  {}
+                _ => {}
             },
             0x01 => {
                 //self.compile_bxx(instr),
@@ -1377,7 +1434,7 @@ impl<'a> BlockBuilder<'a> {
                 self.get_exception_regs();
                 self.regs.insert(REG_SR);
             }
-            _ =>  {}
+            _ => {}
         }
     }
 

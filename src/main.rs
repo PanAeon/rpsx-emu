@@ -53,11 +53,11 @@ mod spu;
 mod system;
 mod timers;
 
+mod adpcm;
 mod block_cache;
 mod cd_cache;
-mod cdxa;
 mod cdrom_xa;
-mod adpcm;
+mod cdxa;
 mod cue;
 mod dummy_renderer;
 mod dynarec;
@@ -91,6 +91,8 @@ pub struct Cli {
     enable_crt_shader: bool,
     #[arg(long)]
     negcon: bool,
+    #[arg(long)]
+    interpreter: bool,
 }
 
 fn main() {
@@ -251,6 +253,7 @@ pub struct State {
     draw_vertex_buffer: wgpu::Buffer,
     draw_texture_bind_group: wgpu::BindGroup,
     negcon: bool,
+    use_interpreter: bool,
 }
 
 impl State {
@@ -695,6 +698,7 @@ impl State {
                 .then(|| cli.filename.expect("sideload binary to be present")),
             ctrl_pressed: false,
             negcon: cli.negcon,
+            use_interpreter: cli.interpreter,
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -715,43 +719,6 @@ impl State {
         state.audio_stream.play()?;
         //
 
-        // state.queue.write_texture(
-        //     // Tells wgpu where to copy the pixel data
-        //     wgpu::TexelCopyTextureInfo {
-        //         texture: &state.texture,
-        //         mip_level: 0,
-        //         origin: wgpu::Origin3d::ZERO,
-        //         aspect: wgpu::TextureAspect::All,
-        //     },
-        //     // The actual pixel data
-        //     bytemuck::cast_slice(&state.framebuffer),
-        //     // The layout of the texture
-        //     wgpu::TexelCopyBufferLayout {
-        //         offset: 0,
-        //         bytes_per_row: Some(4 * 1024),
-        //         rows_per_image: Some(512),
-        //     },
-        //     texture_size,
-        // );
-        // let tileset =
-        //     TilesetData::from_image_with_spacing(&image, Vec2::broadcast(16), Vec2::broadcast(0));
-        // let fontset = TilesetData::from_image_with_spacing(
-        //     &font_image,
-        //     Vec2::broadcast(16),
-        //     Vec2::broadcast(0),
-        // );
-        // upload_tileset(&state, &state.device, &state.queue, &tileset);
-        // upload_fonts(&state, &state.device, &state.queue, &fontset);
-        // upload_tilemap(
-        //     &state,
-        //     &state.device,
-        //     &state.queue,
-        //     &TilemapDrawData {
-        //         transform: Mat4::identity(),
-        //         tilemap: Cow::Borrowed(&state.tilemap),
-        //         tileset: 0,
-        //     },
-        // );
         Ok(state)
     }
 
@@ -1020,6 +987,16 @@ impl State {
         self.display_depth = depth;
     }
 
+    #[cold]
+    fn call_interpreter(&mut self) {
+        let num_cycles = 20;
+        for _ in 1..num_cycles {
+            self.interpreter.run_next_instruction(&mut self.system);
+            // self.interpreter.check_for_tty_output();
+        }
+        cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
+        self.system.scheduler.advance(2 * num_cycles); // 40???
+    }
     fn update(&mut self, _event_loop: &ActiveEventLoop) {
         self.update_gamepad();
         if self.paused {
@@ -1029,6 +1006,7 @@ impl State {
             // self.cpu.pc = self.cpu.pc + 4;
             // self.cpu.next_pc = self.cpu.pc + 8;
             self.paused = false;
+            // self.system.store(0x800A0874, 0_u32);
             // crate::cdrom::CDRom::write_command(&mut self.system, 0x3); //play
             // self.system.cdrom.write_command();
             return;
@@ -1121,6 +1099,10 @@ impl State {
                 }
             }
             // self.update_interpreter();
+            if self.use_interpreter {
+                self.call_interpreter();
+                continue;
+            }
 
             // ok everything works, except memory card... check that later
             // let budget = self.cpu.system.scheduler.next_event_budget();
@@ -1131,7 +1113,7 @@ impl State {
             // // let instr = crate::cpu::Instruction(self.system.load(_pc));
             // let is_gte = (instr.0 & 0xFE00_0000) == 0x4A00_0000;
             // if Dynarec::check_for_pending_interrupts(&mut self.system) && !is_gte {
-            
+
             if Dynarec::check_for_pending_interrupts(&mut self.system) {
                 self.system.cpu.external_interrupt();
             }
@@ -1193,6 +1175,18 @@ impl State {
                 self.interpreter.next_pc = pc + 4;
                 self.interpreter.run_block(&mut self.system)
             };
+
+            // let next_pc = self.system.cpu.pc();
+            // if next_pc == 0x8004A878 {
+            //     // self.system.cpu.regs.regs[26] = 0x800A5EDC;
+            //     println!("jumping to 0x8004A878 from {:X}", pc);
+            //     println!("regs:");
+            //     self.system.cpu.regs.pretty_print();
+            //     // println!("{:?}", self.system.cpu.regs);
+            // }
+            // if next_pc == 0 {
+            //     println!("jumping to 0 from {:X}", pc);
+            // }
             // then run it...
 
             // let interpreter_pc = self.interpreter.pc;
@@ -1267,27 +1261,30 @@ impl State {
 
             // updating texture bind group....
             let texture_bind_group_layout =
-                self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("draw_texture_bind_group_layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
+                self.device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("draw_texture_bind_group_layout"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                                ty: wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
+                                    multisampled: false,
+                                },
+                                count: None,
                             },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                            count: None,
-                        },
-                    ],
-                });
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::FRAGMENT,
+                                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                                count: None,
+                            },
+                        ],
+                    });
             let diffuse_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -1297,7 +1294,9 @@ impl State {
                 mipmap_filter: wgpu::MipmapFilterMode::Nearest,
                 ..Default::default()
             });
-            let texture_view = self.draw_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let texture_view = self
+                .draw_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
             let texture_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("draw  texture bind_group"),
                 layout: &texture_bind_group_layout,

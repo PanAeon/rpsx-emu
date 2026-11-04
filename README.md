@@ -1,5 +1,8 @@
 # RPSX-emu
 
+## TODO: 
+- fastmem (patching) breaks Castlevania
+- dynarec broken on Mortal Combat
 
 ## Resources
 * [jsgroth blog](https://jsgroth.dev/blog/posts/ps1-spu-part-3/)

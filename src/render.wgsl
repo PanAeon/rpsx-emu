@@ -1,4 +1,4 @@
-
+enable dual_source_blending;
 
 @group(0) @binding(0) var vram_t: texture_storage_2d<r32uint, read_write>;
 // @group(1) @binding(2) var s_diffuse: sampler;
@@ -111,7 +111,7 @@ fn readExistingColor(v: VertexOutput) -> vec4<f32> {
     return unpack_color(color);
 }
 
-fn get_color(in: VertexOutput) -> u32 {
+fn get_color(in: VertexOutput) -> FragmentOutput {
     if is_textured(in) {
         var color: u32;
         let uv = compute_uv_offset(in);
@@ -145,62 +145,67 @@ fn get_color(in: VertexOutput) -> u32 {
             c = vec4<f32>(vec3<f32>(color_uint) / 255.0, c.w);
         }
 
-        if needs_dither(in) {
-            c *= 255;
-            var dither_pos: vec2<f32>;
-            dither_pos = in.vram_position % 4;
-            var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
-            c += f32(dither_value);
-            c = clamp(c, vec4(0), vec4(0xff));
-            c /= 255;
-        }
-
+        // var transparency = 1.0;
         if is_semitrans(in) && c.w > 0.5 {
-            let prev = readExistingColor(in);
-            let transparency = get_transparency(in);
-            c = blend_with_background(c, prev, transparency);
+            //     let prev = readExistingColor(in);
+            // transparency = f32(get_transparency(in));
+            //     c = blend_with_background(c, prev, transparency);
+            return get_transparency(c, in);//FragmentOutput(vec4(c.xyz, 1.0), vec4<f32>(0.0));
+        } else {
+            return FragmentOutput(vec4((c.xyz), 1.0), vec4<f32>(0.0));
         }
 
-        return pack_color(c.xyz, c.w > 0.5);
+        // return vec4(c.xyz, transparency);
+        // return pack_color(c.xyz, c.w > 0.5);
     } else {
-        var c = vec4<f32>(in.color, 0.0);
-        if needs_dither(in) {
-            c *= 255;
-            var dither_pos: vec2<f32>;
-            dither_pos = in.vram_position % 4;
-            var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
-            c += f32(dither_value);
-            c = clamp(c, vec4(0), vec4(0xff));
-            c /= 255;
+        var c = vec4<f32>(in.color, 1.0);
+        // if needs_dither(in) {
+        //     c *= 255;
+        //     var dither_pos: vec2<f32>;
+        //     dither_pos = in.vram_position % 4;
+        //     var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
+        //     c += f32(dither_value);
+        //     c = clamp(c, vec4(0), vec4(0xff));
+        //     c /= 255;
+        // }
+        if is_semitrans(in) && c.w > 0.5 {
+            //     let prev = readExistingColor(in);
+            // transparency = f32(get_transparency(in));
+            return get_transparency(c, in);//FragmentOutput(vec4(c.xyz, 1.0), vec4<f32>(0.0));
+            // return FragmentOutput(vec4(c.xyz, 1.0), vec4<f32>(0.0));
+            //     c = blend_with_background(c, prev, transparency);
+        } else {
+            return FragmentOutput((vec4( (c.xyz), 1.0)), vec4<f32>(0.0));
         }
-        if is_semitrans(in) {
-            let prev = readExistingColor(in);
-            let transparency = get_transparency(in);
-            c = blend_with_background(c, prev, transparency);
-        }
-        return pack_color(c.xyz, false);
+        // if is_semitrans(in) {
+        //     let prev = readExistingColor(in);
+        //     let transparency = get_transparency(in);
+        //     c = blend_with_background(c, prev, transparency);
+        // }
+        // return pack_color(c.xyz, false);
+        // return vec4(c.xyz, transparency);
     }
 }
 
-fn blend_with_background(color: vec4<f32>, prev: vec4<f32>, transparency: u32) -> vec4<f32> {
-    var res: vec4<f32>;
-    switch transparency {
-        case 0: {
-            res = min((color + prev) / vec4<f32>(2.0), vec4<f32>(1.0));
-        }
-        case 1: {
-            res = min((color + prev), vec4<f32>(1.0));
-        }
-        case 2: {
-            res = max((prev - color), vec4<f32>(0.0));
-        }
-        default: {
-            res = min(prev + (color / vec4<f32>(4.0)), vec4<f32>(1.0));
-        }
-    }
-    res.w = color.w;
-    return res;
-}
+// fn blend_with_background(color: vec4<f32>, prev: vec4<f32>, transparency: u32) -> vec4<f32> {
+//     var res: vec4<f32>;
+//     switch transparency {
+//         case 0: {
+//             res = min((color + prev) / vec4<f32>(2.0), vec4<f32>(1.0));
+//         }
+//         case 1: {
+//             res = min((color + prev), vec4<f32>(1.0));
+//         }
+//         case 2: {
+//             res = max((prev - color), vec4<f32>(0.0));
+//         }
+//         default: {
+//             res = min(prev + (color / vec4<f32>(4.0)), vec4<f32>(1.0));
+//         }
+//     }
+//     res.w = color.w;
+//     return res;
+// }
 
 fn get_flag(data: VertexOutput, idx: u32) -> bool {
     return (data.flags & (u32(1) << idx)) != 0;
@@ -222,9 +227,56 @@ fn needs_dither(data: VertexOutput) -> bool {
     return get_flag(data, 3);
 }
 
-fn get_transparency(v: VertexOutput) -> u32 {
-    return ((v.flags >> 4) & 3u);
+fn get_transparency(c: vec4<f32>, v: VertexOutput) -> FragmentOutput {
+    let t = ((v.flags >> 4) & 3u);
+    switch t {
+        case 0: {
+            // Mode 0: 0.5B + 0.5F
+            // We want: (Src * 0.5) + (Dst * 0.5)
+            return FragmentOutput(vec4<f32>((c.xyz * 0.5), 1.0), vec4<f32>(0.5, 0.5, 0.5, 0.0));
+            // res = 0.5; // standard alpha blending 0.5*dst + 0.5 * src...
+            // res = min((color + prev) / vec4<f32>(2.0), vec4<f32>(1.0));
+        }
+        case 1: {
+            // Mode 1: 1.0B + 1.0F
+            // We want: (Src * 1.0) + (Dst * 1.0)
+            return FragmentOutput(vec4<f32>((c.xyz), 1.0), vec4<f32>(1.0, 1.0, 1.0, 0.0));
+            // res = 0.75; // additive...?
+            // res = min((color + prev), vec4<f32>(1.0));
+        }
+        case 2: {
+            // Mode 2: 1.0B - 1.0F (Pipeline ReverseSubtract)
+            // Desired Equation: (Dst * 1.0) - (Src * 1.0)
+            return FragmentOutput(vec4<f32>((c.xyz), 1.0), vec4<f32>(1.0, 1.0, 1.0, 0.0));
+            // res = 1.0; // hmm, strange 
+            // res = max((prev - color), vec4<f32>(0.0));
+        }
+        default: {
+            return FragmentOutput(vec4<f32>((c.xyz * 0.25), 1.0), vec4<f32>(1.0, 1.0, 1.0, 0.0));
+            // res = 0.25; // also additive, but smaller?
+            // res = min(prev + (color / vec4<f32>(4.0)), vec4<f32>(1.0));
+        }
+    }
 }
+// fn blend_with_background(color: vec4<f32>, prev: vec4<f32>, transparency: u32) -> vec4<f32> {
+//     var res: vec4<f32>;
+//     switch transparency {
+//         case 0: {
+//             res = min((color + prev) / vec4<f32>(2.0), vec4<f32>(1.0));
+//         }
+//         case 1: {
+//             res = min((color + prev), vec4<f32>(1.0));
+//         }
+//         case 2: {
+//             res = max((prev - color), vec4<f32>(0.0));
+//         }
+//         default: {
+//             res = min(prev + (color / vec4<f32>(4.0)), vec4<f32>(1.0));
+//         }
+//     }
+//     res.w = color.w;
+//     return res;
+// }
 
 fn vramcoord_to_texcoord(coord: vec2<f32>) -> vec2<u32> {
     return vec2<u32>(vec2(floor(coord.x), floor(coord.y)));
@@ -254,8 +306,13 @@ fn read_8bit(coord: vec2<f32>) -> u32 {
     return (packed >> shift_amt) & 0xFFu;
 }
 
+struct FragmentOutput {
+    @location(0)  @blend_src(0) color: vec4<f32>, // Will map to "Src" in hardware
+    @location(0)  @blend_src(1) blend: vec4<f32>, // Will map to "Src1" in hardware
+};
+
 @fragment
-fn frag_main(data: VertexOutput) -> @location(0) u32 {
+fn frag_main(data: VertexOutput) -> FragmentOutput {
     // let texcoord = vec2f(data.tex_coords.x, data.tex_coords.y);
     // return textureSample(t_diffuse, s_diffuse, texcoord);
     // return textureSample(t_diffuse, s_diffuse, data.tex_coords);
@@ -265,10 +322,11 @@ fn frag_main(data: VertexOutput) -> @location(0) u32 {
     //    return res;
     // }
     var color = get_color(data);
+    // var color = vec4(1.0, 1.0, 1.0, 0.5);
     // if color == 0 {
     //     discard;
     // }
-    textureStore(vram_t, vramcoord_to_texcoord(data.vram_position),  vec4(color, 0, 0, 0));
+    // textureStore(vram_t, vramcoord_to_texcoord(data.vram_position),  vec4(color, 0, 0, 0));
     return color;
 }
 
@@ -313,6 +371,35 @@ const FIVE_BIT_TO_8Bit: array<f32, 32> = array(
     0.96862745,
     1,
 );
+fn quantize_to_psx_5bit(color: vec3<f32>) -> vec3<f32> {
+    // 1. Scale up to 0-31 range (5-bit maximum value)
+    // 2. Floor/Round to match the raw hardware DAC steps
+    // 3. Convert back to normalized 0.0 - 1.0 range
+    let steps = vec3<f32>(31.0);
+    return floor(color * steps) / steps;
+}
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    } else {
+        return pow((c + 0.055) / 1.055, 2.4);
+    }
+}
+fn srgb_to_linear_vec(v: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(
+    srgb_to_linear(v.x),
+    srgb_to_linear(v.y),
+    srgb_to_linear(v.z),
+    v.z
+    );
+}
+fn srgb_to_linear_v3(v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+    srgb_to_linear(v.x),
+    srgb_to_linear(v.y),
+    srgb_to_linear(v.z),
+    );
+}
 // const FIVE_BIT_TO_8Bit: array<u32, 32> = array(
 // 0,
 // 8,

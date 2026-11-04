@@ -40,7 +40,7 @@ mod cpu;
 mod dma;
 mod gpu;
 mod gte;
-// mod hw_renderer;
+mod hw_renderer;
 mod irq;
 mod mdec;
 mod ram;
@@ -93,6 +93,8 @@ pub struct Cli {
     negcon: bool,
     #[arg(long)]
     interpreter: bool,
+    #[arg(long)]
+    hw_renderer: bool,
 }
 
 fn main() {
@@ -299,7 +301,8 @@ impl State {
                 label: None,
                 required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                     | wgpu::Features::VERTEX_WRITABLE_STORAGE
-                    | GpuProfiler::ALL_WGPU_TIMER_FEATURES,
+                    | GpuProfiler::ALL_WGPU_TIMER_FEATURES
+                    | wgpu::Features::DUAL_SOURCE_BLENDING,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
@@ -313,9 +316,9 @@ impl State {
             })
             .await?;
 
-        device.on_uncaptured_error(Arc::new(|error| {
-            eprintln!("Uncaptured wgpu error: {:#?}", error);
-        }));
+        // device.on_uncaptured_error(Arc::new(|error| {
+        //     eprintln!("Uncaptured wgpu error: {:#?}", error);
+        // }));
 
         let surface_caps = surface.get_capabilities(&adapter);
 
@@ -348,33 +351,63 @@ impl State {
             // by setting depth to 1.
             depth_or_array_layers: 1,
         };
-        let render_texture = device.create_texture(&wgpu::TextureDescriptor {
-            size: texture_size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            // Most images are stored using sRGB, so we need to reflect that here.
-            format: wgpu::TextureFormat::R32Uint,
-            // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
-            // COPY_DST means that we want to copy data to this texture
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            label: Some("render texture"),
-            // This is the same as with the SurfaceConfig. It
-            // specifies what texture formats can be used to
-            // create TextureViews for this texture. The base
-            // texture format (Rgba8UnormSrgb in this case) is
-            // always supported. Note that using a different
-            // texture format is not supported on the WebGL2
-            // backend.
-            view_formats: &[wgpu::TextureFormat::R32Uint],
-        });
+        let render_texture = if cli.hw_renderer {
+            device.create_texture(&wgpu::TextureDescriptor {
+                size: texture_size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // Most images are stored using sRGB, so we need to reflect that here.
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
+                // COPY_DST means that we want to copy data to this texture
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                label: Some("render texture"),
+                // This is the same as with the SurfaceConfig. It
+                // specifies what texture formats can be used to
+                // create TextureViews for this texture. The base
+                // texture format (Rgba8UnormSrgb in this case) is
+                // always supported. Note that using a different
+                // texture format is not supported on the WebGL2
+                // backend.
+                view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+            })
+        } else {
+            device.create_texture(&wgpu::TextureDescriptor {
+                size: texture_size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // Most images are stored using sRGB, so we need to reflect that here.
+                format: wgpu::TextureFormat::R32Uint,
+                // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
+                // COPY_DST means that we want to copy data to this texture
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                label: Some("render texture"),
+                // This is the same as with the SurfaceConfig. It
+                // specifies what texture formats can be used to
+                // create TextureViews for this texture. The base
+                // texture format (Rgba8UnormSrgb in this case) is
+                // always supported. Note that using a different
+                // texture format is not supported on the WebGL2
+                // backend.
+                view_formats: &[wgpu::TextureFormat::R32Uint],
+            })
+        };
 
         let depth_stencil: Option<wgpu::DepthStencilState> = None;
 
-        let shader_source = Cow::Borrowed(include_str!("shader.wgsl"));
+        let shader_source = if cli.hw_renderer {
+            Cow::Borrowed(include_str!("raw-shader.wgsl"))
+        } else {
+            Cow::Borrowed(include_str!("shader.wgsl"))
+        };
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shaders"),
             source: wgpu::ShaderSource::Wgsl(shader_source),
@@ -426,7 +459,41 @@ impl State {
         //     usage: wgpu::BufferUsages::VERTEX,
         //     mapped_at_creation: false,
         // });
-        let texture_bind_group_layout =
+        let texture_bind_group_layout = if cli.hw_renderer {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("texture_bind_group_layout"),
+                entries: &[
+                    // wgpu::BindGroupLayoutEntry {
+                    //     binding: 0,
+                    //     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    //     ty: wgpu::BindingType::Buffer {
+                    //         ty: wgpu::BufferBindingType::Uniform,
+                    //         has_dynamic_offset: false,
+                    //         min_binding_size: NonZeroU64::new(
+                    //             ::std::mem::size_of::<TextureBuffer>() as u64,
+                    //         ),
+                    //     },
+                    //     count: None,
+                    // },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            })
+        } else {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("texture_bind_group_layout"),
                 entries: &[
@@ -459,7 +526,8 @@ impl State {
                     //     count: None,
                     // },
                 ],
-            });
+            })
+        };
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
             bind_group_layouts: &[
@@ -486,7 +554,7 @@ impl State {
                 entry_point: Some(&"frag_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -498,15 +566,15 @@ impl State {
 
         // let data_view = tileset_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        //     address_mode_u: wgpu::AddressMode::ClampToEdge,
-        //     address_mode_v: wgpu::AddressMode::ClampToEdge,
-        //     address_mode_w: wgpu::AddressMode::ClampToEdge,
-        //     mag_filter: wgpu::FilterMode::Linear,
-        //     min_filter: wgpu::FilterMode::Nearest,
-        //     mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-        //     ..Default::default()
-        // });
+        let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
         // let texture_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         //     label: Some("texture_params_buffer"),
         //     size: ::std::mem::size_of::<TextureBuffer>() as u64,
@@ -514,24 +582,45 @@ impl State {
         //     mapped_at_creation: false,
         // });
         let texture_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("texture bind_group"),
-            layout: &texture_bind_group_layout,
-            entries: &[
-                // wgpu::BindGroupEntry {
-                //     binding: 0,
-                //     resource: texture_params_buffer.as_entire_binding(),
-                // },
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                // wgpu::BindGroupEntry {
-                //     binding: 2,
-                //     resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
-                // },
-            ],
-        });
+        let texture_bind_group = if cli.hw_renderer {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("texture bind_group"),
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    // wgpu::BindGroupEntry {
+                    //     binding: 0,
+                    //     resource: texture_params_buffer.as_entire_binding(),
+                    // },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                    },
+                ],
+            })
+        } else {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("texture bind_group"),
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    // wgpu::BindGroupEntry {
+                    //     binding: 0,
+                    //     resource: texture_params_buffer.as_entire_binding(),
+                    // },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture_view),
+                    },
+                    // wgpu::BindGroupEntry {
+                    //     binding: 2,
+                    //     resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                    // },
+                ],
+            })
+        };
 
         let (draw_pipeline, draw_texture, draw_vertex_buffer, draw_texture_bind_group) =
             crate::presenter::create_draw_pipeline(&device, config.format, cli.enable_crt_shader);
@@ -559,16 +648,27 @@ impl State {
         let timers = timers::Timers::new();
 
         let software_render = cli.softgpu;
+
         let (sender, receiver, handle) = if software_render {
             renderer::Renderer::create()
         } else {
-            compute_renderer::ComputeRenderer::create(
-                device.clone(),
-                queue.clone(),
-                config.format,
-                render_texture.clone(),
-                cli.profilegpu,
-            )
+            if cli.hw_renderer {
+                crate::hw_renderer::HWRenderer::create(
+                    device.clone(),
+                    queue.clone(),
+                    config.format,
+                    render_texture.clone(),
+                    cli.profilegpu,
+                )
+            } else {
+                compute_renderer::ComputeRenderer::create(
+                    device.clone(),
+                    queue.clone(),
+                    config.format,
+                    render_texture.clone(),
+                    cli.profilegpu,
+                )
+            }
         };
         let gpu = gpu::Gpu::new(sender, receiver, handle);
         let block_cache = block_cache::BlockCache::new();
@@ -1338,7 +1438,9 @@ impl State {
                         view: &draw_texture_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
+                            // load: wgpu::LoadOp::Load,
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            // load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
                         depth_slice: None,
@@ -1368,7 +1470,8 @@ impl State {
                         view: &view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            load: wgpu::LoadOp::Load,
+                            // load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
                         },
                         depth_slice: None,

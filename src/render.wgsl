@@ -157,11 +157,11 @@ fn get_color(in: VertexOutput) -> FragmentOutput {
     }
     // Filter out fragments that don't match the current stencil pass target
     let current_pixel_stp = select(0u, 1u, c.w > 0.5);
-    if (conf.force_set_mask == 0 && current_pixel_stp == 0 && conf.target_stp != 0) {
-        discard;
-    }
+    // if (conf.force_set_mask == 0 && current_pixel_stp == 0 && conf.target_stp != 0) {
+    //     discard;
+    // }
     // if ( current_pixel_stp == 0 && conf.target_stp == 1) {
-    if ( current_pixel_stp == 1 && conf.target_stp == 0) {
+    if ( conf.target_stp != current_pixel_stp) {
         discard;
     }
     if is_semitrans(in) && c.w > 0.5 {

@@ -252,9 +252,9 @@ fn create_draw_pipeline(
             format: wgpu::TextureFormat::Stencil8,
             depth_write_enabled: None,
             depth_compare: Some(wgpu::CompareFunction::Always),
-            stencil: wgpu::StencilState {
+            stencil: wgpu::StencilState { // pass 1 pipeline (stp 0) TODO: global_masking_enabled
                 front: wgpu::StencilFaceState {
-                    compare: wgpu::CompareFunction::Equal,
+                    compare: wgpu::CompareFunction::Always,
                     fail_op: wgpu::StencilOperation::Keep, // Drop pixel, leave stencil alone
                     depth_fail_op: wgpu::StencilOperation::Keep,
                     pass_op: wgpu::StencilOperation::Replace, // Overwrite with new STP value
@@ -308,7 +308,7 @@ fn create_draw_pipeline(
         format: wgpu::TextureFormat::Stencil8,
         depth_write_enabled: None,
         depth_compare: Some(wgpu::CompareFunction::Always),
-        stencil: wgpu::StencilState {
+        stencil: wgpu::StencilState { // stage 2 (stp 1)
             front: wgpu::StencilFaceState {
                 compare: wgpu::CompareFunction::Always, // always passes
                 fail_op: wgpu::StencilOperation::Keep,  // Drop pixel, leave stencil alone
@@ -661,6 +661,8 @@ impl HWRenderer {
             self.queue
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
 
+                 self.global_masking_enabled=false; 
+                 self.force_set_mask_bit=false; 
             if !self.force_set_mask_bit {
                 // --- PASS 1: Process and write pixels that have STP = 0 ---
 
@@ -699,29 +701,25 @@ impl HWRenderer {
                         }),
                         ..Default::default()
                     });
-                    let pipeline = match (&self.current_blending, self.global_masking_enabled) {
-                        // Blending::None => &self.draw_pipeline,
-                        // Blending::Average => &self.avg_pipeline,
-                        (Blending::Add, true) => &self.addictive_pipeline,
-                        (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
-                        (Blending::Subtract, true) => &self.subtractive_pipeline,
-                        (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
-                        // Blending::Quarter => &self.quarter_pipeline,
+                    let pipeline = match (&self.current_blending) {
+                        (Blending::Add) => &self.addictive_pipeline,
+                        (Blending::Subtract) => &self.subtractive_pipeline,
                     };
+                    // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
+                    //     (Blending::Add, true) => &self.addictive_pipeline,
+                    //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
+                    //     (Blending::Subtract, true) => &self.subtractive_pipeline,
+                    //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
+                    // };
                     rpass.set_pipeline(pipeline);
                     // Update your uniform buffer so WGSL knows to only pass `STP == 0` pixels
                     rpass.set_immediates(
                         0,
-                        bytemuck::cast_slice(&[0u32, self.force_set_mask_bit as u32]),
+                        bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
                     );
 
-                    if self.force_set_mask_bit {
-                        // If masking is on, we only draw if the existing VRAM stencil bit EQUALS 0
-                        rpass.set_stencil_reference(0);
-                    } else {
-                        // If masking is off, we draw unconditionally and REPLACE the VRAM stencil with 0
-                        rpass.set_stencil_reference(0);
-                    }
+                        // test for 0, clear for 0
+                        rpass.set_stencil_reference(1);
                     // match self.current_blending {
                     //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
                     //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
@@ -819,17 +817,21 @@ impl HWRenderer {
                     ..Default::default()
                 });
 
-                let pipeline = match (&self.current_blending, self.global_masking_enabled) {
-                    (Blending::Add, true) => &self.addictive_pipeline,
-                    (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
-                    (Blending::Subtract, true) => &self.subtractive_pipeline,
-                    (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
-                };
+                    let pipeline = match (&self.current_blending) {
+                        (Blending::Add) => &self.addictive_pipeline_mask_disabled,
+                        (Blending::Subtract) => &self.subtractive_pipeline_mask_disabled,
+                    };
+                // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
+                //     (Blending::Add, true) => &self.addictive_pipeline,
+                //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
+                //     (Blending::Subtract, true) => &self.subtractive_pipeline,
+                //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
+                // };
                 rpass.set_pipeline(pipeline);
             // Update your uniform buffer so WGSL knows to only pass `STP == 1` pixels
                 rpass.set_immediates(
                     0,
-                    bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
+                    bytemuck::cast_slice(&[0u32, self.force_set_mask_bit as u32]),
                 );
 
                 // println!("masking enabled?: {}", self.global_masking_enabled);
@@ -842,7 +844,7 @@ impl HWRenderer {
                     // To fix this constraint under Masking = Enabled, you need a slightly split logic:
                 } else {
                     // Masking off: Replace VRAM stencil with 1
-                    rpass.set_stencil_reference(1);
+                    rpass.set_stencil_reference(0);
                 }
                 // match self.current_blending {
                 //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),

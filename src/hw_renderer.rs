@@ -15,7 +15,7 @@ use crate::{
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
 
-const VERT_BUFFER_SIZE: usize = 1024;
+const VERT_BUFFER_SIZE: usize = 2048;
 
 #[repr(C)]
 struct RenderUniforms {
@@ -227,7 +227,7 @@ fn create_draw_pipeline(
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("render_pipeline_layout"),
         bind_group_layouts: &[Some(&texture_bind_group_layout)],
-        immediate_size: 0,
+        immediate_size: 8,
         // push_constant_ranges: &[],
     });
     let pipeline_descriptor = wgpu::RenderPipelineDescriptor {
@@ -304,7 +304,7 @@ fn create_draw_pipeline(
 
     let mut addictive_descriptor_mask_disabled = addictive_descriptor.clone();
 
-    addictive_descriptor_mask_disabled.depth_stencil = Some(wgpu::DepthStencilState {
+    let mask_disabled_stencil_state = Some(wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Stencil8,
         depth_write_enabled: None,
         depth_compare: Some(wgpu::CompareFunction::Always),
@@ -321,6 +321,8 @@ fn create_draw_pipeline(
         },
         bias: wgpu::DepthBiasState::default(),
     });
+
+    addictive_descriptor_mask_disabled.depth_stencil = mask_disabled_stencil_state.clone();
 
     let addictive_pipeline_mask_disabled =
         device.create_render_pipeline(&addictive_descriptor_mask_disabled);
@@ -345,23 +347,7 @@ fn create_draw_pipeline(
 
     let mut subtractive_descriptor_mask_disabled = subtractive_descriptor.clone();
 
-    subtractive_descriptor_mask_disabled.depth_stencil = Some(wgpu::DepthStencilState {
-        format: wgpu::TextureFormat::Stencil8,
-        depth_write_enabled: None,
-        depth_compare: Some(wgpu::CompareFunction::Always),
-        stencil: wgpu::StencilState {
-            front: wgpu::StencilFaceState {
-                compare: wgpu::CompareFunction::Always, // always passes
-                fail_op: wgpu::StencilOperation::Keep,  // Drop pixel, leave stencil alone
-                depth_fail_op: wgpu::StencilOperation::Keep,
-                pass_op: wgpu::StencilOperation::Replace, // Overwrite with new STP value
-            },
-            back: wgpu::StencilFaceState::IGNORE,
-            read_mask: 0x01,
-            write_mask: 0x01,
-        },
-        bias: wgpu::DepthBiasState::default(),
-    });
+    subtractive_descriptor_mask_disabled.depth_stencil = mask_disabled_stencil_state;
 
     let subtractive_pipeline_mask_disabled =
         device.create_render_pipeline(&subtractive_descriptor_mask_disabled);
@@ -659,7 +645,7 @@ impl HWRenderer {
                     } => {
                         renderer.flush();
                         renderer.global_masking_enabled = *preserve_masked_pixels;
-                        renderer.force_set_mask_bit = *preserve_masked_pixels;
+                        renderer.force_set_mask_bit = *force_set_mask_bit;
                     }
                     RendererMsg::PoisonPill => return,
                 }
@@ -677,12 +663,6 @@ impl HWRenderer {
 
             if !self.force_set_mask_bit {
                 // --- PASS 1: Process and write pixels that have STP = 0 ---
-                // Update your uniform buffer so WGSL knows to only pass `STP == 0` pixels
-                self.queue.write_buffer(
-                    &self.uniforms_buffer,
-                    0,
-                    bytemuck::cast_slice(&[0u32, self.force_set_mask_bit as u32]),
-                );
 
                 let mut render_encoder =
                     self.device
@@ -729,6 +709,11 @@ impl HWRenderer {
                         // Blending::Quarter => &self.quarter_pipeline,
                     };
                     rpass.set_pipeline(pipeline);
+                    // Update your uniform buffer so WGSL knows to only pass `STP == 0` pixels
+                    rpass.set_immediates(
+                        0,
+                        bytemuck::cast_slice(&[0u32, self.force_set_mask_bit as u32]),
+                    );
 
                     if self.force_set_mask_bit {
                         // If masking is on, we only draw if the existing VRAM stencil bit EQUALS 0
@@ -785,24 +770,18 @@ impl HWRenderer {
                 }
 
                 // TODO: do we need sync here?
-                self.device
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: Some(idx),
-                        timeout: None,
-                    })
-                    .expect("ok");
+                // self.device
+                //     .poll(wgpu::PollType::Wait {
+                //         submission_index: Some(idx),
+                //         timeout: None,
+                //     })
+                //     .expect("ok");
                 // self.queue.on_submitted_work_done(|| {
                 // println!("rendering done..");
                 // });
             }
 
             // --- PASS 2: Process and write pixels that have STP = 1 ---
-            // Update your uniform buffer so WGSL knows to only pass `STP == 1` pixels
-            self.queue.write_buffer(
-                &self.uniforms_buffer,
-                0,
-                bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
-            );
 
             let mut render_encoder =
                 self.device
@@ -839,17 +818,21 @@ impl HWRenderer {
                     }),
                     ..Default::default()
                 });
+
                 let pipeline = match (&self.current_blending, self.global_masking_enabled) {
-                    // Blending::None => &self.draw_pipeline,
-                    // Blending::Average => &self.avg_pipeline,
                     (Blending::Add, true) => &self.addictive_pipeline,
                     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
                     (Blending::Subtract, true) => &self.subtractive_pipeline,
                     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
-                    // Blending::Quarter => &self.quarter_pipeline,
                 };
                 rpass.set_pipeline(pipeline);
+            // Update your uniform buffer so WGSL knows to only pass `STP == 1` pixels
+                rpass.set_immediates(
+                    0,
+                    bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
+                );
 
+                // println!("masking enabled?: {}", self.global_masking_enabled);
                 if self.global_masking_enabled {
                     // If masking is on, we still only draw if the existing VRAM stencil bit EQUALS 0...
                     rpass.set_stencil_reference(0);
@@ -892,13 +875,13 @@ impl HWRenderer {
                                                // | wgpu::ErrorFilter::OutOfMemory,
             );
             let idx = self.queue.submit(vec![render_encoder.finish()]);
-            self.device
-                .poll(wgpu::PollType::Wait {
-                    submission_index: Some(idx),
-                    timeout: None,
-                })
-                .expect("ok");
-
+            // self.device
+            //     .poll(wgpu::PollType::Wait {
+            //         submission_index: Some(idx),
+            //         timeout: None,
+            //     })
+            //     .expect("ok");
+            //
             let maybe_error = pollster::block_on(error_scope.pop());
             if let Some(error) = maybe_error {
                 match error {
@@ -956,12 +939,20 @@ impl HWRenderer {
         let max_x = (v.x + width).min(0x400) as usize;
         let max_y = (v.y + height).min(0x200) as usize;
 
+        self.prepare_draw(
+            false,
+            min_x as i32,
+            min_y as i32,
+            max_x as i32,
+            max_y as i32,
+            0,
+        );
         self.dirty_region
             .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
 
         self.ensure_vertex_room(6);
         let flags = Flags(0);
-        self.vertices.push(Vert {
+        let v0 = (Vert {
             position: [min_x as i16, min_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
@@ -973,7 +964,7 @@ impl HWRenderer {
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
         });
-        self.vertices.push(Vert {
+        let v1 = (Vert {
             position: [min_x as i16, max_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
@@ -985,7 +976,7 @@ impl HWRenderer {
             texture_window_offset: [0, 0],
             // _pad: 0,
         });
-        self.vertices.push(Vert {
+        let v2 = (Vert {
             position: [max_x as i16, min_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
@@ -997,7 +988,7 @@ impl HWRenderer {
             texture_window_offset: [0, 0],
             // _pad: 0,
         });
-        self.vertices.push(Vert {
+        let v3 = (Vert {
             position: [min_x as i16, max_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
@@ -1009,7 +1000,7 @@ impl HWRenderer {
             texture_window_offset: [0, 0],
             // _pad: 0,
         });
-        self.vertices.push(Vert {
+        let v4 = (Vert {
             position: [max_x as i16, max_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
@@ -1021,7 +1012,7 @@ impl HWRenderer {
             texture_window_offset: [0, 0],
             // _pad: 0,
         });
-        self.vertices.push(Vert {
+        let v5 = (Vert {
             position: [max_x as i16, min_y as i16],
             color: [color.r, color.g, color.b],
             texture_depth: 0,
@@ -1033,6 +1024,9 @@ impl HWRenderer {
             texture_window_offset: [0, 0],
             // _pad: 0,
         });
+        let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
+        let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
+        self.vertices.extend(&[v0, v1, v2, v3, v4, v5]);
     }
 
     pub fn draw_line(
@@ -1545,7 +1539,6 @@ impl HWRenderer {
                     // }
                 }
                 println!("invocations: {}", results.len());
-
             }
             None => println!("No profiling results available yet!"),
         }

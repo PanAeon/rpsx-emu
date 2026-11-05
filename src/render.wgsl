@@ -5,7 +5,8 @@ struct Uniforms {
     force_set_mask: u32,
 }
 @group(0) @binding(0) var vram_t: texture_storage_2d<r32uint, read_write>;
-@group(0) @binding(1) var<uniform> config: Uniforms;
+@group(0) @binding(1) var<uniform> uniforms: Uniforms;
+var<immediate> conf: Uniforms;
 
 // @group(1) @binding(2) var s_diffuse: sampler;
 
@@ -156,7 +157,11 @@ fn get_color(in: VertexOutput) -> FragmentOutput {
     }
     // Filter out fragments that don't match the current stencil pass target
     let current_pixel_stp = select(0u, 1u, c.w > 0.5);
-    if (config.force_set_mask == 0 && current_pixel_stp != config.target_stp) {
+    if (conf.force_set_mask == 0 && current_pixel_stp == 0 && conf.target_stp != 0) {
+        discard;
+    }
+    // if ( current_pixel_stp == 0 && conf.target_stp == 1) {
+    if ( current_pixel_stp == 1 && conf.target_stp == 0) {
         discard;
     }
     if is_semitrans(in) && c.w > 0.5 {

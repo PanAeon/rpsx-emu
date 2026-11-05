@@ -124,7 +124,7 @@ impl Gpu {
             gp0_command_word: 0,
             // gp0_command_method: Gpu::gp0_nop,
             gp0_mode: Gp0Mode::Command,
-            even: true,
+            even: false,
             in_vblank: false,
             in_hblank: false,
             read: 0,
@@ -861,7 +861,8 @@ impl Gpu {
 
         let msg = self.renderer_receiver.as_mut().unwrap().recv().expect("ok");
         let RendererResponse::VramToCpuData { data } = msg else {
-            panic!("wrong response in sync code...");
+            println!("wrong response in sync code...");
+            return;
         };
         let data: &[u8] = bytemuck::cast_slice(&data);
         self.vram.copy_from_slice(data);
@@ -920,6 +921,10 @@ impl Gpu {
         let msg = self.renderer_receiver.as_mut().unwrap().recv().expect("ok");
         let RendererResponse::VramToCpuData { data } = msg else {
             println!("panic! wrong response in sync code...");
+            self.gp0_mode = Gp0Mode::ImageStore {
+                current_word: 0,
+                data: vec![0;self.gp0_words_remaining as usize],
+            };
             return;
         };
 
@@ -1447,7 +1452,10 @@ impl Gpu {
                     sy as usize,
                     depth,
                 ),
-                _ => panic!("something went wrong.. sync call returned wrong response"),
+                _ => {
+                    println!("something went wrong.. sync call returned wrong response");
+                    (1024, 512, 0, 0, self.display_depth)
+                }
             }
         }
     }

@@ -292,7 +292,8 @@ impl State {
 
         info!("Selected adapter name: {}", adapter.get_info().name);
 
-        let limits = wgpu::Limits::default().using_resolution(adapter.limits());
+        let mut limits = wgpu::Limits::default().using_resolution(adapter.limits());
+        limits.max_immediate_size = 8;
         // limits.max_texture_dimension_2d *= 2;
         // limits.max_dynamic_storage_buffers_per_pipeline_layout = 8;
         // limits.max_storage_textures_per_shader_stage = 8;
@@ -302,6 +303,7 @@ impl State {
                 required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                     | wgpu::Features::VERTEX_WRITABLE_STORAGE
                     | GpuProfiler::ALL_WGPU_TIMER_FEATURES
+                    | wgpu::Features::IMMEDIATES
                     | wgpu::Features::DUAL_SOURCE_BLENDING,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 // WebGL doesn't support all of wgpu's features, so if

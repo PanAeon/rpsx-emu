@@ -967,6 +967,17 @@ impl Gpu {
             .expect("ok");
     }
 
+    pub fn send_preserve_masked_pixels_change(&mut self) {
+        self.renderer_sender
+            .as_mut()
+            .unwrap()
+            .send(RendererMsg::PreservedMaskedPixelsChanged {
+                preserve_masked_pixels: self.preserve_masked_pixels,
+                force_set_mask_bit: self.force_set_mask_bit,
+            })
+            .expect("ok");
+    }
+
     pub fn gp0_drawing_area_top_left(&mut self) {
         let val: u32 = self.gp0_command[0];
         self.drawing_area_top = ((val >> 10) & 0x3ff) as u16;
@@ -989,8 +1000,13 @@ impl Gpu {
     }
     pub fn gp0_mask_bit_setting(&mut self) {
         let val: u32 = self.gp0_command[0];
+        let prev_force = self.force_set_mask_bit;
         self.force_set_mask_bit = (val & 1) != 0;
+        let prev = self.preserve_masked_pixels;
         self.preserve_masked_pixels = (val & 2) != 0;
+        if self.preserve_masked_pixels != prev || self.force_set_mask_bit != prev_force {
+            self.send_preserve_masked_pixels_change();
+        }
     }
 
     pub fn gp1(&mut self, val: u32) {
@@ -1307,7 +1323,8 @@ impl Gpu {
         let height_shift = y_shift;
 
         let display_width = (horizontal_visible_end - horizontal_visible_start) / dot_clock_divider;
-        let display_height = (vertical_visible_end.saturating_sub(vertical_visible_start)) << height_shift;
+        let display_height =
+            (vertical_visible_end.saturating_sub(vertical_visible_start)) << height_shift;
 
         // determine number of pixels outputted from vram
         let horizontal_display_ticks = if horizontal_display_end < horizontal_display_start {

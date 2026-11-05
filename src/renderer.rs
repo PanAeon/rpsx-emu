@@ -77,6 +77,10 @@ pub enum RendererMsg {
         top_left: (u16, u16),
         bottom_right: (u16, u16),
     },
+    PreservedMaskedPixelsChanged {
+        preserve_masked_pixels: bool,
+        force_set_mask_bit: bool,
+    },
     PoisonPill,
 }
 pub enum RendererResponse {
@@ -381,6 +385,9 @@ impl Renderer {
                     }
                     RendererMsg::DrawingAreaChange {..}  => {
                         // ignore for now..
+                    }
+                    RendererMsg::PreservedMaskedPixelsChanged { .. } => {
+                        // ignore for now
                     }
                     RendererMsg::PoisonPill => {
                         return;

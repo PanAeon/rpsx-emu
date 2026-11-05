@@ -437,6 +437,9 @@ impl ComputeRenderer {
                         renderer.drawing_area_top_left = *top_left;
                         renderer.drawing_area_bottom_right = *bottom_right;
                     }
+                    RendererMsg::PreservedMaskedPixelsChanged { .. } => {
+                        // ignore for now
+                    }
                     RendererMsg::PoisonPill => {
                         return;
                     }

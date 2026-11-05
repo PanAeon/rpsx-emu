@@ -1,6 +1,12 @@
 enable dual_source_blending;
 
+struct Uniforms {
+    target_stp: u32, // 0 for the first pass, 1 for the second pass
+    force_set_mask: u32,
+}
 @group(0) @binding(0) var vram_t: texture_storage_2d<r32uint, read_write>;
+@group(0) @binding(1) var<uniform> config: Uniforms;
+
 // @group(1) @binding(2) var s_diffuse: sampler;
 
 struct VertexInput {
@@ -112,6 +118,7 @@ fn readExistingColor(v: VertexOutput) -> vec4<f32> {
 }
 
 fn get_color(in: VertexOutput) -> FragmentOutput {
+    var c: vec4<f32>;
     if is_textured(in) {
         var color: u32;
         let uv = compute_uv_offset(in);
@@ -135,7 +142,7 @@ fn get_color(in: VertexOutput) -> FragmentOutput {
             discard;
         }
 
-        var c = unpack_color(color);
+        c = unpack_color(color);
 
         if needs_blend(in) {
             let tex_color = vec3<u32>(vec3(c.r * 255, c.g * 255, c.b * 255));
@@ -144,46 +151,18 @@ fn get_color(in: VertexOutput) -> FragmentOutput {
             let color_uint = min((tex_color * vert_color) >> vec3<u32>(7u), vec3<u32>(0xffu));
             c = vec4<f32>(vec3<f32>(color_uint) / 255.0, c.w);
         }
-
-        // var transparency = 1.0;
-        if is_semitrans(in) && c.w > 0.5 {
-            //     let prev = readExistingColor(in);
-            // transparency = f32(get_transparency(in));
-            //     c = blend_with_background(c, prev, transparency);
-            return get_transparency(c, in);//FragmentOutput(vec4(c.xyz, 1.0), vec4<f32>(0.0));
-        } else {
-            return FragmentOutput(vec4((c.xyz), 1.0), vec4<f32>(0.0));
-        }
-
-        // return vec4(c.xyz, transparency);
-        // return pack_color(c.xyz, c.w > 0.5);
     } else {
-        var c = vec4<f32>(in.color, 1.0);
-        // if needs_dither(in) {
-        //     c *= 255;
-        //     var dither_pos: vec2<f32>;
-        //     dither_pos = in.vram_position % 4;
-        //     var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
-        //     c += f32(dither_value);
-        //     c = clamp(c, vec4(0), vec4(0xff));
-        //     c /= 255;
-        // }
-        if is_semitrans(in) && c.w > 0.5 {
-            //     let prev = readExistingColor(in);
-            // transparency = f32(get_transparency(in));
-            return get_transparency(c, in);//FragmentOutput(vec4(c.xyz, 1.0), vec4<f32>(0.0));
-            // return FragmentOutput(vec4(c.xyz, 1.0), vec4<f32>(0.0));
-            //     c = blend_with_background(c, prev, transparency);
-        } else {
-            return FragmentOutput((vec4( (c.xyz), 1.0)), vec4<f32>(0.0));
-        }
-        // if is_semitrans(in) {
-        //     let prev = readExistingColor(in);
-        //     let transparency = get_transparency(in);
-        //     c = blend_with_background(c, prev, transparency);
-        // }
-        // return pack_color(c.xyz, false);
-        // return vec4(c.xyz, transparency);
+        c = vec4<f32>(in.color, 1.0);
+    }
+    // Filter out fragments that don't match the current stencil pass target
+    let current_pixel_stp = select(0u, 1u, c.w > 0.5);
+    if (config.force_set_mask == 0 && current_pixel_stp != config.target_stp) {
+        discard;
+    }
+    if is_semitrans(in) && c.w > 0.5 {
+        return get_transparency(c, in);
+    } else {
+        return FragmentOutput(vec4((c.xyz), 1.0), vec4<f32>(0.0));
     }
 }
 
@@ -387,17 +366,17 @@ fn srgb_to_linear(c: f32) -> f32 {
 }
 fn srgb_to_linear_vec(v: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(
-    srgb_to_linear(v.x),
-    srgb_to_linear(v.y),
-    srgb_to_linear(v.z),
-    v.z
+        srgb_to_linear(v.x),
+        srgb_to_linear(v.y),
+        srgb_to_linear(v.z),
+        v.z
     );
 }
 fn srgb_to_linear_v3(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
-    srgb_to_linear(v.x),
-    srgb_to_linear(v.y),
-    srgb_to_linear(v.z),
+        srgb_to_linear(v.x),
+        srgb_to_linear(v.y),
+        srgb_to_linear(v.z),
     );
 }
 // const FIVE_BIT_TO_8Bit: array<u32, 32> = array(

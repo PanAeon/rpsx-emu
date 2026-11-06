@@ -1638,12 +1638,12 @@ impl HWRenderer {
         // here is a good place to copy our render texture to vram texture...
 
         self.flush();
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .expect("ok");
+        // self.device
+        //     .poll(wgpu::PollType::Wait {
+        //         submission_index: None,
+        //         timeout: None,
+        //     })
+        //     .expect("ok");
         self.clear_render_texture = true;
 
         self.current_z = 0.0;
@@ -1801,13 +1801,13 @@ impl HWRenderer {
     }
 
     pub fn vram_to_cpu_copy(&mut self, top_left: (u16, u16), size: (u16, u16)) -> Vec<u32> {
-        // self.flush();
+        self.flush();
         if top_left.0 > 1023 || top_left.1 > 511 {
             return vec![];
         }
         let imgsize = size.0 as u32 * size.1 as u32; // size in half-words
         // rounding so we have 16 bit of padding in last word
-        // let imgsize = (imgsize + 1) & !1;
+        let imgsize = (imgsize + 1) & !1;
 
         // align to 256 bytes...
         let num_extents = (4 * (size.0 as usize) / 256) + 1;
@@ -1854,9 +1854,10 @@ impl HWRenderer {
                 depth_or_array_layers: 1,
             },
         );
-        encoder.map_buffer_on_submit(&output_buffer, wgpu::MapMode::Read, .., |res| {
+        let (sender, receiver) = crossbeam::channel::bounded(16);
+        encoder.map_buffer_on_submit(&output_buffer, wgpu::MapMode::Read, .., move |res| {
             match res {
-                Ok(_) => {}
+                Ok(_) => {sender.send(()).expect("OK")}
                 Err(x) => println!(">>> error mapping buffer {}", x),
             };
         });
@@ -1867,18 +1868,21 @@ impl HWRenderer {
                 timeout: None,
             })
             .expect("ok");
+        receiver.recv().expect("ok");
 
         let buffer_view = output_buffer.get_mapped_range(..).expect("success");
         let vram_data: &[u32] = bytemuck::cast_slice(&buffer_view[..]);
-        let mut data = Vec::with_capacity(vram_data.len() / 2);
+        let mut data = Vec::with_capacity(imgsize as usize / 2);
 
-        let width_in_words = (((size.0 + 1) & !1) / 2) as usize;
-        // FIXME: need to pack two words into one
-        for i in 0..size.1 as usize {
-            let start = i * num_extents * 256 / 4;
-            data.extend_from_slice(&vram_data[start..start + width_in_words]);
+        for y in 0..size.1 as usize {
+            for x in (0..size.0 as usize).step_by(2) {
+                let low = vram_data[(y * num_extents * 256 / 4) + x];
+                let high = vram_data[(y * num_extents * 256 / 4) + x + 1];
+                data.push((high << 16) | (low & 0xFFFF));
+                // let start = i * num_extents * 256 / 4;
+                // data.extend_from_slice(&vram_data[start..start + width_in_words]);
+            }
         }
-        // println!("expected len: {}, actual: {}", imgsize / 2, data.len());
 
         data
     }

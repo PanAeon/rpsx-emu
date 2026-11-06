@@ -95,6 +95,8 @@ pub struct Cli {
     interpreter: bool,
     #[arg(long)]
     hw_renderer: bool,
+    #[arg(long)]
+    scale: u32,
 }
 
 fn main() {
@@ -346,7 +348,11 @@ impl State {
             color_space: wgpu::wgt::SurfaceColorSpace::Auto,
         };
 
-        let scale: u32 = 1; 
+        let scale: u32 = if cli.scale > 0 && cli.hw_renderer && !cli.softgpu {
+            cli.scale
+        } else {
+            1
+        };
         let texture_size = wgpu::Extent3d {
             width: 1024 * scale,
             height: 512 * scale,

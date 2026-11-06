@@ -902,15 +902,8 @@ impl HWRenderer {
                         );
 
                         if batch.preserve_masked_pixels {
-                            println!("masking");
-                            // If masking is on, we still only draw if the existing VRAM stencil bit EQUALS 0...
-                            rpass.set_stencil_reference(0);
-                            // ...but because pass_op is REPLACE, if it succeeds, it will overwrite VRAM with 0!
-                            // Wait: We want VRAM to update to 1. WebGPU's stencil reference controls BOTH the comparison
-                            // value AND the replace value.
-                            // To fix this constraint under Masking = Enabled, you need a slightly split logic:
+                            rpass.set_stencil_reference(1);
                         } else {
-                            // Masking off: Replace VRAM stencil with 1
                             rpass.set_stencil_reference(1);
                         }
                         // match self.current_blending {

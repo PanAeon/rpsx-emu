@@ -446,7 +446,14 @@ fn create_draw_pipeline(
         depth_texture_view,
     )
 }
-
+pub struct DrawBatch {
+    vertices: Vec<Vert>,
+    blending: Blending,
+    drawing_area_top_left: (u16, u16),
+    drawing_area_bottom_right: (u16, u16),
+    force_set_mask_bit: bool, // blit_texture: wgpu::Texture,
+    preserve_masked_pixels: bool,
+}
 pub struct HWRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -459,7 +466,7 @@ pub struct HWRenderer {
     blit_texture: wgpu::Texture,
     vertex_buffer: wgpu::Buffer,
     texture_bind_group: wgpu::BindGroup,
-    vertices: Vec<Vert>,
+    batches: Vec<DrawBatch>,
     render_view: wgpu::TextureView,
     drawing_area_top_left: (u16, u16),
     drawing_area_bottom_right: (u16, u16),
@@ -471,7 +478,7 @@ pub struct HWRenderer {
     current_blending: Blending,
     clear_render_texture: bool,
     uniforms_buffer: wgpu::Buffer,
-    global_masking_enabled: bool,
+    preserve_masked_pixels: bool,
     depth_texture_view: wgpu::TextureView,
     force_set_mask_bit: bool, // blit_texture: wgpu::Texture,
     // vram_blit_texture: wgpu::Texture,
@@ -526,7 +533,7 @@ impl HWRenderer {
                 vertex_buffer,
                 uniforms_buffer,
                 texture_bind_group,
-                vertices: vec![],
+                batches: vec![],
                 render_view,
                 drawing_area_top_left: (0, 0),
                 drawing_area_bottom_right: (0, 0),
@@ -537,7 +544,7 @@ impl HWRenderer {
                 results: None,
                 current_blending: Blending::Add,
                 clear_render_texture: true,
-                global_masking_enabled: false,
+                preserve_masked_pixels: false,
                 force_set_mask_bit: false,
                 depth_texture_view,
                 current_z: 0.0,
@@ -656,9 +663,9 @@ impl HWRenderer {
                         top_left,
                         bottom_right,
                     } => {
-                        renderer.flush();
+                        // renderer.flush();
                         renderer.drawing_area_top_left.0 = top_left.0 * scale as u16;
-                        renderer.drawing_area_top_left.1 = top_left.1;
+                        renderer.drawing_area_top_left.1 = top_left.1 * scale as u16;
                         renderer.drawing_area_bottom_right.0 = bottom_right.0 * scale as u16;
                         renderer.drawing_area_bottom_right.1 = bottom_right.1 * scale as u16;
                     }
@@ -666,8 +673,8 @@ impl HWRenderer {
                         preserve_masked_pixels,
                         force_set_mask_bit,
                     } => {
-                        renderer.flush();
-                        renderer.global_masking_enabled = *preserve_masked_pixels;
+                        // renderer.flush();
+                        renderer.preserve_masked_pixels = *preserve_masked_pixels;
                         renderer.force_set_mask_bit = *force_set_mask_bit;
                     }
                     RendererMsg::PoisonPill => return,
@@ -679,281 +686,340 @@ impl HWRenderer {
     }
 
     pub fn flush(&mut self) {
-        if !self.vertices.is_empty() {
-            self.num_triangles += self.vertices.len() as u32 / 3;
-            // first upload vertex buffer
-            self.queue
-                .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+        for (i, batch) in self.batches.iter().enumerate() {
+            if !batch.vertices.is_empty() {
+                self.num_triangles += batch.vertices.len() as u32 / 3;
+                // first upload vertex buffer
+                self.queue.write_buffer(
+                    &self.vertex_buffer,
+                    0,
+                    bytemuck::cast_slice(&batch.vertices),
+                );
 
-            if !self.force_set_mask_bit {
-                // --- PASS 1: Process and write pixels that have STP = 0 ---
+                if !batch.force_set_mask_bit {
+                    // --- PASS 1: Process and write pixels that have STP = 0 ---
 
-                let mut render_encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("render_encoder"),
-                        });
-                {
-                    let mut render_scope = self.profiler.scope("render", &mut render_encoder);
+                    let mut render_encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("render_encoder"),
+                            });
+                    {
+                        let mut render_scope = self.profiler.scope("render", &mut render_encoder);
 
-                    // self.clear_render_texture = false;
-                    // let load_op = if self.clear_render_texture {
-                    //     wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                    // } else {
-                    //     wgpu::LoadOp::Load
-                    // };
-                    let zclearop = if self.clear_render_texture {
-                        wgpu::LoadOp::Clear(0.0)
-                    } else {
-                        // wgpu::LoadOp::Clear(1.0)
-                        wgpu::LoadOp::Load
-                    };
-                    let clear_stencil = if self.clear_render_texture {
-                        wgpu::LoadOp::Clear(0)
-                    } else {
-                        wgpu::LoadOp::Load
-                    };
-                    let mut rpass = render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("render_rpass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.render_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                            depth_slice: None,
-                        })],
-                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: &self.depth_texture_view,
-                            depth_ops: Some(wgpu::Operations {
-                                load: zclearop,
-                                // load: wgpu::LoadOp::Clear(1.0),
-                                // load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                            stencil_ops: Some(wgpu::Operations {
-                                load: clear_stencil,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                        }),
-                        ..Default::default()
-                    });
-                    let pipeline = match (&self.current_blending) {
-                        (Blending::Add) => &self.addictive_pipeline,
-                        (Blending::Subtract) => &self.subtractive_pipeline,
-                    };
-                    // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
-                    //     (Blending::Add, true) => &self.addictive_pipeline,
-                    //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
-                    //     (Blending::Subtract, true) => &self.subtractive_pipeline,
-                    //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
-                    // };
-                    rpass.set_pipeline(pipeline);
-                    // Update your uniform buffer so WGSL knows to only pass `STP == 0` pixels
-                    rpass.set_immediates(
-                        0,
-                        bytemuck::cast_slice(&[0u32, self.force_set_mask_bit as u32]),
-                    );
+                        // self.clear_render_texture = false;
+                        // let load_op = if self.clear_render_texture {
+                        //     wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        // } else {
+                        //     wgpu::LoadOp::Load
+                        // };
+                        let zclearop = if i == 0 {
+                            wgpu::LoadOp::Clear(0.0)
+                        } else {
+                            // wgpu::LoadOp::Clear(1.0)
+                            wgpu::LoadOp::Load
+                        };
+                        let clear_stencil = if i == 0 {
+                            wgpu::LoadOp::Clear(0)
+                        } else {
+                            wgpu::LoadOp::Load
+                        };
+                        let mut rpass =
+                            render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("render_rpass"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &self.render_view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                    depth_slice: None,
+                                })],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view: &self.depth_texture_view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            load: zclearop,
+                                            // load: wgpu::LoadOp::Clear(1.0),
+                                            // load: wgpu::LoadOp::Load,
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: Some(wgpu::Operations {
+                                            load: clear_stencil,
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                    },
+                                ),
+                                ..Default::default()
+                            });
+                        let pipeline = match (&batch.blending) {
+                            (Blending::Add) => &self.addictive_pipeline,
+                            (Blending::Subtract) => &self.subtractive_pipeline,
+                        };
+                        // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
+                        //     (Blending::Add, true) => &self.addictive_pipeline,
+                        //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
+                        //     (Blending::Subtract, true) => &self.subtractive_pipeline,
+                        //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
+                        // };
+                        rpass.set_pipeline(pipeline);
+                        // Update your uniform buffer so WGSL knows to only pass `STP == 0` pixels
+                        rpass.set_immediates(
+                            0,
+                            bytemuck::cast_slice(&[0u32, batch.force_set_mask_bit as u32]),
+                        );
 
-                    // test for 0, clear for 0
-                    rpass.set_stencil_reference(0);
-                    // match self.current_blending {
-                    //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
-                    //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
-                    //     _ => {}
-                    // }
-                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    rpass.set_scissor_rect(
-                        self.drawing_area_top_left.0 as u32,
-                        self.drawing_area_top_left.1 as u32,
-                        min(
-                            1024 * self.scale,
-                            (1 + self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0)
-                                as u32,
-                        ),
-                        min(
-                            512 * self.scale,
-                            (1 + self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1)
-                                as u32,
-                        ),
-                    );
-                    // rpass.set_bind_group(0, &self.camera_bind_group, &[]);
-
-                    rpass.set_bind_group(0, &self.texture_bind_group, &[]);
-                    rpass.draw(0..self.vertices.len() as u32, 0..1);
-                }
-                self.profiler.resolve_queries(&mut render_encoder);
-                // let error_scope = self.device.push_error_scope(
-                //     wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
-                //                                    // | wgpu::ErrorFilter::OutOfMemory,
-                // );
-                let idx = self.queue.submit(vec![render_encoder.finish()]);
-
-                // let maybe_error = pollster::block_on(error_scope.pop());
-                // if let Some(error) = maybe_error {
-                //     match error {
-                //         wgpu::Error::Validation { description, .. } => {
-                //             println!("Validation error caught: {description}");
-                //         }
-                //         wgpu::Error::OutOfMemory { .. } => {
-                //             println!("Out of memory!");
-                //         }
-                //         wgpu::Error::Internal { description, .. } => {
-                //             println!("Internal error: {description}");
-                //         }
-                //     }
-                // }
-
-                // TODO: do we need sync here?
-                // self.device
-                //     .poll(wgpu::PollType::Wait {
-                //         submission_index: Some(idx),
-                //         timeout: None,
-                //     })
-                //     .expect("ok");
-                // self.queue.on_submitted_work_done(|| {
-                // println!("rendering done..");
-                // });
-            }
-
-            // --- PASS 2: Process and write pixels that have STP = 1 ---
-
-            // if z is not equal the second pass wipes out first pass entirely
-            // for v in &mut self.vertices {
-            //     v.z += 0.41;
-            // }
-            // self.queue
-            //     .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
-            {
-                let mut render_encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("render_encoder2"),
-                        });
-                {
-                    let mut render_scope = self.profiler.scope("render", &mut render_encoder);
-
-                    // self.clear_render_texture = false;
-                    // let load_op = if self.clear_render_texture {
-                    //     wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                    // } else {
-                    //     wgpu::LoadOp::Load
-                    // };
-                    let mut rpass = render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("render_rpass2"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.render_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                            depth_slice: None,
-                        })],
-                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: &self.depth_texture_view,
-                            depth_ops: Some(wgpu::Operations {
-                                // load: wgpu::LoadOp::Clear(1.0),
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                            stencil_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                        }),
-                        ..Default::default()
-                    });
-
-                    let pipeline = match (&self.current_blending) {
-                        (Blending::Add) => &self.addictive_pipeline_mask_disabled,
-                        (Blending::Subtract) => &self.subtractive_pipeline_mask_disabled,
-                    };
-                    // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
-                    //     (Blending::Add, true) => &self.addictive_pipeline,
-                    //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
-                    //     (Blending::Subtract, true) => &self.subtractive_pipeline,
-                    //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
-                    // };
-                    rpass.set_pipeline(pipeline);
-                    rpass.set_immediates(
-                        0,
-                        bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
-                    );
-
-                    if self.global_masking_enabled {
-                        println!("masking");
-                        // If masking is on, we still only draw if the existing VRAM stencil bit EQUALS 0...
+                        // test for 0, clear for 0
                         rpass.set_stencil_reference(0);
-                        // ...but because pass_op is REPLACE, if it succeeds, it will overwrite VRAM with 0!
-                        // Wait: We want VRAM to update to 1. WebGPU's stencil reference controls BOTH the comparison
-                        // value AND the replace value.
-                        // To fix this constraint under Masking = Enabled, you need a slightly split logic:
-                    } else {
-                        // Masking off: Replace VRAM stencil with 1
-                        rpass.set_stencil_reference(1);
+                        // match batch.current_blending {
+                        //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
+                        //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
+                        //     _ => {}
+                        // }
+                        rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                        rpass.set_scissor_rect(
+                            batch.drawing_area_top_left.0 as u32,
+                            batch.drawing_area_top_left.1 as u32,
+                            min(
+                                1024 * self.scale,
+                                (1 + batch.drawing_area_bottom_right.0
+                                    - batch.drawing_area_top_left.0)
+                                    as u32,
+                            ),
+                            min(
+                                512 * self.scale,
+                                (1 + batch.drawing_area_bottom_right.1
+                                    - batch.drawing_area_top_left.1)
+                                    as u32,
+                            ),
+                        );
+                        // rpass.set_bind_group(0, &self.camera_bind_group, &[]);
+
+                        rpass.set_bind_group(0, &self.texture_bind_group, &[]);
+                        rpass.draw(0..batch.vertices.len() as u32, 0..1);
                     }
-                    // match self.current_blending {
-                    //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
-                    //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
-                    //     _ => {}
+                    self.profiler.resolve_queries(&mut render_encoder);
+                    // let error_scope = self.device.push_error_scope(
+                    //     wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
+                    //                                    // | wgpu::ErrorFilter::OutOfMemory,
+                    // );
+                    let idx = self.queue.submit(vec![render_encoder.finish()]);
+
+                    // let maybe_error = pollster::block_on(error_scope.pop());
+                    // if let Some(error) = maybe_error {
+                    //     match error {
+                    //         wgpu::Error::Validation { description, .. } => {
+                    //             println!("Validation error caught: {description}");
+                    //         }
+                    //         wgpu::Error::OutOfMemory { .. } => {
+                    //             println!("Out of memory!");
+                    //         }
+                    //         wgpu::Error::Internal { description, .. } => {
+                    //             println!("Internal error: {description}");
+                    //         }
+                    //     }
                     // }
-                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    rpass.set_scissor_rect(
-                        self.drawing_area_top_left.0 as u32,
-                        self.drawing_area_top_left.1 as u32,
-                        min(
-                            1024 * self.scale,
-                            (1 + self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0)
-                                as u32,
-                        ),
-                        min(
-                            512 * self.scale,
-                            (1 + self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1)
-                                as u32,
-                        ),
-                    );
-                    // rpass.set_bind_group(0, &self.camera_bind_group, &[]);
 
-                    rpass.set_bind_group(0, &self.texture_bind_group, &[]);
-                    rpass.draw(0..self.vertices.len() as u32, 0..1);
+                    // TODO: do we need sync here?
+                    // self.device
+                    //     .poll(wgpu::PollType::Wait {
+                    //         submission_index: Some(idx),
+                    //         timeout: None,
+                    //     })
+                    //     .expect("ok");
+                    // self.queue.on_submitted_work_done(|| {
+                    // println!("rendering done..");
+                    // });
                 }
-                self.profiler.resolve_queries(&mut render_encoder);
-                // let error_scope = self.device.push_error_scope(
-                //     wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
-                //                                    // | wgpu::ErrorFilter::OutOfMemory,
-                // );
-                let idx = self.queue.submit(vec![render_encoder.finish()]);
 
-                // let maybe_error = pollster::block_on(error_scope.pop());
-                // if let Some(error) = maybe_error {
-                //     match error {
-                //         wgpu::Error::Validation { description, .. } => {
-                //             println!("Validation error caught: {description}");
-                //         }
-                //         wgpu::Error::OutOfMemory { .. } => {
-                //             println!("Out of memory!");
-                //         }
-                //         wgpu::Error::Internal { description, .. } => {
-                //             println!("Internal error: {description}");
-                //         }
-                //     }
+                // --- PASS 2: Process and write pixels that have STP = 1 ---
+
+                // if z is not equal the second pass wipes out first pass entirely
+                // for v in &mut self.vertices {
+                //     v.z += 0.41;
                 // }
-                // self.device
-                //     .poll(wgpu::PollType::Wait {
-                //         submission_index: Some(idx),
-                //         timeout: None,
-                //     })
-                //     .expect("ok");
+                // self.queue
+                //     .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+                {
+                    let mut render_encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("render_encoder2"),
+                            });
+                    {
+                        let mut render_scope = self.profiler.scope("render", &mut render_encoder);
+
+                        // self.clear_render_texture = false;
+                        // let load_op = if self.clear_render_texture {
+                        //     wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        // } else {
+                        //     wgpu::LoadOp::Load
+                        // };
+                        let mut rpass =
+                            render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("render_rpass2"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view: &self.render_view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                    depth_slice: None,
+                                })],
+                                depth_stencil_attachment: Some(
+                                    wgpu::RenderPassDepthStencilAttachment {
+                                        view: &self.depth_texture_view,
+                                        depth_ops: Some(wgpu::Operations {
+                                            // load: wgpu::LoadOp::Clear(1.0),
+                                            load: wgpu::LoadOp::Load,
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                        stencil_ops: Some(wgpu::Operations {
+                                            load: wgpu::LoadOp::Load,
+                                            store: wgpu::StoreOp::Store,
+                                        }),
+                                    },
+                                ),
+                                ..Default::default()
+                            });
+
+                        let pipeline = match (&batch.blending) {
+                            (Blending::Add) => &self.addictive_pipeline_mask_disabled,
+                            (Blending::Subtract) => &self.subtractive_pipeline_mask_disabled,
+                        };
+                        // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
+                        //     (Blending::Add, true) => &self.addictive_pipeline,
+                        //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
+                        //     (Blending::Subtract, true) => &self.subtractive_pipeline,
+                        //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
+                        // };
+                        rpass.set_pipeline(pipeline);
+                        rpass.set_immediates(
+                            0,
+                            bytemuck::cast_slice(&[1u32, batch.force_set_mask_bit as u32]),
+                        );
+
+                        if batch.preserve_masked_pixels {
+                            println!("masking");
+                            // If masking is on, we still only draw if the existing VRAM stencil bit EQUALS 0...
+                            rpass.set_stencil_reference(0);
+                            // ...but because pass_op is REPLACE, if it succeeds, it will overwrite VRAM with 0!
+                            // Wait: We want VRAM to update to 1. WebGPU's stencil reference controls BOTH the comparison
+                            // value AND the replace value.
+                            // To fix this constraint under Masking = Enabled, you need a slightly split logic:
+                        } else {
+                            // Masking off: Replace VRAM stencil with 1
+                            rpass.set_stencil_reference(1);
+                        }
+                        // match self.current_blending {
+                        //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
+                        //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
+                        //     _ => {}
+                        // }
+                        rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                        rpass.set_scissor_rect(
+                            batch.drawing_area_top_left.0 as u32,
+                            batch.drawing_area_top_left.1 as u32,
+                            min(
+                                1024 * self.scale,
+                                (1 + batch.drawing_area_bottom_right.0
+                                    - batch.drawing_area_top_left.0)
+                                    as u32,
+                            ),
+                            min(
+                                512 * self.scale,
+                                (1 + batch.drawing_area_bottom_right.1
+                                    - batch.drawing_area_top_left.1)
+                                    as u32,
+                            ),
+                        );
+                        // rpass.set_bind_group(0, &self.camera_bind_group, &[]);
+
+                        rpass.set_bind_group(0, &self.texture_bind_group, &[]);
+                        rpass.draw(0..batch.vertices.len() as u32, 0..1);
+                    }
+                    self.profiler.resolve_queries(&mut render_encoder);
+                    // let error_scope = self.device.push_error_scope(
+                    //     wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
+                    //                                    // | wgpu::ErrorFilter::OutOfMemory,
+                    // );
+                    let idx = self.queue.submit(vec![render_encoder.finish()]);
+
+                    // let maybe_error = pollster::block_on(error_scope.pop());
+                    // if let Some(error) = maybe_error {
+                    //     match error {
+                    //         wgpu::Error::Validation { description, .. } => {
+                    //             println!("Validation error caught: {description}");
+                    //         }
+                    //         wgpu::Error::OutOfMemory { .. } => {
+                    //             println!("Out of memory!");
+                    //         }
+                    //         wgpu::Error::Internal { description, .. } => {
+                    //             println!("Internal error: {description}");
+                    //         }
+                    //     }
+                    // }
+                    // self.device
+                    //     .poll(wgpu::PollType::Wait {
+                    //         submission_index: Some(idx),
+                    //         timeout: None,
+                    //     })
+                    //     .expect("ok");
+                }
+                // self.vertices.clear();
             }
-            self.vertices.clear();
         }
+        self.batches.clear();
     }
 
     pub fn ensure_vertex_room(&mut self, n: usize) {
-        if self.vertices.len() + n >= VERT_BUFFER_SIZE {
-            self.flush();
+        if self.batches.len() == 0 {
+            self.batches.push(DrawBatch {
+                vertices: vec![],
+                blending: self.current_blending,
+                drawing_area_top_left: self.drawing_area_top_left,
+                drawing_area_bottom_right: self.drawing_area_bottom_right,
+                force_set_mask_bit: self.force_set_mask_bit,
+                preserve_masked_pixels: self.preserve_masked_pixels,
+            });
+        }
+        let batch = self.batches.last_mut().expect("ok");
+        if batch.vertices.len() + n >= VERT_BUFFER_SIZE {
+            self.batches.push(DrawBatch {
+                vertices: vec![],
+                blending: self.current_blending,
+                drawing_area_top_left: self.drawing_area_top_left,
+                drawing_area_bottom_right: self.drawing_area_bottom_right,
+                force_set_mask_bit: self.force_set_mask_bit,
+                preserve_masked_pixels: self.preserve_masked_pixels,
+            });
+        }
+    }
+
+    pub fn push_vertices(&mut self, xs: &[Vert]) {
+        self.ensure_vertex_room(xs.len());
+
+        let batch = self.batches.last().expect("ok");
+
+        if batch.blending == self.current_blending
+            && batch.drawing_area_top_left == self.drawing_area_top_left
+            && batch.drawing_area_bottom_right == self.drawing_area_bottom_right
+            && batch.force_set_mask_bit == self.force_set_mask_bit
+            && batch.preserve_masked_pixels == self.preserve_masked_pixels
+        {
+            let batch = self.batches.last_mut().expect("ok");
+            batch.vertices.extend_from_slice(xs);
+        } else {
+            self.batches.push(DrawBatch {
+                vertices: xs.to_vec(),
+                blending: self.current_blending,
+                drawing_area_top_left: self.drawing_area_top_left,
+                drawing_area_bottom_right: self.drawing_area_bottom_right,
+                force_set_mask_bit: self.force_set_mask_bit,
+                preserve_masked_pixels: self.preserve_masked_pixels,
+            });
         }
     }
 
@@ -1000,7 +1066,7 @@ impl HWRenderer {
         self.dirty_region
             .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
 
-        self.ensure_vertex_room(6);
+        // self.ensure_vertex_room(6);
         let flags = Flags(0);
         let v0 = (Vert {
             position: [min_x as i16, min_y as i16],
@@ -1077,7 +1143,7 @@ impl HWRenderer {
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
-        self.vertices.extend(&[v0, v1, v2, v3, v4, v5]);
+        self.push_vertices(&[v0, v1, v2, v3, v4, v5]);
     }
 
     pub fn draw_line(
@@ -1158,7 +1224,7 @@ impl HWRenderer {
 
         self.dirty_region
             .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
-        self.ensure_vertex_room(if is_triangle { 3 } else { 6 });
+        // self.ensure_vertex_room(if is_triangle { 3 } else { 6 });
 
         self.render_triangle(
             &colors[0..3],
@@ -1256,9 +1322,10 @@ impl HWRenderer {
             z: self.current_z, // _pad: 0,
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
-        self.vertices.push(v0);
-        self.vertices.push(v1);
-        self.vertices.push(v2);
+        self.push_vertices(&[v0, v1, v2]);
+        // self.vertices.push(v0);
+        // self.vertices.push(v1);
+        // self.vertices.push(v2);
         // self.flush();
     }
 
@@ -1303,7 +1370,7 @@ impl HWRenderer {
         self.dirty_region
             .merge(min_x as i32, min_y as i32, max_x as i32, max_y as i32);
 
-        self.ensure_vertex_room(6);
+        // self.ensure_vertex_room(6);
         let mut flags = Flags(0);
         flags.set_textured(textured);
         flags.set_semitrans(semi_trans);
@@ -1406,7 +1473,7 @@ impl HWRenderer {
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
-        self.vertices.extend(&[v0, v1, v2, v3, v4, v5]);
+        self.push_vertices(&[v0, v1, v2, v3, v4, v5]);
     }
 
     // TODO: The transfer is affected by Mask setting.
@@ -1494,7 +1561,7 @@ impl HWRenderer {
         transparency: u8,
     ) {
         let blending = get_blending(transparency, semi_transparent);
-        if self.global_masking_enabled {
+        if self.preserve_masked_pixels {
             if self.dirty_region.intersects(sx, sy, end_x, end_y) {
                 // self.flush();
                 // self.sync_readback_buffer(sx as u32, sy as u32, end_x as u32, end_y as u32);
@@ -1503,7 +1570,7 @@ impl HWRenderer {
             }
         }
         if self.current_blending != blending {
-            self.flush();
+            // self.flush();
             self.current_blending = blending;
         }
         self.current_z += (Z_COEF as f32);
@@ -1662,7 +1729,7 @@ impl HWRenderer {
         self.num_triangles = 0;
 
         self.frame_num += 1;
-        self.vertices.clear();
+        // self.vertices.clear();
         // self.sync_readback_buffer(0, 0, 1024, 512);
 
         if full_ram {
@@ -1801,7 +1868,7 @@ impl HWRenderer {
     }
 
     pub fn vram_to_cpu_copy(&mut self, top_left: (u16, u16), size: (u16, u16)) -> Vec<u32> {
-        self.flush();
+        // self.flush();
         if top_left.0 > 1023 || top_left.1 > 511 {
             return vec![];
         }
@@ -1857,7 +1924,7 @@ impl HWRenderer {
         let (sender, receiver) = crossbeam::channel::bounded(16);
         encoder.map_buffer_on_submit(&output_buffer, wgpu::MapMode::Read, .., move |res| {
             match res {
-                Ok(_) => {sender.send(()).expect("OK")}
+                Ok(_) => sender.send(()).expect("OK"),
                 Err(x) => println!(">>> error mapping buffer {}", x),
             };
         });
@@ -2010,7 +2077,7 @@ fn get_blending(transparency: u8, enabled: bool) -> Blending {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Copy, Clone)]
 pub enum Blending {
     // None,
     // Average,

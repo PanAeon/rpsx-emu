@@ -438,6 +438,7 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
 
                     var c = unpack_color(color);
 
+
                     if blend {
                         let tex_color = vec3<u32>(vec3(c.r * 255, c.g * 255, c.b * 255));
                         let vert_color = vec3<u32>(col * 255);

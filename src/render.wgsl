@@ -53,7 +53,7 @@ fn vert_main(in: VertexInput) -> VertexOutput {
 
     let color = in.color & 0x00FFFFFF;
 
-    out.clip_position = vec4<f32>(f32(in.position.x) / (f32(uniforms.scale) * 512.0) - 1.0, 1.0 -  f32(in.position.y) / (f32(uniforms.scale) *256.0),   1.0 - in.z, 1.0);
+    out.clip_position = vec4<f32>(f32(in.position.x) / (f32(uniforms.scale) * 512.0) - 1.0, 1.0 -  f32(in.position.y) / (f32(uniforms.scale) *256.0),   in.z, 1.0);
     // out.clip_position = vec4<f32>(f32(in.position.x), f32(in.position.y), 0.0, 1.0);
     out.vram_position = vec2<f32>(in.position); // + vec2<f32>(0.5);
 
@@ -167,8 +167,8 @@ fn get_color(in: VertexOutput) -> FragmentOutput {
     //     discard;
     // }
     // if ( current_pixel_stp == 0 && conf.target_stp == 1) {
-    if ( !mask_forced &&  conf.target_stp != current_pixel_stp) {
-        discard;
+    if ( conf.target_stp != current_pixel_stp) && (!mask_forced || conf.target_stp != 1 ) {
+           discard;
     }
     if is_semitrans(in) && c.w > 0.5 {
         return get_transparency(c, in);

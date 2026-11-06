@@ -15,7 +15,8 @@ use crate::{
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
 
-const VERT_BUFFER_SIZE: usize = 2048;
+const VERT_BUFFER_SIZE: usize = 8000;
+const Z_COEF: f32 = 1.0 / 2_000.0;
 
 #[repr(C)]
 struct RenderUniforms {
@@ -35,9 +36,8 @@ struct Vert {
     texture_window_mask: [u8; 2],
     texture_window_offset: [u8; 2],
     flags: u16,
-    z: f32
-    // _pad: u16, // draw_area_top_left: [u16;2],
-    // draw_area_bottom_right: [u16;2],
+    z: f32, // _pad: u16, // draw_area_top_left: [u16;2],
+            // draw_area_bottom_right: [u16;2],
 }
 impl Vert {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
@@ -87,8 +87,7 @@ impl Vert {
                     format: wgpu::VertexFormat::Uint8x2,
                 },
                 wgpu::VertexAttribute {
-                    offset: std::mem::offset_of!(Vert, z)
-                        as wgpu::BufferAddress,
+                    offset: std::mem::offset_of!(Vert, z) as wgpu::BufferAddress,
                     shader_location: 8,
                     format: wgpu::VertexFormat::Float32,
                 },
@@ -259,8 +258,9 @@ fn create_draw_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth24PlusStencil8,
             depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
-            stencil: wgpu::StencilState { // pass 1 pipeline (stp 0) TODO: global_masking_enabled
+            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+            stencil: wgpu::StencilState {
+                // pass 1 pipeline (stp 0) TODO: global_masking_enabled
                 front: wgpu::StencilFaceState {
                     compare: wgpu::CompareFunction::Always,
                     fail_op: wgpu::StencilOperation::Keep, // Drop pixel, leave stencil alone
@@ -315,8 +315,9 @@ fn create_draw_pipeline(
     let mask_disabled_stencil_state = Some(wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth24PlusStencil8,
         depth_write_enabled: Some(true),
-        depth_compare: Some(wgpu::CompareFunction::LessEqual),
-        stencil: wgpu::StencilState { // stage 2 (stp 1)
+        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+        stencil: wgpu::StencilState {
+            // stage 2 (stp 1)
             front: wgpu::StencilFaceState {
                 compare: wgpu::CompareFunction::Always, // always passes
                 fail_op: wgpu::StencilOperation::Keep,  // Drop pixel, leave stencil alone
@@ -383,8 +384,11 @@ fn create_draw_pipeline(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-            queue
-                .write_buffer(&uniforms_buffer, 0, bytemuck::cast_slice(&[scale as u32, 0_u32]));
+    queue.write_buffer(
+        &uniforms_buffer,
+        0,
+        bytemuck::cast_slice(&[scale as u32, 0_u32]),
+    );
     let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("texture bind_group"),
         layout: &texture_bind_group_layout,
@@ -470,10 +474,11 @@ pub struct HWRenderer {
     global_masking_enabled: bool,
     depth_texture_view: wgpu::TextureView,
     force_set_mask_bit: bool, // blit_texture: wgpu::Texture,
-                              // vram_blit_texture: wgpu::Texture,
-                              // output_buffer: wgpu::Buffer,
+    // vram_blit_texture: wgpu::Texture,
+    // output_buffer: wgpu::Buffer,
     current_z: f32,
-    scale: u32
+    scale: u32,
+    num_triangles: u32,
 }
 
 impl HWRenderer {
@@ -537,6 +542,7 @@ impl HWRenderer {
                 depth_texture_view,
                 current_z: 0.0,
                 scale,
+                num_triangles: 0,
             };
             let core_ids = core_affinity::get_core_ids().unwrap();
             let res = core_affinity::set_for_current(core_ids[1]);
@@ -674,12 +680,11 @@ impl HWRenderer {
 
     pub fn flush(&mut self) {
         if !self.vertices.is_empty() {
+            self.num_triangles += self.vertices.len() as u32 / 3;
             // first upload vertex buffer
             self.queue
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
 
-                 // self.global_masking_enabled=false; 
-                 // self.force_set_mask_bit=false; 
             if !self.force_set_mask_bit {
                 // --- PASS 1: Process and write pixels that have STP = 0 ---
 
@@ -698,9 +703,15 @@ impl HWRenderer {
                     //     wgpu::LoadOp::Load
                     // };
                     let zclearop = if self.clear_render_texture {
-                         wgpu::LoadOp::Clear(1.0)
+                        wgpu::LoadOp::Clear(0.0)
                     } else {
-                         wgpu::LoadOp::Load
+                        // wgpu::LoadOp::Clear(1.0)
+                        wgpu::LoadOp::Load
+                    };
+                    let clear_stencil = if self.clear_render_texture {
+                        wgpu::LoadOp::Clear(0)
+                    } else {
+                        wgpu::LoadOp::Load
                     };
                     let mut rpass = render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("render_rpass"),
@@ -722,7 +733,7 @@ impl HWRenderer {
                                 store: wgpu::StoreOp::Store,
                             }),
                             stencil_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
+                                load: clear_stencil,
                                 store: wgpu::StoreOp::Store,
                             }),
                         }),
@@ -745,8 +756,8 @@ impl HWRenderer {
                         bytemuck::cast_slice(&[0u32, self.force_set_mask_bit as u32]),
                     );
 
-                        // test for 0, clear for 0
-                        rpass.set_stencil_reference(0);
+                    // test for 0, clear for 0
+                    rpass.set_stencil_reference(0);
                     // match self.current_blending {
                     //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
                     //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
@@ -773,26 +784,26 @@ impl HWRenderer {
                     rpass.draw(0..self.vertices.len() as u32, 0..1);
                 }
                 self.profiler.resolve_queries(&mut render_encoder);
-                let error_scope = self.device.push_error_scope(
-                    wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
-                                                   // | wgpu::ErrorFilter::OutOfMemory,
-                );
+                // let error_scope = self.device.push_error_scope(
+                //     wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
+                //                                    // | wgpu::ErrorFilter::OutOfMemory,
+                // );
                 let idx = self.queue.submit(vec![render_encoder.finish()]);
 
-                let maybe_error = pollster::block_on(error_scope.pop());
-                if let Some(error) = maybe_error {
-                    match error {
-                        wgpu::Error::Validation { description, .. } => {
-                            println!("Validation error caught: {description}");
-                        }
-                        wgpu::Error::OutOfMemory { .. } => {
-                            println!("Out of memory!");
-                        }
-                        wgpu::Error::Internal { description, .. } => {
-                            println!("Internal error: {description}");
-                        }
-                    }
-                }
+                // let maybe_error = pollster::block_on(error_scope.pop());
+                // if let Some(error) = maybe_error {
+                //     match error {
+                //         wgpu::Error::Validation { description, .. } => {
+                //             println!("Validation error caught: {description}");
+                //         }
+                //         wgpu::Error::OutOfMemory { .. } => {
+                //             println!("Out of memory!");
+                //         }
+                //         wgpu::Error::Internal { description, .. } => {
+                //             println!("Internal error: {description}");
+                //         }
+                //     }
+                // }
 
                 // TODO: do we need sync here?
                 // self.device
@@ -808,135 +819,135 @@ impl HWRenderer {
 
             // --- PASS 2: Process and write pixels that have STP = 1 ---
 
+            // if z is not equal the second pass wipes out first pass entirely
             // for v in &mut self.vertices {
-            //     v.z += 0.5;
+            //     v.z += 0.41;
             // }
             // self.queue
             //     .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
-            let mut render_encoder =
-                self.device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("render_encoder2"),
-                    });
             {
-                let mut render_scope = self.profiler.scope("render", &mut render_encoder);
+                let mut render_encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("render_encoder2"),
+                        });
+                {
+                    let mut render_scope = self.profiler.scope("render", &mut render_encoder);
 
-                // self.clear_render_texture = false;
-                // let load_op = if self.clear_render_texture {
-                //     wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                // } else {
-                //     wgpu::LoadOp::Load
-                // };
-                let mut rpass = render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("render_rpass2"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.render_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_texture_view,
+                    // self.clear_render_texture = false;
+                    // let load_op = if self.clear_render_texture {
+                    //     wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                    // } else {
+                    //     wgpu::LoadOp::Load
+                    // };
+                    let mut rpass = render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("render_rpass2"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.render_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.depth_texture_view,
                             depth_ops: Some(wgpu::Operations {
                                 // load: wgpu::LoadOp::Clear(1.0),
                                 load: wgpu::LoadOp::Load,
                                 store: wgpu::StoreOp::Store,
                             }),
-                        stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
+                            stencil_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
                         }),
-                    }),
-                    ..Default::default()
-                });
+                        ..Default::default()
+                    });
 
                     let pipeline = match (&self.current_blending) {
                         (Blending::Add) => &self.addictive_pipeline_mask_disabled,
                         (Blending::Subtract) => &self.subtractive_pipeline_mask_disabled,
                     };
-                // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
-                //     (Blending::Add, true) => &self.addictive_pipeline,
-                //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
-                //     (Blending::Subtract, true) => &self.subtractive_pipeline,
-                //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
-                // };
-                rpass.set_pipeline(pipeline);
-            // Update your uniform buffer so WGSL knows to only pass `STP == 1` pixels
-                rpass.set_immediates(
-                    0,
-                    bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
-                );
+                    // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
+                    //     (Blending::Add, true) => &self.addictive_pipeline,
+                    //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
+                    //     (Blending::Subtract, true) => &self.subtractive_pipeline,
+                    //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
+                    // };
+                    rpass.set_pipeline(pipeline);
+                    rpass.set_immediates(
+                        0,
+                        bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
+                    );
 
-                // println!("masking enabled?: {}", self.global_masking_enabled);
-                if self.global_masking_enabled {
-                    // If masking is on, we still only draw if the existing VRAM stencil bit EQUALS 0...
-                    rpass.set_stencil_reference(0);
-                    // ...but because pass_op is REPLACE, if it succeeds, it will overwrite VRAM with 0!
-                    // Wait: We want VRAM to update to 1. WebGPU's stencil reference controls BOTH the comparison
-                    // value AND the replace value.
-                    // To fix this constraint under Masking = Enabled, you need a slightly split logic:
-                } else {
-                    // Masking off: Replace VRAM stencil with 1
-                    rpass.set_stencil_reference(1);
+                    if self.global_masking_enabled {
+                        println!("masking");
+                        // If masking is on, we still only draw if the existing VRAM stencil bit EQUALS 0...
+                        rpass.set_stencil_reference(0);
+                        // ...but because pass_op is REPLACE, if it succeeds, it will overwrite VRAM with 0!
+                        // Wait: We want VRAM to update to 1. WebGPU's stencil reference controls BOTH the comparison
+                        // value AND the replace value.
+                        // To fix this constraint under Masking = Enabled, you need a slightly split logic:
+                    } else {
+                        // Masking off: Replace VRAM stencil with 1
+                        rpass.set_stencil_reference(1);
+                    }
+                    // match self.current_blending {
+                    //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
+                    //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
+                    //     _ => {}
+                    // }
+                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    rpass.set_scissor_rect(
+                        self.drawing_area_top_left.0 as u32,
+                        self.drawing_area_top_left.1 as u32,
+                        min(
+                            1024 * self.scale,
+                            (1 + self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0)
+                                as u32,
+                        ),
+                        min(
+                            512 * self.scale,
+                            (1 + self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1)
+                                as u32,
+                        ),
+                    );
+                    // rpass.set_bind_group(0, &self.camera_bind_group, &[]);
+
+                    rpass.set_bind_group(0, &self.texture_bind_group, &[]);
+                    rpass.draw(0..self.vertices.len() as u32, 0..1);
                 }
-                // match self.current_blending {
-                //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
-                //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
-                //     _ => {}
+                self.profiler.resolve_queries(&mut render_encoder);
+                // let error_scope = self.device.push_error_scope(
+                //     wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
+                //                                    // | wgpu::ErrorFilter::OutOfMemory,
+                // );
+                let idx = self.queue.submit(vec![render_encoder.finish()]);
+
+                // let maybe_error = pollster::block_on(error_scope.pop());
+                // if let Some(error) = maybe_error {
+                //     match error {
+                //         wgpu::Error::Validation { description, .. } => {
+                //             println!("Validation error caught: {description}");
+                //         }
+                //         wgpu::Error::OutOfMemory { .. } => {
+                //             println!("Out of memory!");
+                //         }
+                //         wgpu::Error::Internal { description, .. } => {
+                //             println!("Internal error: {description}");
+                //         }
+                //     }
                 // }
-                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                rpass.set_scissor_rect(
-                    self.drawing_area_top_left.0 as u32,
-                    self.drawing_area_top_left.1 as u32,
-                    min(
-                        1024 * self.scale,
-                        (1 + self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0)
-                            as u32,
-                    ),
-                    min(
-                        512 * self.scale,
-                        (1 + self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1)
-                            as u32,
-                    ),
-                );
-                // rpass.set_bind_group(0, &self.camera_bind_group, &[]);
-
-                rpass.set_bind_group(0, &self.texture_bind_group, &[]);
-                rpass.draw(0..self.vertices.len() as u32, 0..1);
+                // self.device
+                //     .poll(wgpu::PollType::Wait {
+                //         submission_index: Some(idx),
+                //         timeout: None,
+                //     })
+                //     .expect("ok");
             }
-            self.profiler.resolve_queries(&mut render_encoder);
-            let error_scope = self.device.push_error_scope(
-                wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
-                                               // | wgpu::ErrorFilter::OutOfMemory,
-            );
-            let idx = self.queue.submit(vec![render_encoder.finish()]);
-            // self.device
-            //     .poll(wgpu::PollType::Wait {
-            //         submission_index: Some(idx),
-            //         timeout: None,
-            //     })
-            //     .expect("ok");
-            //
-            let maybe_error = pollster::block_on(error_scope.pop());
-            if let Some(error) = maybe_error {
-                match error {
-                    wgpu::Error::Validation { description, .. } => {
-                        println!("Validation error caught: {description}");
-                    }
-                    wgpu::Error::OutOfMemory { .. } => {
-                        println!("Out of memory!");
-                    }
-                    wgpu::Error::Internal { description, .. } => {
-                        println!("Internal error: {description}");
-                    }
-                }
-            }
-
             self.vertices.clear();
-            self.current_z =0.0;
         }
     }
 
@@ -954,7 +965,7 @@ impl HWRenderer {
         y1: i32,
         ctx: &RenderingContext,
     ) -> Option<(i32, i32, i32, i32)> {
-        if x1 - x0 > (1024 * self.scale as i32 -  1) || y1 - y0 > (512 * self.scale as i32 - 1) {
+        if x1 - x0 > (1024 * self.scale as i32 - 1) || y1 - y0 > (512 * self.scale as i32 - 1) {
             return None;
         }
         let l = ctx.drawing_area_left as i32 * self.scale as i32;
@@ -1002,7 +1013,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
-            z: self.current_z
+            z: self.current_z,
         });
         let v1 = (Vert {
             position: [min_x as i16, max_y as i16],
@@ -1014,8 +1025,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
-            z: self.current_z
-            // _pad: 0,
+            z: self.current_z, // _pad: 0,
         });
         let v2 = (Vert {
             position: [max_x as i16, min_y as i16],
@@ -1027,8 +1037,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
-            z: self.current_z
-            // _pad: 0,
+            z: self.current_z, // _pad: 0,
         });
         let v3 = (Vert {
             position: [min_x as i16, max_y as i16],
@@ -1040,8 +1049,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
-            z: self.current_z
-            // _pad: 0,
+            z: self.current_z, // _pad: 0,
         });
         let v4 = (Vert {
             position: [max_x as i16, max_y as i16],
@@ -1053,8 +1061,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
-            z: self.current_z
-            // _pad: 0,
+            z: self.current_z, // _pad: 0,
         });
         let v5 = (Vert {
             position: [max_x as i16, min_y as i16],
@@ -1066,8 +1073,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
-            z: self.current_z
-            // _pad: 0,
+            z: self.current_z, // _pad: 0,
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
@@ -1223,7 +1229,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
+            z: self.current_z,
         });
         let v1 = (Vert {
             position: [vs[1].x as i16, vs[1].y as i16],
@@ -1235,8 +1241,7 @@ impl HWRenderer {
             texpage_base,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
-            // _pad: 0,
+            z: self.current_z, // _pad: 0,
         });
         let v2 = (Vert {
             position: [vs[2].x as i16, vs[2].y as i16],
@@ -1248,8 +1253,7 @@ impl HWRenderer {
             texpage_base,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
-            // _pad: 0,
+            z: self.current_z, // _pad: 0,
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         self.vertices.push(v0);
@@ -1318,7 +1322,6 @@ impl HWRenderer {
             TextureDepth::T15Bit => 2,
         };
 
-
         // if textured {
         //    println!("render textured rectangle, uv: {}x{}, size: {}x{}, depth: {}", uv[0], uv[1], side.x, side.y, texture_depth);
         // }
@@ -1334,7 +1337,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
+            z: self.current_z,
         });
         let v1 = (Vert {
             position: [v.x as i16, v.y as i16 + side.y as i16],
@@ -1346,7 +1349,7 @@ impl HWRenderer {
             texpage_base,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
+            z: self.current_z,
         });
         let v2 = (Vert {
             position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
@@ -1359,7 +1362,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
+            z: self.current_z,
         });
 
         let v3 = (Vert {
@@ -1373,7 +1376,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
+            z: self.current_z,
         });
         let v4 = (Vert {
             position: [v.x as i16 + side.x as i16, v.y as i16],
@@ -1386,7 +1389,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
+            z: self.current_z,
         });
         let v5 = (Vert {
             position: [v.x as i16, v.y as i16],
@@ -1399,7 +1402,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
-            z: self.current_z
+            z: self.current_z,
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
@@ -1491,7 +1494,7 @@ impl HWRenderer {
         transparency: u8,
     ) {
         let blending = get_blending(transparency, semi_transparent);
-        if semi_transparent {
+        if self.global_masking_enabled {
             if self.dirty_region.intersects(sx, sy, end_x, end_y) {
                 // self.flush();
                 // self.sync_readback_buffer(sx as u32, sy as u32, end_x as u32, end_y as u32);
@@ -1503,7 +1506,7 @@ impl HWRenderer {
             self.flush();
             self.current_blending = blending;
         }
-        self.current_z += 1.0 / (VERT_BUFFER_SIZE as f32);
+        self.current_z += (Z_COEF as f32);
     }
 
     pub fn sync_readback_buffer(&mut self, sx: u32, sy: u32, end_x: u32, end_y: u32) {
@@ -1571,7 +1574,6 @@ impl HWRenderer {
     #[allow(dead_code)]
     pub fn print_profiling_results(&self) {
         print!("\x1B[2J\x1B[1;1H"); // Clear terminal and put cursor to first row first column
-        println!("Welcome to wgpu_profiler demo!");
         println!();
         // println!("Enabled device features: {enabled_features:?}");
         // println!();
@@ -1611,6 +1613,7 @@ impl HWRenderer {
                     // }
                 }
                 println!("invocations: {}", results.len());
+                println!("num triangles: {}", self.num_triangles);
             }
             None => println!("No profiling results available yet!"),
         }
@@ -1635,7 +1638,15 @@ impl HWRenderer {
         // here is a good place to copy our render texture to vram texture...
 
         self.flush();
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("ok");
         self.clear_render_texture = true;
+
+        self.current_z = 0.0;
         self.profiler.end_frame().unwrap();
         let results = self
             .profiler
@@ -1643,18 +1654,25 @@ impl HWRenderer {
 
         self.update_results(results);
         if self.profile_gpu {
-            if self.frame_num == 60 {
+            if self.frame_num == 61 {
                 self.print_profiling_results();
                 self.frame_num = 0;
             }
         }
+        self.num_triangles = 0;
 
         self.frame_num += 1;
-        // self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).expect("ok");
+        self.vertices.clear();
         // self.sync_readback_buffer(0, 0, 1024, 512);
 
         if full_ram {
-            (1024 * self.scale as usize, 512 * self.scale as usize, 0, 0, ctx.display_depth)
+            (
+                1024 * self.scale as usize,
+                512 * self.scale as usize,
+                0,
+                0,
+                ctx.display_depth,
+            )
         } else {
             let (sx, sy, width, height, interlaced) = (
                 ctx.display_vram_x_start as usize,
@@ -1665,79 +1683,6 @@ impl HWRenderer {
             );
             (width, height, sx, sy, ctx.display_depth)
         }
-        // let mut mutex = framebuffer.lock().unwrap();
-        // let output_frame_buffer: &mut [Color] = mutex.as_mut();
-        //
-        // if ctx.display_disabled {
-        //     for y in 0..16 {
-        //         for x in 0..16 {
-        //             output_frame_buffer[1024 * y + x] = Color { r: 0, g: 0, b: 0, a: 255 };
-        //         }
-        //     }
-        //     return (16, 16);
-        // }
-        // if full_ram {
-        //     for y in 0..512 {
-        //         for x in 0..1024 {
-        //             let vram_addr = 2 * (1024 * y + x);
-        //             let pixel =
-        //                 u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
-        //
-        //             let r = convert_5bit_to_8bit(pixel & 0x1F);
-        //             let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-        //             let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
-        //
-        //             output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-        //         }
-        //     }
-        //     (1024, 512)
-        // } else {
-        //     let (sx, sy, width, height, interlaced) = (
-        //         ctx.display_vram_x_start as usize,
-        //         ctx.display_vram_y_start as usize,
-        //         ctx.hres.into_pixels(),
-        //         ctx.vres.into_pixels(),
-        //         ctx.interlaced,
-        //     );
-        //     match ctx.display_depth {
-        //         DisplayDepth::D15Bits => {
-        //             for y in 0..height {
-        //                 for x in 0..width {
-        //                     let vram_addr = 2 * (1024 * (sy + y) + (sx + x));
-        //                     let pixel = u16::from_le_bytes([
-        //                         self.vram[vram_addr],
-        //                         self.vram[vram_addr + 1],
-        //                     ]);
-        //
-        //                     let r = convert_5bit_to_8bit(pixel & 0x1F);
-        //                     let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-        //                     let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
-        //
-        //                 output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-        //             }
-        //         }
-        //     }
-        //     DisplayDepth::D24Bits => {
-        //         for y in 0..height {
-        //             for x in 0..width {
-        //                 let vram_addr = 2 * (1024 * (y + sy)) + 3 * sx + 3 * x;
-        //                 let r = self.vram[vram_addr];
-        //                 let g = self.vram[vram_addr + 1];
-        //                 let b = self.vram[vram_addr + 2];
-        //
-        //                 output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-        //             }
-        //         }
-        //     }
-        // };
-        // // black out lines outside of display field (wrong impl)
-        // let vrange = (ctx.display_line_end - ctx.display_line_start) as usize;
-        // if height >= vrange {
-        //     let starting_row = vrange * 1024 * if interlaced { 2 } else { 1 };
-        //     output_frame_buffer[starting_row..].fill(Color { r: 0, g: 0, b: 0, a: 255});
-        // }
-        // (width, height)
-        // }
     }
 
     pub fn cpu_to_vram_copy(

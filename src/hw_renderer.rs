@@ -650,7 +650,7 @@ impl HWRenderer {
                         top_left,
                         bottom_right,
                     } => {
-                        // renderer.flush();
+                        renderer.flush();
                         renderer.drawing_area_top_left.0 = top_left.0 * scale as u16;
                         renderer.drawing_area_top_left.1 = top_left.1;
                         renderer.drawing_area_bottom_right.0 = bottom_right.0 * scale as u16;
@@ -660,7 +660,7 @@ impl HWRenderer {
                         preserve_masked_pixels,
                         force_set_mask_bit,
                     } => {
-                        // renderer.flush();
+                        renderer.flush();
                         renderer.global_masking_enabled = *preserve_masked_pixels;
                         renderer.force_set_mask_bit = *force_set_mask_bit;
                     }
@@ -678,8 +678,8 @@ impl HWRenderer {
             self.queue
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
 
-                 self.global_masking_enabled=false; 
-                 self.force_set_mask_bit=false; 
+                 // self.global_masking_enabled=false; 
+                 // self.force_set_mask_bit=false; 
             if !self.force_set_mask_bit {
                 // --- PASS 1: Process and write pixels that have STP = 0 ---
 
@@ -808,6 +808,11 @@ impl HWRenderer {
 
             // --- PASS 2: Process and write pixels that have STP = 1 ---
 
+            // for v in &mut self.vertices {
+            //     v.z += 0.5;
+            // }
+            // self.queue
+            //     .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
             let mut render_encoder =
                 self.device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {

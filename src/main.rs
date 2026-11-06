@@ -318,9 +318,9 @@ impl State {
             })
             .await?;
 
-        // device.on_uncaptured_error(Arc::new(|error| {
-        //     eprintln!("Uncaptured wgpu error: {:#?}", error);
-        // }));
+        device.on_uncaptured_error(Arc::new(|error| {
+            eprintln!("Uncaptured wgpu error: {:#?}", error);
+        }));
 
         let surface_caps = surface.get_capabilities(&adapter);
 
@@ -346,7 +346,7 @@ impl State {
             color_space: wgpu::wgt::SurfaceColorSpace::Auto,
         };
 
-        let scale: u32 = 2; 
+        let scale: u32 = 1; 
         let texture_size = wgpu::Extent3d {
             width: 1024 * scale,
             height: 512 * scale,

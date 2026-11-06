@@ -102,7 +102,6 @@ fn get_transparency(v: Vertex) -> u32 {
 @group(0) @binding(2) var<storage, read> uniforms: Uniforms;
 @group(0) @binding(3) var<storage, read_write> bins_buffer: array<u32>;
 
-
 fn draw_rectangle(v1: Vertex, v2: Vertex, bounds: vec4<i32>) {
     let is_textured = get_textured(v1);
     // if is_textured { 
@@ -280,7 +279,6 @@ fn draw_line_sdf(v0: Vertex, v1: Vertex, bounds: vec4<i32>) {
             let dist = sdSegment(vec2f(vec2(x, y)), vec2f(p0), vec2f(p1));
             // let intensity = 1.0 - smoothstep(thickness, thickness + 0.002, dist);
 
-
             if dist <= 0.1 {
                 let color = pack_color(vec3(1.0, 1.0, 1.0), false);
                 textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(color, 0, 0, 0));
@@ -309,41 +307,38 @@ fn draw_line(v0: Vertex, v1: Vertex, bounds: vec4<i32>) {
 
     var err = dx + dy;
 
-        // let mut err = dx + dy;
-        var x = x0;
-        var y = y0;
+    // let mut err = dx + dy;
+    var x = x0;
+    var y = y0;
 
     let color = pack_color(vec3(1.0, 1.0, 1.0), false);
 
-        loop {
-            // let vram_addr = 2 * (y * 1024 + x) as usize;
-            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(color, 0, 0, 0));
+    loop {
+        // let vram_addr = 2 * (y * 1024 + x) as usize;
+        textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(color, 0, 0, 0));
 
+        // self.vram_write_color(vram_addr, pixel, ctx);
+        // let [lsb, msb] = pixel.to_le_bytes();
 
-            // self.vram_write_color(vram_addr, pixel, ctx);
-            // let [lsb, msb] = pixel.to_le_bytes();
+        // self.vram[vram_addr] = lsb;
+        // self.vram[vram_addr + 1] = msb;
 
-            // self.vram[vram_addr] = lsb;
-            // self.vram[vram_addr + 1] = msb;
-
-            let e2 = 2 * err;
-            if e2 >= dy {
-                if x == x1 {
-                    break;
-                }
-                err += dy;
-                x += sx;
+        let e2 = 2 * err;
+        if e2 >= dy {
+            if x == x1 {
+                break;
             }
-            if e2 <= dx {
-                if y == y1 {
-                    break;
-                }
-                err += dx;
-                y += sy;
-            }
+            err += dy;
+            x += sx;
         }
-
-
+        if e2 <= dx {
+            if y == y1 {
+                break;
+            }
+            err += dx;
+            y += sy;
+        }
+    }
 }
 
 fn draw_triangle_wireframe(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i32>) {
@@ -408,7 +403,7 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                 //     continue;
                 // }
                 let lambda = barycentric(p0, p1, p2, x, y);
-                 // if lambda.x > bias2 && lambda.y > bias3 && lambda.z > bias1 {
+                // if lambda.x > bias2 && lambda.y > bias3 && lambda.z > bias1 {
 
                 let col = interpolate_color(lambda, c0, c1, c2);
 
@@ -451,12 +446,6 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                         c = vec4<f32>(vec3<f32>(color_uint) / 255.0, c.w);
                     }
 
-                    // if semi_trans && c.w > 0.5 {
-                    if semi_trans && c.w > 0.5 {
-                        let prev = readExistingColor(vec2(x, y));
-                        c = blend_with_background(c, prev, transparency);
-                    }
-
                     if dither {
                         c *= 255;
                         var dither_pos: vec2<i32>;
@@ -467,6 +456,16 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                         c.z += f32(dither_value);
                         c = clamp(c, vec4(0), vec4(0xff));
                         c /= 255;
+                    }
+
+                    // if semi_trans && c.w > 0.5 {
+                    if semi_trans {
+                        if c.w > 0.5 {
+                            let prev = readExistingColor(vec2(x, y));
+                            c = blend_with_background(c, prev, transparency);
+                        } else {
+                            continue;
+                        }
                     }
 
                     let pixel = pack_color(c.xyz, c.w > 0.5 || force_set_mask_bit);
@@ -482,10 +481,6 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                     }
                 } else {
                     var c = vec4<f32>(col, 0.0);
-                    if semi_trans {
-                        let prev = readExistingColor(vec2(x, y));
-                        c = blend_with_background(c, prev, transparency);
-                    }
                     if dither {
                         c *= 255;
                         var dither_pos: vec2<i32>;
@@ -497,7 +492,11 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                         c = clamp(c, vec4(0), vec4(0xff));
                         c /= 255;
                     }
-                    let pixel = pack_color(c.xyz, force_set_mask_bit);
+                    if semi_trans {
+                        let prev = readExistingColor(vec2(x, y));
+                        c = blend_with_background(c, prev, transparency);
+                    }
+                    let pixel = pack_color(c.xyz, true);
                     if preserve_masked_pixels {
                         let prev = read_16bit(vec2(x, y));
                         if ((prev) & 0x8000) != 1 {
@@ -1248,7 +1247,6 @@ fn main(
     //         cache[(j - bounds.y) * 8 + i - bounds.x] = packed;
     //     }
     // }
-
 
     let bin_idx = (bin.y * 128 + bin.x);
     let num_vertices = bins_buffer[bin_idx];

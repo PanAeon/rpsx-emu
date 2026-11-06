@@ -346,9 +346,10 @@ impl State {
             color_space: wgpu::wgt::SurfaceColorSpace::Auto,
         };
 
+        let scale: u32 = 2; 
         let texture_size = wgpu::Extent3d {
-            width: 1024,
-            height: 512,
+            width: 1024 * scale,
+            height: 512 * scale,
             // All textures are stored as 3D, we represent our 2D texture
             // by setting depth to 1.
             depth_or_array_layers: 1,
@@ -661,6 +662,7 @@ impl State {
                     config.format,
                     render_texture.clone(),
                     cli.profilegpu,
+                    scale,
                 )
             } else {
                 compute_renderer::ComputeRenderer::create(
@@ -672,7 +674,7 @@ impl State {
                 )
             }
         };
-        let gpu = gpu::Gpu::new(sender, receiver, handle);
+        let gpu = gpu::Gpu::new(sender, receiver, handle, scale);
         let block_cache = block_cache::BlockCache::new();
         let cpu = dynarec::Dynarec::new();
         let system = system::System::new(

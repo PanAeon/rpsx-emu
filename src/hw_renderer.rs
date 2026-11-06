@@ -35,6 +35,7 @@ struct Vert {
     texture_window_mask: [u8; 2],
     texture_window_offset: [u8; 2],
     flags: u16,
+    z: f32
     // _pad: u16, // draw_area_top_left: [u16;2],
     // draw_area_bottom_right: [u16;2],
 }
@@ -85,6 +86,12 @@ impl Vert {
                     shader_location: 7,
                     format: wgpu::VertexFormat::Uint8x2,
                 },
+                wgpu::VertexAttribute {
+                    offset: std::mem::offset_of!(Vert, z)
+                        as wgpu::BufferAddress,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Float32,
+                },
             ],
         }
     }
@@ -104,6 +111,7 @@ fn create_draw_pipeline(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     display_format: wgpu::TextureFormat,
+    scale: u32,
 ) -> (
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
@@ -118,8 +126,8 @@ fn create_draw_pipeline(
 ) {
     let vram_texture = device.create_texture(&wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
-            width: 1024,
-            height: 512,
+            width: 1024 * scale,
+            height: 512 * scale,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1, // We'll talk about this a little later
@@ -140,8 +148,8 @@ fn create_draw_pipeline(
 
     let blit_texture = device.create_texture(&wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
-            width: 1024,
-            height: 512,
+            width: 1024 * scale,
+            height: 512 * scale,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1, // We'll talk about this a little later
@@ -249,9 +257,9 @@ fn create_draw_pipeline(
             conservative: false,
         },
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Stencil8,
-            depth_write_enabled: None,
-            depth_compare: Some(wgpu::CompareFunction::Always),
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: wgpu::StencilState { // pass 1 pipeline (stp 0) TODO: global_masking_enabled
                 front: wgpu::StencilFaceState {
                     compare: wgpu::CompareFunction::Always,
@@ -305,9 +313,9 @@ fn create_draw_pipeline(
     let mut addictive_descriptor_mask_disabled = addictive_descriptor.clone();
 
     let mask_disabled_stencil_state = Some(wgpu::DepthStencilState {
-        format: wgpu::TextureFormat::Stencil8,
-        depth_write_enabled: None,
-        depth_compare: Some(wgpu::CompareFunction::Always),
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: Some(true),
+        depth_compare: Some(wgpu::CompareFunction::LessEqual),
         stencil: wgpu::StencilState { // stage 2 (stp 1)
             front: wgpu::StencilFaceState {
                 compare: wgpu::CompareFunction::Always, // always passes
@@ -375,6 +383,8 @@ fn create_draw_pipeline(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+            queue
+                .write_buffer(&uniforms_buffer, 0, bytemuck::cast_slice(&[scale as u32, 0_u32]));
     let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("texture bind_group"),
         layout: &texture_bind_group_layout,
@@ -392,14 +402,14 @@ fn create_draw_pipeline(
 
     let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
-            width: 1024,
-            height: 512,
+            width: 1024 * scale,
+            height: 512 * scale,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1, // We'll talk about this a little later
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Stencil8,
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
         // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
         // COPY_DST means that we want to copy data to this texture
         usage: wgpu::TextureUsages::COPY_DST
@@ -408,7 +418,7 @@ fn create_draw_pipeline(
         // | wgpu::TextureUsages::TEXTURE_BINDING,
         // | wgpu::TextureUsages::STORAGE_BINDING,
         label: Some("depth texture"),
-        view_formats: &[wgpu::TextureFormat::Stencil8],
+        view_formats: &[wgpu::TextureFormat::Depth24PlusStencil8],
     });
     let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -462,6 +472,8 @@ pub struct HWRenderer {
     force_set_mask_bit: bool, // blit_texture: wgpu::Texture,
                               // vram_blit_texture: wgpu::Texture,
                               // output_buffer: wgpu::Buffer,
+    current_z: f32,
+    scale: u32
 }
 
 impl HWRenderer {
@@ -471,6 +483,7 @@ impl HWRenderer {
         display_format: wgpu::TextureFormat,
         render_texture: wgpu::Texture,
         profile_gpu: bool,
+        scale: u32,
     ) -> (
         Sender<RendererMsg>,
         Receiver<RendererResponse>,
@@ -490,7 +503,7 @@ impl HWRenderer {
             uniforms_buffer,
             texture_bind_group,
             depth_texture_view,
-        ) = create_draw_pipeline(&device, &queue, display_format);
+        ) = create_draw_pipeline(&device, &queue, display_format, scale);
         let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let profiler = GpuProfiler::new(&device, GpuProfilerSettings::default()).unwrap();
 
@@ -522,6 +535,8 @@ impl HWRenderer {
                 global_masking_enabled: false,
                 force_set_mask_bit: false,
                 depth_texture_view,
+                current_z: 0.0,
+                scale,
             };
             let core_ids = core_affinity::get_core_ids().unwrap();
             let res = core_affinity::set_for_current(core_ids[1]);
@@ -635,15 +650,17 @@ impl HWRenderer {
                         top_left,
                         bottom_right,
                     } => {
-                        renderer.flush();
-                        renderer.drawing_area_top_left = *top_left;
-                        renderer.drawing_area_bottom_right = *bottom_right;
+                        // renderer.flush();
+                        renderer.drawing_area_top_left.0 = top_left.0 * scale as u16;
+                        renderer.drawing_area_top_left.1 = top_left.1;
+                        renderer.drawing_area_bottom_right.0 = bottom_right.0 * scale as u16;
+                        renderer.drawing_area_bottom_right.1 = bottom_right.1 * scale as u16;
                     }
                     RendererMsg::PreservedMaskedPixelsChanged {
                         preserve_masked_pixels,
                         force_set_mask_bit,
                     } => {
-                        renderer.flush();
+                        // renderer.flush();
                         renderer.global_masking_enabled = *preserve_masked_pixels;
                         renderer.force_set_mask_bit = *force_set_mask_bit;
                     }
@@ -680,6 +697,11 @@ impl HWRenderer {
                     // } else {
                     //     wgpu::LoadOp::Load
                     // };
+                    let zclearop = if self.clear_render_texture {
+                         wgpu::LoadOp::Clear(1.0)
+                    } else {
+                         wgpu::LoadOp::Load
+                    };
                     let mut rpass = render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("render_rpass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -693,7 +715,12 @@ impl HWRenderer {
                         })],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view: &self.depth_texture_view,
-                            depth_ops: None,
+                            depth_ops: Some(wgpu::Operations {
+                                load: zclearop,
+                                // load: wgpu::LoadOp::Clear(1.0),
+                                // load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
                             stencil_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
                                 store: wgpu::StoreOp::Store,
@@ -715,11 +742,11 @@ impl HWRenderer {
                     // Update your uniform buffer so WGSL knows to only pass `STP == 0` pixels
                     rpass.set_immediates(
                         0,
-                        bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
+                        bytemuck::cast_slice(&[0u32, self.force_set_mask_bit as u32]),
                     );
 
                         // test for 0, clear for 0
-                        rpass.set_stencil_reference(1);
+                        rpass.set_stencil_reference(0);
                     // match self.current_blending {
                     //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
                     //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
@@ -730,12 +757,12 @@ impl HWRenderer {
                         self.drawing_area_top_left.0 as u32,
                         self.drawing_area_top_left.1 as u32,
                         min(
-                            1024,
+                            1024 * self.scale,
                             (1 + self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0)
                                 as u32,
                         ),
                         min(
-                            512,
+                            512 * self.scale,
                             (1 + self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1)
                                 as u32,
                         ),
@@ -808,7 +835,11 @@ impl HWRenderer {
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view: &self.depth_texture_view,
-                        depth_ops: None,
+                            depth_ops: Some(wgpu::Operations {
+                                // load: wgpu::LoadOp::Clear(1.0),
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
                         stencil_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
@@ -831,7 +862,7 @@ impl HWRenderer {
             // Update your uniform buffer so WGSL knows to only pass `STP == 1` pixels
                 rpass.set_immediates(
                     0,
-                    bytemuck::cast_slice(&[0u32, self.force_set_mask_bit as u32]),
+                    bytemuck::cast_slice(&[1u32, self.force_set_mask_bit as u32]),
                 );
 
                 // println!("masking enabled?: {}", self.global_masking_enabled);
@@ -844,7 +875,7 @@ impl HWRenderer {
                     // To fix this constraint under Masking = Enabled, you need a slightly split logic:
                 } else {
                     // Masking off: Replace VRAM stencil with 1
-                    rpass.set_stencil_reference(0);
+                    rpass.set_stencil_reference(1);
                 }
                 // match self.current_blending {
                 //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
@@ -856,12 +887,12 @@ impl HWRenderer {
                     self.drawing_area_top_left.0 as u32,
                     self.drawing_area_top_left.1 as u32,
                     min(
-                        1024,
+                        1024 * self.scale,
                         (1 + self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0)
                             as u32,
                     ),
                     min(
-                        512,
+                        512 * self.scale,
                         (1 + self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1)
                             as u32,
                     ),
@@ -900,6 +931,7 @@ impl HWRenderer {
             }
 
             self.vertices.clear();
+            self.current_z =0.0;
         }
     }
 
@@ -917,13 +949,13 @@ impl HWRenderer {
         y1: i32,
         ctx: &RenderingContext,
     ) -> Option<(i32, i32, i32, i32)> {
-        if x1 - x0 > 1023 || y1 - y0 > 511 {
+        if x1 - x0 > (1024 * self.scale as i32 -  1) || y1 - y0 > (512 * self.scale as i32 - 1) {
             return None;
         }
-        let l = ctx.drawing_area_left as i32;
-        let t = ctx.drawing_area_top as i32;
-        let b = ctx.drawing_area_bottom as i32;
-        let r = ctx.drawing_area_right as i32;
+        let l = ctx.drawing_area_left as i32 * self.scale as i32;
+        let t = ctx.drawing_area_top as i32 * self.scale as i32;
+        let b = ctx.drawing_area_bottom as i32 * self.scale as i32;
+        let r = ctx.drawing_area_right as i32 * self.scale as i32;
 
         if x1 < l || x0 > r || y1 < t || y0 > b {
             return None;
@@ -936,10 +968,10 @@ impl HWRenderer {
             x: width,
             y: height,
         } = side;
-        let min_x = v.x.max(0) as usize;
-        let min_y = v.y.max(0) as usize;
-        let max_x = (v.x + width).min(0x400) as usize;
-        let max_y = (v.y + height).min(0x200) as usize;
+        let min_x = (v.x.max(0) as usize) * self.scale as usize;
+        let min_y = (v.y.max(0) as usize) * self.scale as usize;
+        let max_x = ((v.x + width).min(0x400) as usize) * self.scale as usize;
+        let max_y = ((v.y + height).min(0x200) as usize) * self.scale as usize;
 
         self.prepare_draw(
             false,
@@ -965,6 +997,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
+            z: self.current_z
         });
         let v1 = (Vert {
             position: [min_x as i16, max_y as i16],
@@ -976,6 +1009,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
+            z: self.current_z
             // _pad: 0,
         });
         let v2 = (Vert {
@@ -988,6 +1022,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
+            z: self.current_z
             // _pad: 0,
         });
         let v3 = (Vert {
@@ -1000,6 +1035,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
+            z: self.current_z
             // _pad: 0,
         });
         let v4 = (Vert {
@@ -1012,6 +1048,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
+            z: self.current_z
             // _pad: 0,
         });
         let v5 = (Vert {
@@ -1024,6 +1061,7 @@ impl HWRenderer {
             texpage_base: [0, 0],
             texture_window_mask: [0, 0],
             texture_window_offset: [0, 0],
+            z: self.current_z
             // _pad: 0,
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
@@ -1041,10 +1079,14 @@ impl HWRenderer {
         shaded: bool,
         ctx: &RenderingContext,
     ) {
-        v0.x += ctx.drawing_x_offset as i32;
-        v0.y += ctx.drawing_y_offset as i32;
-        v1.x += ctx.drawing_x_offset as i32;
-        v1.y += ctx.drawing_y_offset as i32;
+        v0.x *= self.scale as i32;
+        v0.y *= self.scale as i32;
+        v1.x *= self.scale as i32;
+        v1.y *= self.scale as i32;
+        v0.x += ctx.drawing_x_offset as i32 * self.scale as i32;
+        v0.y += ctx.drawing_y_offset as i32 * self.scale as i32;
+        v1.x += ctx.drawing_x_offset as i32 * self.scale as i32;
+        v1.y += ctx.drawing_y_offset as i32 * self.scale as i32;
 
         let Some((x0, y0, x1, y1)) = self.clip_rect(v0.x, v0.y, v1.x, v1.y, ctx) else {
             return;
@@ -1065,14 +1107,22 @@ impl HWRenderer {
         is_triangle: bool,
         ctx: &RenderingContext,
     ) {
-        vs[0].x += ctx.drawing_x_offset as i32;
-        vs[0].y += ctx.drawing_y_offset as i32;
-        vs[1].x += ctx.drawing_x_offset as i32;
-        vs[1].y += ctx.drawing_y_offset as i32;
-        vs[2].x += ctx.drawing_x_offset as i32;
-        vs[2].y += ctx.drawing_y_offset as i32;
-        vs[3].x += ctx.drawing_x_offset as i32;
-        vs[3].y += ctx.drawing_y_offset as i32;
+        vs[0].x *= self.scale as i32;
+        vs[0].y *= self.scale as i32;
+        vs[1].x *= self.scale as i32;
+        vs[1].y *= self.scale as i32;
+        vs[2].x *= self.scale as i32;
+        vs[2].y *= self.scale as i32;
+        vs[3].x *= self.scale as i32;
+        vs[3].y *= self.scale as i32;
+        vs[0].x += ctx.drawing_x_offset as i32 * self.scale as i32;
+        vs[0].y += ctx.drawing_y_offset as i32 * self.scale as i32;
+        vs[1].x += ctx.drawing_x_offset as i32 * self.scale as i32;
+        vs[1].y += ctx.drawing_y_offset as i32 * self.scale as i32;
+        vs[2].x += ctx.drawing_x_offset as i32 * self.scale as i32;
+        vs[2].y += ctx.drawing_y_offset as i32 * self.scale as i32;
+        vs[3].x += ctx.drawing_x_offset as i32 * self.scale as i32;
+        vs[3].y += ctx.drawing_y_offset as i32 * self.scale as i32;
 
         // bounding box
         // FIXME: culling should apply individually to each triangle
@@ -1168,6 +1218,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
         });
         let v1 = (Vert {
             position: [vs[1].x as i16, vs[1].y as i16],
@@ -1179,6 +1230,7 @@ impl HWRenderer {
             texpage_base,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
             // _pad: 0,
         });
         let v2 = (Vert {
@@ -1191,6 +1243,7 @@ impl HWRenderer {
             texpage_base,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
             // _pad: 0,
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
@@ -1203,7 +1256,7 @@ impl HWRenderer {
     pub fn render_rectangle(
         &mut self,
         mut v: Vertex,
-        side: Vertex,
+        mut side: Vertex,
         color: Colour,
         clut: u16,
         uv: [u16; 2],
@@ -1212,8 +1265,15 @@ impl HWRenderer {
         textured: bool,
         ctx: &RenderingContext,
     ) {
-        v.x += ctx.drawing_x_offset as i32;
-        v.y += ctx.drawing_y_offset as i32;
+        let tex_size_x = (side.x) as u16;
+        let tex_size_y = (side.y) as u16;
+
+        v.x *= self.scale as i32;
+        v.y *= self.scale as i32;
+        side.x *= self.scale as i32;
+        side.y *= self.scale as i32;
+        v.x += ctx.drawing_x_offset as i32 * self.scale as i32;
+        v.y += ctx.drawing_y_offset as i32 * self.scale as i32;
 
         let Some((min_x, min_y, max_x, max_y)) =
             self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
@@ -1253,8 +1313,6 @@ impl HWRenderer {
             TextureDepth::T15Bit => 2,
         };
 
-        let tex_size_x = (side.x) as u16;
-        let tex_size_y = (side.y) as u16;
 
         // if textured {
         //    println!("render textured rectangle, uv: {}x{}, size: {}x{}, depth: {}", uv[0], uv[1], side.x, side.y, texture_depth);
@@ -1271,6 +1329,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
         });
         let v1 = (Vert {
             position: [v.x as i16, v.y as i16 + side.y as i16],
@@ -1282,6 +1341,7 @@ impl HWRenderer {
             texpage_base,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
         });
         let v2 = (Vert {
             position: [v.x as i16 + side.x as i16, v.y as i16 + side.y as i16],
@@ -1294,6 +1354,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
         });
 
         let v3 = (Vert {
@@ -1307,6 +1368,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
         });
         let v4 = (Vert {
             position: [v.x as i16 + side.x as i16, v.y as i16],
@@ -1319,6 +1381,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
         });
         let v5 = (Vert {
             position: [v.x as i16, v.y as i16],
@@ -1331,6 +1394,7 @@ impl HWRenderer {
             // _pad: 0,
             texture_window_mask: [ctx.texture_window_x_mask, ctx.texture_window_y_mask],
             texture_window_offset: [ctx.texture_window_x_offset, ctx.texture_window_y_offset],
+            z: self.current_z
         });
         let (v0, v1, v2) = ensure_vertex_order(v0, v1, v2);
         let (v3, v4, v5) = ensure_vertex_order(v3, v4, v5);
@@ -1339,7 +1403,7 @@ impl HWRenderer {
 
     // TODO: The transfer is affected by Mask setting.
     pub fn vram2vram_blit(&mut self, src: Vertex, dst: Vertex, size: Vertex) {
-        self.flush();
+        // self.flush();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1434,6 +1498,7 @@ impl HWRenderer {
             self.flush();
             self.current_blending = blending;
         }
+        self.current_z += 1.0 / (VERT_BUFFER_SIZE as f32);
     }
 
     pub fn sync_readback_buffer(&mut self, sx: u32, sy: u32, end_x: u32, end_y: u32) {
@@ -1584,7 +1649,7 @@ impl HWRenderer {
         // self.sync_readback_buffer(0, 0, 1024, 512);
 
         if full_ram {
-            (1024, 512, 0, 0, ctx.display_depth)
+            (1024 * self.scale as usize, 512 * self.scale as usize, 0, 0, ctx.display_depth)
         } else {
             let (sx, sy, width, height, interlaced) = (
                 ctx.display_vram_x_start as usize,
@@ -1684,7 +1749,7 @@ impl HWRenderer {
         }
         let cols = size.0 as usize;
         let rows = size.1 as usize;
-        self.flush();
+        // self.flush();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1786,7 +1851,7 @@ impl HWRenderer {
     }
 
     pub fn vram_to_cpu_copy(&mut self, top_left: (u16, u16), size: (u16, u16)) -> Vec<u32> {
-        self.flush();
+        // self.flush();
         if top_left.0 > 1023 || top_left.1 > 511 {
             return vec![];
         }

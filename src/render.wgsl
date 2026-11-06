@@ -1,12 +1,16 @@
 enable dual_source_blending;
 
 struct Uniforms {
+    scale: u32, // 0 for the first pass, 1 for the second pass
+    force_set_mask: u32,
+}
+struct Config {
     target_stp: u32, // 0 for the first pass, 1 for the second pass
     force_set_mask: u32,
 }
 @group(0) @binding(0) var vram_t: texture_storage_2d<r32uint, read_write>;
 @group(0) @binding(1) var<uniform> uniforms: Uniforms;
-var<immediate> conf: Uniforms;
+var<immediate> conf: Config;
 
 // @group(1) @binding(2) var s_diffuse: sampler;
 
@@ -19,6 +23,7 @@ struct VertexInput {
     @location(5) texpage_base: vec2<u32>,
     @location(6) texture_window_mask: vec2<u32>,
     @location(7) texture_window_offset: vec2<u32>,
+    @location(8) z: f32,
 };
 
 struct VertexOutput {
@@ -48,7 +53,7 @@ fn vert_main(in: VertexInput) -> VertexOutput {
 
     let color = in.color & 0x00FFFFFF;
 
-    out.clip_position = vec4<f32>(f32(in.position.x) / 512.0 - 1.0, 1.0 - f32(in.position.y) / 256.0, 0.0, 1.0);
+    out.clip_position = vec4<f32>(f32(in.position.x) / (f32(uniforms.scale) * 512.0) - 1.0, 1.0 -  f32(in.position.y) / (f32(uniforms.scale) *256.0),   1.0 - in.z, 1.0);
     // out.clip_position = vec4<f32>(f32(in.position.x), f32(in.position.y), 0.0, 1.0);
     out.vram_position = vec2<f32>(in.position); // + vec2<f32>(0.5);
 

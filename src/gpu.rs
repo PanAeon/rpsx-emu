@@ -73,6 +73,7 @@ pub struct Gpu {
     pub renderer_handle: Option<JoinHandle<()>>,
     #[serde(with = "serde_bytes")]
     vram: Box<[u8]>,
+    scale: u32
 }
 
 impl Gpu {
@@ -80,6 +81,7 @@ impl Gpu {
         renderer_sender: Sender<RendererMsg>,
         renderer_receiver: Receiver<RendererResponse>,
         renderer_handle: JoinHandle<()>,
+        scale: u32,
     ) -> Gpu {
         Gpu {
             page_base_x: 0,
@@ -119,6 +121,8 @@ impl Gpu {
             display_line_start: 0,
             display_line_end: 0,
 
+
+
             gp0_command: CommandBuffer::new(),
             gp0_words_remaining: 0,
             gp0_command_word: 0,
@@ -132,6 +136,8 @@ impl Gpu {
             renderer_receiver: Some(renderer_receiver),
             renderer_handle: Some(renderer_handle),
             vram: vec![0; 2 * 512 * 1024].into_boxed_slice(),
+
+            scale,
         }
     }
 
@@ -1434,7 +1440,7 @@ impl Gpu {
         // };
 
         if display_vram {
-            (1024, 512, 0, 0, self.display_depth)
+            (1024 * self.scale as usize, 512 * self.scale as usize, 0, 0, self.display_depth)
         } else {
             let (sx, sy, width, height) = self.update_crt_display_params();
             let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
@@ -1446,10 +1452,10 @@ impl Gpu {
                     sy: _,
                     depth,
                 } => (
-                    width as usize,
-                    height as usize,
-                    sx as usize,
-                    sy as usize,
+                    width as usize * self.scale as usize,
+                    height as usize * self.scale as usize,
+                    sx as usize * self.scale as usize,
+                    sy as usize * self.scale as usize,
                     depth,
                 ),
                 _ => {

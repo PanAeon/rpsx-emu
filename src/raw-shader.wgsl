@@ -65,8 +65,8 @@ fn vert_main(model: VertexInput) -> VertexOutput {
 
 @fragment
 fn frag_main(data: VertexOutput) -> @location(0) vec4<f32> {
-    // let texcoord = vec2f(data.tex_coords.x/1024.0, data.tex_coords.y/512.0);
-    let texcoord = vec2f(data.tex_coords.x/2048.0, data.tex_coords.y/1024.0);
+    let texcoord = vec2f(data.tex_coords.x/1024.0, data.tex_coords.y/512.0);
+    // let texcoord = vec2f(data.tex_coords.x/2048.0, data.tex_coords.y/1024.0);
     var out = textureSample(t_diffuse, s_diffuse, texcoord);
     // return textureSample(t_diffuse, s_diffuse, data.tex_coords);
     // var res: vec4<f32> = vec4(0.0, 0.0, 0.0, 0.0);

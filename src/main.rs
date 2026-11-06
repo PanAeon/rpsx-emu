@@ -406,10 +406,17 @@ impl State {
 
         let depth_stencil: Option<wgpu::DepthStencilState> = None;
 
+        let shader_src: String;
         let shader_source = if cli.hw_renderer {
-            Cow::Borrowed(include_str!("raw-shader.wgsl"))
+            let src = include_str!("raw-shader.wgsl");
+            let width = format!("{}", 1024 * scale);
+            let height = format!("{}", 512 * scale);
+            shader_src = src.replace("1024", &width).replace("512", &height);
+            let src: &str = shader_src.as_str();
+            Cow::Borrowed(src)
         } else {
-            Cow::Borrowed(include_str!("shader.wgsl"))
+            let src = include_str!("shader.wgsl");
+            Cow::Borrowed(src)
         };
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shaders"),

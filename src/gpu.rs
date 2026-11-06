@@ -1442,22 +1442,26 @@ impl Gpu {
         if display_vram {
             (1024 * self.scale as usize, 512 * self.scale as usize, 0, 0, self.display_depth)
         } else {
-            let (sx, sy, width, height) = self.update_crt_display_params();
+            // let (sx, sy, width, height) = self.update_crt_display_params();
             let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
             match msg {
                 RendererResponse::FBUpdated {
-                    width: _,
-                    height: _,
-                    sx: _,
-                    sy: _,
+                    width,
+                    height,
+                    sx,
+                    sy,
                     depth,
-                } => (
+                } => {
+
+            let (sx, sy, width, height) = self.update_crt_display_params();
+                    // println!(">>{}, {}, {}, {}", sx, sy, width, height);
+                    (
                     width as usize * self.scale as usize,
                     height as usize * self.scale as usize,
                     sx as usize * self.scale as usize,
                     sy as usize * self.scale as usize,
                     depth,
-                ),
+                )},
                 _ => {
                     println!("something went wrong.. sync call returned wrong response");
                     (1024, 512, 0, 0, self.display_depth)

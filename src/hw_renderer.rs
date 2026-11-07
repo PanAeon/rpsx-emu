@@ -319,10 +319,10 @@ fn create_draw_pipeline(
         stencil: wgpu::StencilState {
             // stage 2 (stp 1)
             front: wgpu::StencilFaceState {
-                compare: wgpu::CompareFunction::Always, // always passes
+                compare: wgpu::CompareFunction::Equal,
                 fail_op: wgpu::StencilOperation::Keep,  // Drop pixel, leave stencil alone
                 depth_fail_op: wgpu::StencilOperation::Keep,
-                pass_op: wgpu::StencilOperation::Replace, // Overwrite with new STP value
+                pass_op: wgpu::StencilOperation::Invert, // Overwrite with new STP value
             },
             back: wgpu::StencilFaceState::IGNORE,
             read_mask: 0x01,
@@ -753,16 +753,16 @@ impl HWRenderer {
                                 ),
                                 ..Default::default()
                             });
-                        let pipeline = match (&batch.blending) {
-                            (Blending::Add) => &self.addictive_pipeline,
-                            (Blending::Subtract) => &self.subtractive_pipeline,
-                        };
-                        // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
-                        //     (Blending::Add, true) => &self.addictive_pipeline,
-                        //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
-                        //     (Blending::Subtract, true) => &self.subtractive_pipeline,
-                        //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
+                        // let pipeline = match (&batch.blending) {
+                        //     (Blending::Add) => &self.addictive_pipeline,
+                        //     (Blending::Subtract) => &self.subtractive_pipeline,
                         // };
+                        let pipeline = match (&batch.blending, batch.preserve_masked_pixels) {
+                            (Blending::Add, false) => &self.addictive_pipeline,
+                            (Blending::Add, true) => &self.addictive_pipeline_mask_disabled,
+                            (Blending::Subtract, false) => &self.subtractive_pipeline,
+                            (Blending::Subtract, true) => &self.subtractive_pipeline_mask_disabled,
+                        };
                         rpass.set_pipeline(pipeline);
                         // Update your uniform buffer so WGSL knows to only pass `STP == 0` pixels
                         rpass.set_immediates(
@@ -885,16 +885,16 @@ impl HWRenderer {
                                 ..Default::default()
                             });
 
-                        let pipeline = match (&batch.blending) {
-                            (Blending::Add) => &self.addictive_pipeline_mask_disabled,
-                            (Blending::Subtract) => &self.subtractive_pipeline_mask_disabled,
-                        };
-                        // let pipeline = match (&self.current_blending, self.global_masking_enabled) {
-                        //     (Blending::Add, true) => &self.addictive_pipeline,
-                        //     (Blending::Add, false) => &self.addictive_pipeline_mask_disabled,
-                        //     (Blending::Subtract, true) => &self.subtractive_pipeline,
-                        //     (Blending::Subtract, false) => &self.subtractive_pipeline_mask_disabled,
+                        // let pipeline = match (&batch.blending) {
+                        //     (Blending::Add) => &self.addictive_pipeline_mask_disabled,
+                        //     (Blending::Subtract) => &self.subtractive_pipeline_mask_disabled,
                         // };
+                        let pipeline = match (&batch.blending, batch.preserve_masked_pixels) {
+                            (Blending::Add, false) => &self.addictive_pipeline,
+                            (Blending::Add, true) => &self.addictive_pipeline_mask_disabled,
+                            (Blending::Subtract, false) => &self.subtractive_pipeline,
+                            (Blending::Subtract, true) => &self.subtractive_pipeline_mask_disabled,
+                        };
                         rpass.set_pipeline(pipeline);
                         rpass.set_immediates(
                             0,
@@ -902,7 +902,8 @@ impl HWRenderer {
                         );
 
                         if batch.preserve_masked_pixels {
-                            rpass.set_stencil_reference(1);
+                            // invert should turn it to 1
+                            rpass.set_stencil_reference(0);
                         } else {
                             rpass.set_stencil_reference(1);
                         }
@@ -1783,6 +1784,9 @@ impl HWRenderer {
             }
         }
 
+        // need to convert to Rgba8UnormSrgb, 4 bytes per pixel
+        // let mut scaled_data = vec![];
+
         let data_buf = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1817,7 +1821,7 @@ impl HWRenderer {
             },
         );
 
-        // now copy it to vram
+        // now copy it to vram, right need to scale data
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: &data_buf,

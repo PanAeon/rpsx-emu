@@ -95,7 +95,7 @@ pub struct Cli {
     interpreter: bool,
     #[arg(long)]
     hw_renderer: bool,
-    #[arg(long)]
+    #[arg(long, default_value_t=1)]
     scale: u32,
 }
 

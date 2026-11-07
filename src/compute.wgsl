@@ -503,8 +503,8 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                     if preserve_masked_pixels {
                         let prev = readExistingColorCached(vec2(x, y), bounds);
                         // let prev = read_16bit(vec2(x, y));
-                        if (prev.z) == 0 {
-                            // FIXME: brokes silent hill when enabled (black squares)
+                        if (prev.w) == 0 {
+                            // hmm, brokes silent hill when enabled (black squares)
                             // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                             cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
                         }

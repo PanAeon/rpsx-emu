@@ -167,7 +167,8 @@ fn get_color(in: VertexOutput) -> FragmentOutput {
     //     discard;
     // }
     // if ( current_pixel_stp == 0 && conf.target_stp == 1) {
-    if ( conf.target_stp != current_pixel_stp) && (!mask_forced || conf.target_stp != 1 ) {
+    // if ( conf.target_stp != current_pixel_stp) && (!mask_forced || conf.target_stp != 1 ) {
+    if  conf.target_stp != current_pixel_stp && !mask_forced  {
            discard;
     }
     if is_semitrans(in) && c.w > 0.5 {

@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::{any::Any, fs::File};
 
 use arrayvec::ArrayVec;
 use log::info;
@@ -24,17 +24,18 @@ pub struct Sio {
 }
 
 impl Sio {
-    pub fn new(negcon: bool, mouse: bool) -> Self {
-        let gamepad1: Box<dyn Controller> = if mouse {
+    pub fn new(negcon: bool, mouse1: bool, mouse2:bool, guncon: bool) -> Self {
+        let gamepad1: Box<dyn Controller> = if guncon {
+            Box::new(GunCon::default())
+        } else if mouse1 {
             Box::new(Mouse::default())
         } else if negcon {
             Box::new(NegCon::default())
         } else {
             Box::new(Gamepad::default())
         };
-        let gamepad2: Box<dyn Controller> = if mouse {
-            Box::new(Gamepad::default())
-            // Box::new(Mouse::default())
+        let gamepad2: Box<dyn Controller> = if mouse2 {
+            Box::new(Mouse::default())
         } else {
             Box::new(Gamepad::default())
         };
@@ -361,6 +362,7 @@ pub trait Controller {
     fn set_analog_mode(&mut self, is_analog: bool);
     fn get_analog_mode(&self) -> bool;
 
+    fn as_any(&mut self) -> &mut dyn Any;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -459,6 +461,9 @@ impl Controller for NegCon {
     }
     fn get_analog_mode(&self) -> bool {
         true
+    }
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
     }
 
 }
@@ -587,6 +592,9 @@ impl Controller for Mouse {
         true
     }
 
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 impl Mouse {
@@ -602,6 +610,153 @@ impl Mouse {
         // (MouseState::AnalogInput3, Some(0x00)),
     ];
     fn next(&self, current_state: MouseState, received_byte: u8) -> Option<MouseState> {
+        let idx = current_state as usize;
+
+
+        let (next_state, check_byte) = Self::ANALOG_STATES[(idx + 1) % Self::ANALOG_STATES.len()];
+        // if current_state == GamepadState::IdLow {
+            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        // }
+        let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
+        next_state_is_valid.then_some(next_state)
+    }
+}
+
+
+
+#[derive(Serialize, Deserialize)]
+pub struct GunCon {
+    state: GunConState,
+    in_ack: bool,
+    pub digital_switches: u16,
+    pub joystick_axes: [u8; 4],
+    pub shoot_offscreen: bool,
+}
+impl Default for GunCon {
+    fn default() -> Self {
+        Self {
+            state: GunConState::default(),
+            digital_switches: 0xFFFF,
+            joystick_axes: [0x0d,0x01, 0x88, 0x00] ,
+            in_ack: Default::default(),
+            shoot_offscreen: false
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum GunConState {
+    #[default]
+    Init,
+    IdLow,
+    IdHigh,
+    SwitchLow,
+    SwitchHigh,
+    AnalogInput0,
+    AnalogInput1,
+    AnalogInput2,
+    AnalogInput3,
+}
+
+/*
+*  __Halfword 0 (Controller Info)___________________
+  0-15  Controller Info  (5A63h=Namco Lightgun; GunCon/Cinch Type)
+  __Halfword 1 (Buttons)___________________________
+  0-2   Not used              (All bits always 1)
+  3     Button A (Left Side)  (0=Pressed, 1=Released) ;aka Joypad Start
+  4-12  Not used              (All bits always 1)
+  13    Trigger Button        (0=Pressed, 1=Released) ;aka Joypad O-Button
+  14    Button B (Right Side) (0=Pressed, 1=Released) ;aka Joypad X-Button
+  15    Not used              (All bits always 1)
+  __Halfword 2 (X)_________________________________
+  0-15  8MHz clks since HSYNC (01h=Error, or 04Dh..1CDh)
+  __Halfword 3 (Y)_________________________________
+  0-15  Scanlines since VSYNC (05h/0Ah=Error, PAL=20h..127h, NTSC=19h..F8h)
+*/
+#[typetag::serde]
+impl Controller for GunCon {
+    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
+        const ID: [u8;2] = 0x5A63_u16.to_le_bytes();
+        let axes = if self.shoot_offscreen {
+            &[0x0d,0x01, 0x88, 0x00]
+        } else {
+            &self.joystick_axes
+        };
+        let received = match self.state {
+            GunConState::Init => 0xFF,
+
+            GunConState::IdLow => ID[0],
+            GunConState::IdHigh => ID[1],
+
+            GunConState::SwitchLow => self.digital_switches as u8, // not used
+            GunConState::SwitchHigh => (self.digital_switches >> 8)  as u8, // 10 right, 11 left
+
+            GunConState::AnalogInput0 => axes[Axis::RightX as usize],
+            GunConState::AnalogInput1 => axes[Axis::RightY as usize],
+            GunConState::AnalogInput2 => axes[Axis::LeftX as usize],
+            GunConState::AnalogInput3 => axes[Axis::LeftY as usize],
+        };
+
+        if let Some(state) = self.next(self.state, data) {
+            self.state = state;
+            self.in_ack = state != GunConState::Init;
+            received
+        } else {
+            self.reset();
+            0xFF
+        }
+    }
+
+    fn in_ack(&self) -> bool {
+        self.in_ack
+    }
+
+    fn reset(&mut self) {
+        self.in_ack = false;
+        self.state = GunConState::Init;
+    }
+
+    fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
+        self.joystick_axes = [right.0, right.1, left.0, left.1];
+    }
+
+    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+        &mut self.joystick_axes
+    }
+
+
+    fn set_buttons(&mut self, buttons: u16) {
+        self.digital_switches = buttons;
+    }
+    fn get_buttons(&self) -> u16 {
+        self.digital_switches
+    }
+    fn set_analog_mode(&mut self, _is_analog: bool) {
+        info!("analog mode is ignored for negcon")
+    }
+    fn get_analog_mode(&self) -> bool {
+        true
+    }
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+
+}
+
+impl GunCon {
+    const ANALOG_STATES: [(GunConState, Option<u8>); 9] = [
+        (GunConState::Init, Some(0x00)),
+        (GunConState::IdLow, Some(0x01)),
+        (GunConState::IdHigh, Some(0x42)),
+        (GunConState::SwitchLow, None),
+        (GunConState::SwitchHigh, None),
+        (GunConState::AnalogInput0, None),
+        (GunConState::AnalogInput1, Some(0x00)),
+        (GunConState::AnalogInput2, Some(0x00)),
+        (GunConState::AnalogInput3, Some(0x00)),
+    ];
+    fn next(&self, current_state: GunConState, received_byte: u8) -> Option<GunConState> {
         let idx = current_state as usize;
 
 
@@ -693,6 +848,9 @@ impl Controller for Gamepad {
 
     fn set_buttons(&mut self, buttons: u16) {
         self.digital_switches = buttons;
+    }
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

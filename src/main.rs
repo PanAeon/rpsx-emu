@@ -29,6 +29,7 @@ use crate::dynarec::Dynarec;
 use crate::gpu::DisplayDepth;
 use crate::save_state::load_state;
 use crate::save_state::save_state;
+use crate::sio::GunCon;
 use crate::sio::Sio;
 use crate::spu::Spu;
 use crate::system::System;
@@ -99,7 +100,11 @@ pub struct Cli {
     #[arg(long, default_value_t = 1)]
     scale: u32,
     #[arg(long)]
-    mouse: bool,
+    mouse1: bool,
+    #[arg(long)]
+    mouse2: bool,
+    #[arg(long)]
+    guncon: bool,
 }
 
 fn main() {
@@ -262,9 +267,11 @@ pub struct State {
     negcon: bool,
     use_interpreter: bool,
     scale: u32,
-    mouse: bool,
+    mouse1: bool,
+    mouse2: bool,
     mouse_pos: (f64, f64),
     mouse_moved: bool,
+    guncon: bool,
 }
 
 impl State {
@@ -663,7 +670,7 @@ impl State {
         });
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
-        let sio = sio::Sio::new(cli.negcon, cli.mouse);
+        let sio = sio::Sio::new(cli.negcon, cli.mouse1, cli.mouse2, cli.guncon);
         let sio2 = sio2::Sio2::new();
         let mdec = mdec::Mdec::new();
         let mut scheduler = scheduler::Scheduler::default();
@@ -824,9 +831,11 @@ impl State {
             negcon: cli.negcon,
             use_interpreter: cli.interpreter,
             scale,
-            mouse: cli.mouse,
+            mouse1: cli.mouse1,
+            mouse2: cli.mouse2,
             mouse_pos: (0.0, 0.0),
             mouse_moved: false,
+            guncon: cli.guncon,
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -1520,7 +1529,29 @@ impl State {
 
     fn handle_mouse_moved(&mut self, x: f64, y: f64) {
         self.mouse_moved = true;
-        if self.mouse {
+        if self.guncon {
+            let (_, _, width, height) = self.system.gpu.update_crt_display_params();
+            let scale = height as f64 / self.config.height as f64;
+            let  w = width as f64 / scale / self.config.width as f64;
+            let h: f64;
+            let mut bx: f64 = (1.0 - w) / 2.0;
+            let mut by: f64 = 0.0;
+
+            if w * width as f64 > self.output_width as f64 {
+                let scale = width as f64 / self.config.width as f64;
+                h = height as f64 / scale / self.config.height as f64;
+                bx = 0.0;
+                by = (1.0 - h) / 2.0;
+            }
+            let mx =  (x - bx* self.config.width as f64) / (self.config.width as f64 - 2.0 * bx  * self.config.width as f64);
+            let my = (y - by*self.config.height as f64)  / (self.config.height as f64 - 2.0 * by * self.config.height as f64);
+            // println!("mx:  {}, my: {}", mx, my);
+            let mx = mx.clamp(0.0, 1.0) * (0x1CD-0x4D) as f64 + 0x4D as f64;
+            let my = my.clamp(0.0, 1.0) * (0xF8-0x19) as f64 + 0x19 as f64;
+            let [b0, b1] = (mx as u16).to_le_bytes();
+            let [b2, b3] = (my as u16).to_le_bytes();
+            self.system.sio.gamepad1.set_stick_axis((b2, b3), (b0, b1));
+        } else if self.mouse1 || self.mouse2 {
             //            0-7   Horizontal Motion (-80h..+7Fh = Left..Right) (00h=No motion)
             // 8-15  Vertical Motion   (-80h..+7Fh = Up..Down)    (00h=No motion)
             // println!(">> moved, x :{}, y: {}", x, y);
@@ -1548,7 +1579,12 @@ impl State {
             let v = if v.abs() < vdeadzone { 0.0 } else { v };
             let h = h.mul(127.5) as i8 as u8;
             let v = v.mul(127.5) as i8 as u8;
-            self.system.sio.gamepad1.set_stick_axis((0, 0), (h, v));
+            let mouse = if self.mouse1 {
+                &mut self.system.sio.gamepad1
+            } else {
+                &mut self.system.sio.gamepad2
+            };
+            mouse.set_stick_axis((0, 0), (h, v));
         }
         // self.clear_color.r = x / self.config.width as f64;
         // self.clear_color.g = y / self.config.height as f64;
@@ -1649,6 +1685,22 @@ impl State {
             (KeyCode::Enter, false) => {
                 load_state(1, &mut self.system);
             }
+            (KeyCode::KeyA, true) => {
+                let buttons = self.system.sio.gamepad1.get_buttons();
+                self.system.sio.gamepad1.set_buttons(buttons & !(1 << 3));
+            }
+            (KeyCode::KeyA, false) => {
+                let buttons = self.system.sio.gamepad1.get_buttons();
+                self.system.sio.gamepad1.set_buttons(buttons | (1 << 3));
+            }
+            (KeyCode::KeyF, true) => {
+                let buttons = self.system.sio.gamepad1.get_buttons();
+                self.system.sio.gamepad1.set_buttons(buttons & !(1 << 14));
+            }
+            (KeyCode::KeyF, false) => {
+                let buttons = self.system.sio.gamepad1.get_buttons();
+                self.system.sio.gamepad1.set_buttons(buttons | (1 << 14));
+            }
             // (KeyCode::ArrowRight, true) => self.game_state.camera_pos.0 += 33.0,
             // (KeyCode::ArrowLeft, true) => if self.game_state.camera_pos.0 >= 33.0 {self.game_state.camera_pos.0 -= 33.0 },
             // (KeyCode::ArrowUp, true) => if self.game_state.camera_pos.1 >= 33.0  {self.game_state.camera_pos.1 -= 33.0},
@@ -1695,13 +1747,80 @@ impl State {
             }
         }
     }
+    fn handle_mouse_button(
+        &mut self,
+        button: MouseButton,
+        is_pressed: bool,
+        // _event_loop: &ActiveEventLoop,
+        // code: KeyCode,
+        // key_state: ElementState,
+        // _logical_key: Key,
+        // _repeat: bool,
+    ) {
+        if self.guncon {
+            let buttons = self.system.sio.gamepad1.get_buttons();
+            match (button, is_pressed) {
+                (MouseButton::Left, true) => {
+                    self.system.sio.gamepad1.set_buttons(buttons & !(1 << 13));
+                }
+                (MouseButton::Left, false) => {
+                    self.system.sio.gamepad1.set_buttons(buttons | (1 << 13));
+                }
+                (MouseButton::Right, true) => {
+                    let Some(guncon) = self.system.sio.gamepad1.as_any().downcast_mut::<GunCon>()
+                    else {
+                        panic!("oop failed");
+                    };
+                    guncon.shoot_offscreen = true;
+                }
+                (MouseButton::Right, false) => {
+                    let Some(guncon) = self.system.sio.gamepad1.as_any().downcast_mut::<GunCon>()
+                    else {
+                        panic!("oop failed");
+                    };
+                    guncon.shoot_offscreen = false;
+                }
+                _ => {}
+            }
+            if is_pressed {
+            } else {
+            }
+        } else if self.mouse1 || self.mouse2 {
+            let mouse = if self.mouse1 {
+                &mut self.system.sio.gamepad1
+            } else {
+                &mut self.system.sio.gamepad2
+            };
+            match (button, is_pressed) {
+                (MouseButton::Left, true) => {
+                    let btns = mouse.get_buttons();
+                    mouse.set_buttons(btns & !(1 << 11));
+                }
+                (MouseButton::Left, false) => {
+                    let btns = mouse.get_buttons();
+                    mouse.set_buttons(btns | (1 << 11));
+                }
+                (MouseButton::Right, true) => {
+                    let btns = mouse.get_buttons();
+                    mouse.set_buttons(btns & !(1 << 10));
+                }
+                (MouseButton::Right, false) => {
+                    let btns = mouse.get_buttons();
+                    mouse.set_buttons(btns | (1 << 10));
+                }
+                _ => {}
+            }
+        }
+    }
 
     pub fn update_gamepad(&mut self) {
-        if self.mouse {
+        if self.mouse1 || self.mouse2 {
             if !self.mouse_moved {
-                let mouse = &mut self.system
-                        .sio
-                        .gamepad1;
+                let mouse = if self.mouse1 {
+                    &mut self.system.sio.gamepad1
+                } else {
+                    &mut self.system.sio.gamepad2
+                };
                 if self.mouse_pos.0 < 20.0 {
                     mouse.set_stick_axis((0, 0), (0xc0, 0x0));
                 } else if self.mouse_pos.0 > self.config.width.saturating_sub(20) as f64 {
@@ -2052,33 +2171,7 @@ impl ApplicationHandler<State> for App {
             }
             WindowEvent::MouseInput {
                 state: st, button, ..
-            } => match (button, st.is_pressed()) {
-                (MouseButton::Left, true) => {
-                    if state.mouse {
-                        let btns = state.system.sio.gamepad2.get_buttons();
-                        state.system.sio.gamepad1.set_buttons(btns & !(1 << 11));
-                    }
-                }
-                (MouseButton::Left, false) => {
-                    if state.mouse {
-                        let btns = state.system.sio.gamepad2.get_buttons();
-                        state.system.sio.gamepad1.set_buttons(btns | (1 << 11));
-                    }
-                }
-                (MouseButton::Right, true) => {
-                    if state.mouse {
-                        let btns = state.system.sio.gamepad2.get_buttons();
-                        state.system.sio.gamepad1.set_buttons(btns & !(1 << 10));
-                    }
-                }
-                (MouseButton::Right, false) => {
-                    if state.mouse {
-                        let btns = state.system.sio.gamepad2.get_buttons();
-                        state.system.sio.gamepad1.set_buttons(btns | (1 << 10));
-                    }
-                }
-                _ => {}
-            },
+            } => state.handle_mouse_button(button, st.is_pressed()),
             WindowEvent::CursorMoved { position, .. } => {
                 state.handle_mouse_moved(position.x, position.y);
             }

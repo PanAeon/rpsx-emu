@@ -101,6 +101,10 @@ impl Image {
         // println!(".....");
         let serial = extract_serial_number(&mut cache);
 
+        if let Some(serial) = serial {
+            println!("region: {:?}", serial.region());
+        }
+
         let serial = serial.map(|x| String::from_utf8(x.0.to_vec()).expect("ok"));
 
         if let Some(serial) = &serial {

@@ -36,7 +36,7 @@ const CAMERA: mat4x4<f32> =    mat4x4<f32>(
 @vertex
 fn vert_main(model: VertexInput) -> VertexOutput {
     var ret: VertexOutput;
-    ret.tex_coords = model.uv;
+    ret.tex_coords = vec2<f32>(model.uv.x * 1024.0, model.uv.y * 512.0);
     let position = vec4<f32>(model.position, 1.0);
     // ret.position = tilemap.transform*position;
     ret.clip_position = CAMERA * position;

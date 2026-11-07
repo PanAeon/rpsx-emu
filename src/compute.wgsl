@@ -472,9 +472,10 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                     let pixel = pack_color(c.xyz, c.w > 0.5 || force_set_mask_bit);
                     if preserve_masked_pixels {
                         let prev = read_16bit(vec2(x, y));
-                        if (prev & 0x8000) != 1 {
+                        if (prev & 0x8000) != 1  {
                             // cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
-                            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                            
+                             textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
                         // cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
@@ -500,9 +501,9 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                     let pixel = pack_color(c.xyz, true);
                     if preserve_masked_pixels {
                         let prev = read_16bit(vec2(x, y));
-                        if ((prev) & 0x8000) != 1 {
-                            // cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
-                            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        if (prev & 0x8000) != 1 {
+                            // FIXME: brokes silent hill when enabled (black squares)
+                            // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
                         // cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;

@@ -258,6 +258,7 @@ pub struct State {
     draw_texture_bind_group: wgpu::BindGroup,
     negcon: bool,
     use_interpreter: bool,
+    scale: u32,
 }
 
 impl State {
@@ -412,14 +413,14 @@ impl State {
 
         let depth_stencil: Option<wgpu::DepthStencilState> = None;
 
-        let shader_src: String;
+        // let shader_src: String;
         let shader_source = if cli.hw_renderer {
-            let src = include_str!("raw-shader.wgsl");
-            let width = format!("{}", 1024 * scale);
-            let height = format!("{}", 512 * scale);
-            shader_src = src.replace("1024", &width).replace("512", &height);
-            let src: &str = shader_src.as_str();
-            Cow::Borrowed(src)
+            //  let src = include_str!("raw-shader.wgsl");
+            // let width = format!("{}", 1024 * scale);
+            // let height = format!("{}", 512 * scale);
+            // shader_src = src.replace("1024", &width).replace("512", &height);
+            // let src: &str = shader_src.as_str();
+            Cow::Borrowed(include_str!("raw-shader.wgsl"))
         } else {
             let src = include_str!("shader.wgsl");
             Cow::Borrowed(src)
@@ -816,6 +817,7 @@ impl State {
             ctrl_pressed: false,
             negcon: cli.negcon,
             use_interpreter: cli.interpreter,
+            scale,
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -1056,11 +1058,11 @@ impl State {
 
         // let u = width as f32 / 1024.0;
         // let v = height as f32 / 512.0;
-        let u = (width + sx) as f32;
-        let v = (height + sy) as f32;
+        let u = ((width + sx) as f64 / (1024.0 * self.scale as f64)) as f32;
+        let v = ((height + sy) as f64 / (512.0 * self.scale as f64)) as f32;
 
-        let sx = sx as f32;
-        let sy = sy as f32;
+        let sx = (sx as f64 / (1024.0 * self.scale as f64)) as f32;
+        let sy = (sy as f64 / (512.0 * self.scale as f64)) as f32;
 
         // self.config.width = width;
         // self.config.height = height;

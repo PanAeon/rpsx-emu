@@ -16,7 +16,7 @@ use crate::{
 };
 
 const VERT_BUFFER_SIZE: usize = 8000;
-const Z_COEF: f32 = 1.0 / 2_000.0;
+const Z_COEF: f32 = 1.0 / 16_000.0;
 
 #[repr(C)]
 struct RenderUniforms {
@@ -480,7 +480,7 @@ pub struct HWRenderer {
     uniforms_buffer: wgpu::Buffer,
     preserve_masked_pixels: bool,
     depth_texture_view: wgpu::TextureView,
-    force_set_mask_bit: bool, // blit_texture: wgpu::Texture,
+    force_set_mask_bit: bool,
     // vram_blit_texture: wgpu::Texture,
     // output_buffer: wgpu::Buffer,
     current_z: f32,

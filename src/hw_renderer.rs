@@ -125,8 +125,8 @@ fn create_draw_pipeline(
 ) {
     let vram_texture = device.create_texture(&wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
-            width: 1024 * scale,
-            height: 512 * scale,
+            width: 1024,
+            height: 512,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1, // We'll talk about this a little later
@@ -147,8 +147,8 @@ fn create_draw_pipeline(
 
     let blit_texture = device.create_texture(&wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
-            width: 1024 * scale,
-            height: 512 * scale,
+            width: 1024,
+            height: 512,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1, // We'll talk about this a little later
@@ -320,7 +320,7 @@ fn create_draw_pipeline(
             // stage 2 (stp 1)
             front: wgpu::StencilFaceState {
                 compare: wgpu::CompareFunction::Equal,
-                fail_op: wgpu::StencilOperation::Keep,  // Drop pixel, leave stencil alone
+                fail_op: wgpu::StencilOperation::Keep, // Drop pixel, leave stencil alone
                 depth_fail_op: wgpu::StencilOperation::Keep,
                 pass_op: wgpu::StencilOperation::Invert, // Overwrite with new STP value
             },
@@ -651,7 +651,7 @@ impl HWRenderer {
                         size,
                         data,
                         ctx,
-                    } => renderer.cpu_to_vram_copy(*top_left, *size, data),
+                    } => renderer.cpu_to_vram_copy(*top_left, *size, data, ctx.display_depth),
                     RendererMsg::VramToCpuCopy { top_left, size } => {
                         let data = renderer.vram_to_cpu_copy(*top_left, *size);
                         match to_gpu_sender.send(RendererResponse::VramToCpuData { data }) {
@@ -1750,7 +1750,8 @@ impl HWRenderer {
         &mut self,
         top_left: (u16, u16),
         size: (u16, u16),
-        unaligned_data: &Vec<u32>,
+        unaligned_data: &mut Vec<u32>,
+        display_depth: DisplayDepth,
     ) {
         if top_left.0 > 1024 || top_left.1 > 512 {
             return;
@@ -1758,6 +1759,24 @@ impl HWRenderer {
         if top_left.0 + size.0 > 1024 || top_left.1 + size.1 > 512 {
             return;
         }
+
+        let bytes: &[u8] = bytemuck::cast_slice(&unaligned_data[0..]);
+        let half_words: &[u16] = bytemuck::cast_slice(&unaligned_data[0..]);
+        let mut unaligned_rgba8_data: Vec<u32> = vec![];
+        if display_depth == DisplayDepth::D24Bits {
+            bytes.chunks_exact(3).for_each(|xs| {
+                for _ in 0..self.scale {
+                    unaligned_rgba8_data.push(u32::from_le_bytes([xs[0], xs[1], xs[2], 255]))
+                }
+            });
+        } else {
+            half_words.iter().for_each(|&x| {
+                for _ in 0..self.scale {
+                    unaligned_rgba8_data.push(Colour::from_pixel(x).as_rgba8())
+                }
+            });
+        }
+        let unaligned_data: &mut [u16] = bytemuck::cast_slice_mut(&mut unaligned_data[0..]);
         let cols = size.0 as usize;
         let rows = size.1 as usize;
         // self.flush();
@@ -1769,24 +1788,61 @@ impl HWRenderer {
         // align to 256 bytes... or 64 words
         let num_extents = (cols / 64) + 1;
         let mut data: Vec<u32> = vec![];
+
         {
-            let padding_words = 64 - ((cols) % 64);
+            // let ppadding = cols & 1;
+            let padding_words = 64 - (cols) % 64;
             let zeroes = vec![0; padding_words];
-            let mut i: usize = 0;
-            for _ in 0..rows {
-                for j in 0..cols / 2 {
-                    let word = unaligned_data[i + j];
-                    data.push(word & 0xFFFF);
-                    data.push((word >> 16) & 0xFFFF);
+            // let mut i: usize = 0;
+            for i in 0..rows {
+                for j in 0..cols {
+                    let word = unaligned_data[i * cols + j];
+                    data.push(word as u32);
+                    // data.push((word >> 16) & 0xFFFF);
                 }
                 data.extend_from_slice(&zeroes[0..]);
-                i += cols / 2;
+                // i += half_cols;
             }
         }
 
         // need to convert to Rgba8UnormSrgb, 4 bytes per pixel
-        // let mut scaled_data = vec![];
 
+        // let rgba8_num_extents = (cols / 32) + 1;
+        let mut rgba8_data: Vec<u32> = vec![];
+
+        let rgba8_cols = if display_depth == DisplayDepth::D15Bits {
+            self.scale as usize * cols
+        } else {
+            // println!(">> unaligned data len: {}", unaligned_rgba8_data.len());
+            // println!(">> orig cols: {} rows: {}", size.0, size.1);
+            // println!("(wrongly) expected bytes: {}", size.0 * size.1 * 2 / 3);
+            // println!("expected cols: {}", unaligned_rgba8_data.len() / size.1 as usize);
+            // unaligned_rgba8_data.len() / size.1 as usize
+            // cols / 2
+            self.scale as usize * cols * 2 / 3
+        };
+        let rgba8_orig_col = if display_depth == DisplayDepth::D15Bits {
+            top_left.0 as u32 * self.scale
+        } else {
+            (2 * top_left.0 / 3) as u32 * self.scale
+        };
+        let rgba8_num_extents = (rgba8_cols / 64) + 1;
+
+        {
+            // let ppadding = cols & 1;
+            let padding_words = 64 - (rgba8_cols) % 64;
+            let zeroes = vec![0; padding_words];
+            for i in 0..rows {
+                for _ in 0..self.scale {
+                    for j in 0..rgba8_cols as usize {
+                        let word = unaligned_rgba8_data[i * rgba8_cols + j];
+                        rgba8_data.push(word);
+                    }
+                    rgba8_data.extend_from_slice(&zeroes[0..]);
+                }
+                // i += half_cols;
+            }
+        }
         let data_buf = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1794,29 +1850,37 @@ impl HWRenderer {
                 contents: bytemuck::cast_slice(&data[0..]),
                 usage: wgpu::BufferUsages::COPY_SRC,
             });
+        let rgba8_data_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&rgba8_data[0..]),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
         // ok, now we need to align to 256 bytes per row...
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
-                buffer: &data_buf,
+                buffer: &rgba8_data_buf,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(num_extents as u32 * 256),
-                    rows_per_image: Some(size.1 as u32),
+                    bytes_per_row: Some(rgba8_num_extents as u32 * 256),
+                    rows_per_image: Some(size.1 as u32 * self.scale),
                 }, // layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * 1024), rows_per_image: Some(512) }
             },
             wgpu::TexelCopyTextureInfo {
                 texture: &self.render_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
-                    x: top_left.0 as u32,
-                    y: top_left.1 as u32,
+                    x: rgba8_orig_col,
+                    // x: (2 * top_left.0 / 3) as u32 * self.scale,
+                    y: top_left.1 as u32 * self.scale,
                     z: 0,
                 },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::Extent3d {
-                width: size.0 as u32,
-                height: size.1 as u32,
+                width: rgba8_cols as u32,
+                height: size.1 as u32 * self.scale,
                 depth_or_array_layers: 1,
             },
         );
@@ -1893,7 +1957,7 @@ impl HWRenderer {
         });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.render_texture, // r16uint, so in half words, same as params
+                texture: &self.vram_texture, // r16uint, so in half words, same as params
                 mip_level: 0,
                 origin: wgpu::Origin3d {
                     x: top_left.0 as u32,
@@ -1950,67 +2014,6 @@ impl HWRenderer {
 
         data
     }
-    /*  pub fn clear_render_texture(&mut self) {
-        let mut render_encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("clear_encoder"),
-                });
-        {
-            let mut render_scope = self.profiler.scope("render", &mut render_encoder);
-            let mut rpass = render_scope.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render_rpass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.render_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        // load: wgpu::LoadOp::Load,
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
-            let pipeline = match self.current_blending {
-                // Blending::None => &self.draw_pipeline,
-                // Blending::Average => &self.avg_pipeline,
-                Blending::Add => &self.addictive_pipeline,
-                Blending::Subtract => &self.subtractive_pipeline,
-                // Blending::Quarter => &self.quarter_pipeline,
-            };
-            rpass.set_pipeline(pipeline);
-            // match self.current_blending {
-            //     Blending::Average => rpass.set_blend_constant(wgpu::Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0 }),
-            //     Blending::Quarter => rpass.set_blend_constant(wgpu::Color { r: 0.25, g: 0.25, b: 0.25, a: 1.0 }),
-            //     _ => {}
-            // }
-            rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            rpass.set_scissor_rect(
-                self.drawing_area_top_left.0 as u32,
-                self.drawing_area_top_left.1 as u32,
-                min(
-                    1024,
-                    (1 + self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0) as u32,
-                ),
-                min(
-                    512,
-                    (1 + self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1) as u32,
-                ),
-            );
-            // rpass.set_bind_group(0, &self.camera_bind_group, &[]);
-
-            rpass.set_bind_group(0, &self.texture_bind_group, &[]);
-            rpass.draw(0..0, 0..1);
-        }
-        self.profiler.resolve_queries(&mut render_encoder);
-        let error_scope = self.device.push_error_scope(
-            wgpu::ErrorFilter::Validation, // | wgpu::ErrorFilter::Internal
-                                           // | wgpu::ErrorFilter::OutOfMemory,
-        );
-        let idx = self.queue.submit(vec![render_encoder.finish()]);
-    }*/
 }
 
 pub struct DirtyRegion {

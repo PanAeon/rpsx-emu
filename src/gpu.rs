@@ -1559,7 +1559,7 @@ impl Drop for Gpu {
     }
 }
 
-const FIVE_BIT_TO_8BIT: [u8; 32] = {
+pub const FIVE_BIT_TO_8BIT: [u8; 32] = {
     let mut table = [0u8; 32];
     let mut i = 0;
     while i < 32 {
@@ -1769,8 +1769,29 @@ impl Colour {
         Colour { r, g, b, m }
     }
 
+    pub fn from_pixel(pixel: u16) -> Self {
+
+        let r = convert_5bit_to_8bit(pixel & 0x1F);
+        let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+        let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+        let m = (pixel >> 15) as u8;
+        Colour { r, g, b, m }
+    }
+
     pub fn is_black(&self) -> bool {
         self.r == 0 && self.b == 0 && self.g == 0 && self.m == 0
+    }
+
+    pub fn as_rgba8(&self) -> u32 {
+        let bytes = [self.r, self.g, self.b, 255];
+        u32::from_le_bytes(bytes)
+        // let r = self.r as u32;
+        // let g = self.g as u32;
+        // let b = self.b as u32;
+        // let m = 255;
+        // let pixel = r | (g << 8) | (b << 16) | (m << 24);
+        // let pixel = m | (b << 8) | (g << 16) | (r << 24);
+        // pixel
     }
 
     pub fn to_le_bytes(&self) -> [u8; 2] {

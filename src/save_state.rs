@@ -104,10 +104,12 @@ pub fn load_state(idx: u32, system: &mut System) {
     let sender = system.gpu.renderer_sender.take();
     let receiver = system.gpu.renderer_receiver.take();
     let handle = system.gpu.renderer_handle.take();
+    let scale = system.gpu.scale;
     system.gpu = gpu;
     system.gpu.renderer_sender = sender;
     system.gpu.renderer_receiver = receiver;
     system.gpu.renderer_handle = handle;
+    system.gpu.scale = scale;
     system.gpu.send_drawing_area_change();
     system.gpu.load_vram();
 

@@ -73,7 +73,7 @@ pub struct Gpu {
     pub renderer_handle: Option<JoinHandle<()>>,
     #[serde(with = "serde_bytes")]
     vram: Box<[u8]>,
-    scale: u32
+    pub scale: u32
 }
 
 impl Gpu {

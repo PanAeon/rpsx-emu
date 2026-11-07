@@ -5,6 +5,7 @@ use log::info;
 use wgpu_profiler::GpuProfiler;
 // use env_logger::fmt::style::Color;
 use std::io::Read;
+use std::ops::Mul;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -95,8 +96,10 @@ pub struct Cli {
     interpreter: bool,
     #[arg(long)]
     hw_renderer: bool,
-    #[arg(long, default_value_t=1)]
+    #[arg(long, default_value_t = 1)]
     scale: u32,
+    #[arg(long)]
+    mouse: bool,
 }
 
 fn main() {
@@ -259,6 +262,9 @@ pub struct State {
     negcon: bool,
     use_interpreter: bool,
     scale: u32,
+    mouse: bool,
+    mouse_pos: (f64, f64),
+    mouse_moved: bool,
 }
 
 impl State {
@@ -657,7 +663,7 @@ impl State {
         });
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
-        let sio = sio::Sio::new(cli.negcon);
+        let sio = sio::Sio::new(cli.negcon, cli.mouse);
         let sio2 = sio2::Sio2::new();
         let mdec = mdec::Mdec::new();
         let mut scheduler = scheduler::Scheduler::default();
@@ -818,6 +824,9 @@ impl State {
             negcon: cli.negcon,
             use_interpreter: cli.interpreter,
             scale,
+            mouse: cli.mouse,
+            mouse_pos: (0.0, 0.0),
+            mouse_moved: false,
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -1509,7 +1518,38 @@ impl State {
         }
     }
 
-    fn handle_mouse_moved(&mut self, _x: f64, _y: f64) {
+    fn handle_mouse_moved(&mut self, x: f64, y: f64) {
+        self.mouse_moved = true;
+        if self.mouse {
+            //            0-7   Horizontal Motion (-80h..+7Fh = Left..Right) (00h=No motion)
+            // 8-15  Vertical Motion   (-80h..+7Fh = Up..Down)    (00h=No motion)
+            // println!(">> moved, x :{}, y: {}", x, y);
+            let dx = x - self.mouse_pos.0;
+            let dy = y - self.mouse_pos.1;
+            let width = if self.output_width == 0 {
+                1
+            } else {
+                self.output_width / 2
+            };
+            let height = if self.output_height == 0 {
+                1
+            } else {
+                self.output_height / 2
+            };
+            self.mouse_pos.0 = x;
+            self.mouse_pos.1 = y;
+            let hsensitivity = 2.0;
+            let vsensitivity = 1.8;
+            let hdeadzone = 0.009;
+            let vdeadzone = 0.005;
+            let h = ((dx / width as f64) * hsensitivity);
+            let v = ((dy / height as f64) * vsensitivity);
+            let h = if h.abs() < hdeadzone { 0.0 } else { h };
+            let v = if v.abs() < vdeadzone { 0.0 } else { v };
+            let h = h.mul(127.5) as i8 as u8;
+            let v = v.mul(127.5) as i8 as u8;
+            self.system.sio.gamepad1.set_stick_axis((0, 0), (h, v));
+        }
         // self.clear_color.r = x / self.config.width as f64;
         // self.clear_color.g = y / self.config.height as f64;
     }
@@ -1657,6 +1697,26 @@ impl State {
     }
 
     pub fn update_gamepad(&mut self) {
+        if self.mouse {
+            if !self.mouse_moved {
+                let mouse = &mut self.system
+                        .sio
+                        .gamepad1;
+                if self.mouse_pos.0 < 20.0 {
+                    mouse.set_stick_axis((0, 0), (0xc0, 0x0));
+                } else if self.mouse_pos.0 > self.config.width.saturating_sub(20) as f64 {
+                    mouse.set_stick_axis((0, 0), (0x40, 0x0));
+                } else if self.mouse_pos.1 < 20.0 {
+                    mouse.set_stick_axis((0, 0), (0x0, 0xc0));
+                } else if self.mouse_pos.1 > self.config.height.saturating_sub(20) as f64 {
+                    mouse.set_stick_axis((0, 0), (0x0, 0x40));
+                } else {
+                    mouse.set_stick_axis((0, 0), (0x0, 0x0));
+                }
+            } else {
+                self.mouse_moved = false;
+            }
+        }
         if self.negcon {
             Self::update_negcon(self);
             return;
@@ -1990,9 +2050,33 @@ impl ApplicationHandler<State> for App {
                 }
                 state.render_finished = web_time::Instant::now();
             }
-            WindowEvent::MouseInput { state, button, .. } => match (button, state.is_pressed()) {
-                (MouseButton::Left, true) => {}
-                (MouseButton::Left, false) => {}
+            WindowEvent::MouseInput {
+                state: st, button, ..
+            } => match (button, st.is_pressed()) {
+                (MouseButton::Left, true) => {
+                    if state.mouse {
+                        let btns = state.system.sio.gamepad2.get_buttons();
+                        state.system.sio.gamepad1.set_buttons(btns & !(1 << 11));
+                    }
+                }
+                (MouseButton::Left, false) => {
+                    if state.mouse {
+                        let btns = state.system.sio.gamepad2.get_buttons();
+                        state.system.sio.gamepad1.set_buttons(btns | (1 << 11));
+                    }
+                }
+                (MouseButton::Right, true) => {
+                    if state.mouse {
+                        let btns = state.system.sio.gamepad2.get_buttons();
+                        state.system.sio.gamepad1.set_buttons(btns & !(1 << 10));
+                    }
+                }
+                (MouseButton::Right, false) => {
+                    if state.mouse {
+                        let btns = state.system.sio.gamepad2.get_buttons();
+                        state.system.sio.gamepad1.set_buttons(btns | (1 << 10));
+                    }
+                }
                 _ => {}
             },
             WindowEvent::CursorMoved { position, .. } => {

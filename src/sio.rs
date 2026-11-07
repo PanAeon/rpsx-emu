@@ -24,9 +24,17 @@ pub struct Sio {
 }
 
 impl Sio {
-    pub fn new(negcon: bool) -> Self {
-        let gamepad1: Box<dyn Controller> = if negcon {
+    pub fn new(negcon: bool, mouse: bool) -> Self {
+        let gamepad1: Box<dyn Controller> = if mouse {
+            Box::new(Mouse::default())
+        } else if negcon {
             Box::new(NegCon::default())
+        } else {
+            Box::new(Gamepad::default())
+        };
+        let gamepad2: Box<dyn Controller> = if mouse {
+            Box::new(Gamepad::default())
+            // Box::new(Mouse::default())
         } else {
             Box::new(Gamepad::default())
         };
@@ -39,7 +47,7 @@ impl Sio {
             received: ArrayVec::new(),
             state: State::None,
             gamepad1,
-            gamepad2: Box::new(Gamepad::default()),
+            gamepad2,
             memcard1: Memcard::new("/foo/memcard1.mcd"),
             memcard2: Memcard::new("/foo/memcard2.mcd"),
         }
@@ -468,6 +476,132 @@ impl NegCon {
         (NegConState::AnalogInput3, Some(0x00)),
     ];
     fn next(&self, current_state: NegConState, received_byte: u8) -> Option<NegConState> {
+        let idx = current_state as usize;
+
+
+        let (next_state, check_byte) = Self::ANALOG_STATES[(idx + 1) % Self::ANALOG_STATES.len()];
+        // if current_state == GamepadState::IdLow {
+            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        // }
+        let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
+        next_state_is_valid.then_some(next_state)
+    }
+}
+
+
+#[derive(Serialize, Deserialize)]
+pub struct Mouse {
+    state: MouseState,
+    in_ack: bool,
+    pub digital_switches: u16,
+    pub joystick_axes: [u8; 4],
+}
+impl Default for Mouse {
+    fn default() -> Self {
+        Self {
+            state: MouseState::default(),
+            digital_switches: 0xFFFF,
+            joystick_axes: [0x80; 4],
+            in_ack: Default::default(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum MouseState {
+    #[default]
+    Init,
+    IdLow,
+    IdHigh,
+    SwitchLow,
+    SwitchHigh,
+    AnalogInput0,
+    AnalogInput1,
+    // AnalogInput2,
+    // AnalogInput3,
+}
+
+#[typetag::serde]
+impl Controller for Mouse {
+    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
+        const ID: [u8;2] = 0x5A12_u16.to_le_bytes();
+        let received = match self.state {
+            MouseState::Init => 0xFF,
+
+            MouseState::IdLow => ID[0],
+            MouseState::IdHigh => ID[1],
+
+            MouseState::SwitchLow => self.digital_switches as u8, // not used
+            MouseState::SwitchHigh => (self.digital_switches >> 8)  as u8, // 10 right, 11 left
+
+            MouseState::AnalogInput0 => self.joystick_axes[Axis::RightX as usize],
+            MouseState::AnalogInput1 => self.joystick_axes[Axis::RightY as usize],
+            // MouseState::AnalogInput2 => self.joystick_axes[Axis::LeftX as usize],
+            // MouseState::AnalogInput3 => self.joystick_axes[Axis::LeftY as usize],
+        };
+
+        // if self.state == NegConState::SwitchLow {
+        //     println!("buttons: 0x{:X}", self.digital_switches);
+        // }
+
+
+        if let Some(state) = self.next(self.state, data) {
+            self.state = state;
+            self.in_ack = state != MouseState::Init;
+            received
+        } else {
+            self.reset();
+            0xFF
+        }
+    }
+
+    fn in_ack(&self) -> bool {
+        self.in_ack
+    }
+
+    fn reset(&mut self) {
+        self.in_ack = false;
+        self.state = MouseState::Init;
+    }
+
+    fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
+        self.joystick_axes = [right.0, right.1, left.0, left.1];
+    }
+
+    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+        &mut self.joystick_axes
+    }
+
+
+    fn set_buttons(&mut self, buttons: u16) {
+        self.digital_switches = buttons;
+    }
+    fn get_buttons(&self) -> u16 {
+        self.digital_switches
+    }
+    fn set_analog_mode(&mut self, _is_analog: bool) {
+        info!("analog mode is ignored for negcon")
+    }
+    fn get_analog_mode(&self) -> bool {
+        true
+    }
+
+}
+
+impl Mouse {
+    const ANALOG_STATES: [(MouseState, Option<u8>); 7] = [
+        (MouseState::Init, Some(0x00)),
+        (MouseState::IdLow, Some(0x01)),
+        (MouseState::IdHigh, Some(0x42)),
+        (MouseState::SwitchLow, None),
+        (MouseState::SwitchHigh, None),
+        (MouseState::AnalogInput0, None),
+        (MouseState::AnalogInput1, Some(0x00)),
+        // (MouseState::AnalogInput2, Some(0x00)),
+        // (MouseState::AnalogInput3, Some(0x00)),
+    ];
+    fn next(&self, current_state: MouseState, received_byte: u8) -> Option<MouseState> {
         let idx = current_state as usize;
 
 

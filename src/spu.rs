@@ -629,7 +629,7 @@ impl Spu {
             0x1F801D96 => return T::from_u32(self.get_noise_mode_enabled::<1>() as u32),
             0x1F801D98 => return T::from_u32(self.get_reverb_mode::<0>() as u32),
             0x1F801D9A => return T::from_u32(self.get_reverb_mode::<1>() as u32),
-            // 0x1F801DA2 => return T::from_u32(self.reverb.set_base_address(val),
+            0x1F801DA2 => return T::from_u32(0),//return T::from_u32(self.reverb.get_base_address(val),
             0x1F801DA4 => return T::from_u32(self.memory.irq_address as u32),
             0x1F801DB0 => return T::from_u32(self.cd_audio_input_volume_left as u32), //  (for normal CD-DA, and compressed XA-ADPCM)
             0x1F801DB2 => return T::from_u32(self.cd_audio_input_volume_right as u32), //  (for normal CD-DA, and compressed XA-ADPCM)

@@ -3,7 +3,7 @@ use arrayvec::ArrayVec;
 use crate::{ scheduler::Event::CDRomResultIrq};
 use serde::{Deserialize, Serialize};
 
-pub const LINE_DURATION: u64 = 2172;
+pub const LINE_DURATION: u64 = 2172; // in cpu cycles NTSC, 263 scanlines per frame
 pub const HBLANK_DURATION: u64 = 390;
 // pub const SPU_INTERVAL: u64 = 668;
 // pub const SAMPLES_PER_FRAME: u64 = 735;
@@ -27,6 +27,7 @@ pub enum Event {
     SerialSend,
     DsrOff,
     Dma,
+    LightGun(u16, u16, u16),
 }
 
 impl Event {
@@ -91,6 +92,12 @@ impl Scheduler {
     //     }
     // }
 
+    pub fn unschedule_light_gun(&mut self) {
+        self.tasks.retain(|x| match x.event {
+            Event::LightGun(_,_ ,_) => false,
+            _ => true
+        });
+    }
     pub fn unschedule(&mut self, event: &Event) {
         self.tasks.retain(|x| x.event != *event);
     }

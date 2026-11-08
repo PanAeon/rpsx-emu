@@ -62,6 +62,7 @@ pub struct Gpu {
     // gp0_command_method: fn(&mut Gpu),
     gp0_mode: Gp0Mode,
     even: bool,
+    pub current_line: u32,
     in_hblank: bool,
     in_vblank: bool,
     read: u32,
@@ -129,6 +130,7 @@ impl Gpu {
             // gp0_command_method: Gpu::gp0_nop,
             gp0_mode: Gp0Mode::Command,
             even: false,
+            current_line: 0,
             in_vblank: false,
             in_hblank: false,
             read: 0,
@@ -1481,6 +1483,7 @@ impl Gpu {
     }
     pub fn exit_vsync(&mut self) {
         self.in_vblank = false;
+        self.current_line = 0;
     }
     pub fn enter_hsync(&mut self) {
         self.in_hblank = true;
@@ -1490,6 +1493,7 @@ impl Gpu {
     }
     pub fn exit_hsync(&mut self) {
         self.in_hblank = false;
+        self.current_line += 1;
     }
     pub fn get_clock_divider(&self) -> u16 {
         const DOT_CLOCK_DIVIDERS: [u16; 8] = [10, 8, 5, 4, 7, 7, 7, 7];

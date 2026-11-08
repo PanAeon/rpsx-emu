@@ -119,6 +119,12 @@ impl InterruptController {
             self.status.set_ctl_mem(true);
          }
     }
+    pub fn set_ctl_light(&mut self) {
+         // if !self.status.ctl_light() {
+            self.int.set_ctl_light(true);
+            self.status.set_ctl_light(true);
+         // }
+    }
 
 
 }

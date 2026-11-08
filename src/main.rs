@@ -2,6 +2,7 @@ use cpal::traits::StreamTrait;
 use gilrs::Axis;
 use log::LevelFilter;
 use log::info;
+use wgpu::hal::vulkan::conv::map_filter_mode;
 use wgpu_profiler::GpuProfiler;
 use winit::window::CustomCursor;
 // use env_logger::fmt::style::Color;
@@ -11,6 +12,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread::current;
 use wgpu::util::DeviceExt;
 use winit::keyboard::Key;
 use winit::{
@@ -31,9 +33,11 @@ use crate::gpu::DisplayDepth;
 use crate::save_state::load_state;
 use crate::save_state::save_state;
 use crate::sio::GunCon;
+use crate::sio::Justifier;
 use crate::sio::Sio;
 use crate::spu::Spu;
 use crate::system::System;
+use crate::timers::ClockSource;
 
 mod audio;
 mod bios;
@@ -106,6 +110,8 @@ pub struct Cli {
     mouse2: bool,
     #[arg(long)]
     guncon: bool,
+    #[arg(long)]
+    justifier: bool,
 }
 
 fn main() {
@@ -273,6 +279,8 @@ pub struct State {
     mouse_pos: (f64, f64),
     mouse_moved: bool,
     guncon: bool,
+    justifier: bool,
+    line_start_cycle: u64,
 }
 
 impl State {
@@ -671,7 +679,13 @@ impl State {
         });
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
-        let sio = sio::Sio::new(cli.negcon, cli.mouse1, cli.mouse2, cli.guncon);
+        let sio = sio::Sio::new(
+            cli.negcon,
+            cli.mouse1,
+            cli.mouse2,
+            cli.guncon,
+            cli.justifier,
+        );
         let sio2 = sio2::Sio2::new();
         let mdec = mdec::Mdec::new();
         let mut scheduler = scheduler::Scheduler::default();
@@ -837,6 +851,8 @@ impl State {
             mouse_pos: (0.0, 0.0),
             mouse_moved: false,
             guncon: cli.guncon,
+            justifier: cli.justifier,
+            line_start_cycle: 0,
         };
 
         for (id, gamepad) in state.gilrs.gamepads() {
@@ -1224,6 +1240,7 @@ impl State {
                         // self.cpu.system.gpu_sender.send(gpu::GpuMsg::ExitHSync).expect("ok");
                         self.system.gpu.exit_hsync();
                         timers::Timers::exit_hsync(&mut self.system);
+                        self.line_start_cycle = self.system.scheduler.cycle;
                     }
                     scheduler::Event::CDRomResultIrq(_resp) => {
                         // cdrom::CDRom::process_response(&mut self.system, resp);
@@ -1234,6 +1251,36 @@ impl State {
                     scheduler::Event::SerialSend => Sio::process_serial_send(&mut self.system),
                     scheduler::Event::DsrOff => self.system.sio.turn_dsr_off(),
                     scheduler::Event::Dma => dma::dma_event(&mut self.system),
+                    scheduler::Event::LightGun(tick, first, last) => {
+                        self.system.scheduler.unschedule_light_gun();
+
+                        let line = self.system.gpu.current_line;
+                        let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
+                        let current_tick = (current_cycle * 11 / 7) as u16;
+                        let target_line  = if line < first as u32 || line > last as u32 {
+                            first
+                        } else {
+                            // println!("target: {}, current: {}", tick, current_tick);
+                            let error = tick as i32 - current_tick as i32;
+                            if error.abs() < 50 {
+                               self.system.irqctl.set_ctl_light();
+                            }
+                            // if tick > current_tick {
+                            /*  */    
+                                
+                            // } else {
+                                // (line as u16 + 1, 3413 - tick + current_tick) 
+                            // }
+                            line as u16 + 1
+                            
+                        };
+                        let cycles = self.cycles_until_line_and_tick(target_line, tick);
+                        self.system.scheduler.schedule(
+                            scheduler::Event::LightGun(tick, first, last),
+                            cycles,
+                            None,
+                        );
+                    }
                 }
             }
             // self.update_interpreter();
@@ -1552,7 +1599,7 @@ impl State {
 
         // let mx = mx * (he as f64 - hs as  f64) / width as f64;// +  bx * width as f64;
         let mx = mx * 0.72; //TODO: why?
-        let my  = my * 0.91;
+        let my = my * 0.91;
 
         let mx = mx * 3413.0 + hs as f64;
         let my = my * 263.0 + vs as f64;
@@ -1563,9 +1610,9 @@ impl State {
     fn get_pointer_pos(&mut self, x: f64, y: f64) -> (u16, u16) {
         let (ticks, lines) = self.get_display_pos(x, y);
         let tick_offset = -140.0;
-        let ticks = ticks+tick_offset;
+        let ticks = ticks + tick_offset;
 
-        const NTSC_FREQ : f64 = 53693175.0;
+        const NTSC_FREQ: f64 = 53693175.0;
         // 8MHz units for X = 44100*768*11/7 = 53222400 / 8000000 = 6.6528
         let divider = NTSC_FREQ / 8000000.0;
 
@@ -1577,31 +1624,54 @@ impl State {
         (m_pos_x, m_pos_y)
     }
 
+    pub fn cycles_until_line_and_tick(&mut self, line: u16, tick: u16) -> u64 {
+        let mut current_line = self.system.gpu.current_line as u16;
+        let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
+        let current_tick = current_cycle * 11 / 7;
+        let fractional_ticks = 0;//current_cycle * 11 % 7;
+        let ticks = if tick as u64 >= current_tick {
+            tick as u64 - current_tick
+        } else {
+            current_line += 1;
+            3413 + tick as u64 - current_tick
+        };
+        let lines = if line > current_line {
+            (line - current_line)
+        } else {
+            263 - current_line + line
+        };
+        const NTSC_TICKS_PER_LINE: u64 = 3413;
+        let total = ticks as u64 + lines as u64 * NTSC_TICKS_PER_LINE;
+        let system_cycles = ((total * 451584 + fractional_ticks + 715908) / 715909);
+        system_cycles
+    }
+    pub fn schedule_justifier_irq(&mut self) {
+        self.system.scheduler.unschedule_light_gun();
+        let (ticks, lines) = self.get_pointer_pos(self.mouse_pos.0, self.mouse_pos.1);
+
+
+        const NTSC_TOTAL_LINES: u16 = 263;
+        let m_irq_tick = (ticks*7) + 240;
+        let start_line_ofsset = 54;
+        let end_line_offset = start_line_ofsset - 6;
+        let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
+        let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
+
+
+        let cycles = self.cycles_until_line_and_tick(lines, m_irq_tick);
+        self.system.scheduler.schedule(
+            scheduler::Event::LightGun(m_irq_tick, m_irq_first_line, m_irq_last_line),
+            cycles,
+            None,
+        );
+        // self.system.scheduler.schedule(scheduler::Event::LightGun(1), sys_cycles, None);
+        // self.system.scheduler.schedule(scheduler::Event::LightGun(2), system_cycles + 140, None);
+        // self.system.scheduler.schedule(scheduler::Event::LightGun(3), sys_cycles + 140, None);
+    }
+
     fn handle_mouse_moved(&mut self, x: f64, y: f64) {
         self.mouse_moved = true;
         if self.guncon {
-            let (_, _, width, height, hs, he, vs, ve) = self.system.gpu.update_crt_display_params();
-            let scale = height as f64 / self.config.height as f64;
-            let w = width as f64 / scale / self.config.width as f64;
-            let h: f64;
-            let mut bx: f64 = (1.0 - w) / 2.0;
-            let mut by: f64 = 0.0;
-
-            if w * width as f64 > self.output_width as f64 {
-                let scale = width as f64 / self.config.width as f64;
-                h = height as f64 / scale / self.config.height as f64;
-                bx = 0.0;
-                by = (1.0 - h) / 2.0;
-            }
-            let mx = (x - bx * self.config.width as f64)
-                / (self.config.width as f64 - 2.0 * bx * self.config.width as f64);
-            let my = (y - by * self.config.height as f64)
-                / (self.config.height as f64 - 2.0 * by * self.config.height as f64);
-            // println!("mx:  {}, my: {}", mx, my);
-            // let line_offset = 0.0;
-            // let tick_offset = 0.0;
-            let mx = mx.clamp(0.0, 1.0) * (0x1CD - 0x4D) as f64 + 0x4D as f64;
-            let my = my.clamp(0.0, 1.0) * (0xF8 - 0x19) as f64 + 0x19 as f64;
             let (mx, my) = self.get_pointer_pos(x, y);
             let [b0, b1] = (mx as u16).to_le_bytes();
             let [b2, b3] = (my as u16).to_le_bytes();
@@ -1641,6 +1711,8 @@ impl State {
             };
             mouse.set_stick_axis((0, 0), (h, v));
         }
+        self.mouse_pos.0 = x;
+        self.mouse_pos.1 = y;
         // self.clear_color.r = x / self.config.width as f64;
         // self.clear_color.g = y / self.config.height as f64;
     }
@@ -1756,6 +1828,14 @@ impl State {
                 let buttons = self.system.sio.gamepad1.get_buttons();
                 self.system.sio.gamepad1.set_buttons(buttons | (1 << 14));
             }
+            (KeyCode::KeyQ, true) => {
+                let buttons = self.system.sio.gamepad1.get_buttons();
+                self.system.sio.gamepad1.set_buttons(buttons & !(1 << 3));
+            }
+            (KeyCode::KeyQ, false) => {
+                let buttons = self.system.sio.gamepad1.get_buttons();
+                self.system.sio.gamepad1.set_buttons(buttons | (1 << 3));
+            }
             // (KeyCode::ArrowRight, true) => self.game_state.camera_pos.0 += 33.0,
             // (KeyCode::ArrowLeft, true) => if self.game_state.camera_pos.0 >= 33.0 {self.game_state.camera_pos.0 -= 33.0 },
             // (KeyCode::ArrowUp, true) => if self.game_state.camera_pos.1 >= 33.0  {self.game_state.camera_pos.1 -= 33.0},
@@ -1802,6 +1882,7 @@ impl State {
             }
         }
     }
+
     fn handle_mouse_button(
         &mut self,
         button: MouseButton,
@@ -1812,7 +1893,45 @@ impl State {
         // _logical_key: Key,
         // _repeat: bool,
     ) {
-        if self.guncon {
+        if self.justifier {
+            let buttons = self.system.sio.gamepad1.get_buttons();
+            match (button, is_pressed) {
+                (MouseButton::Left, true) => {
+                    self.system.sio.gamepad1.set_buttons(buttons & !(1 << 15));
+                    // aha..
+                    // self.system.irqctl.set_ctl_light();
+                    self.schedule_justifier_irq();
+                }
+                (MouseButton::Left, false) => {
+                    self.system.sio.gamepad1.set_buttons(buttons | (1 << 15));
+                }
+                (MouseButton::Right, true) => {
+                    let Some(guncon) = self
+                        .system
+                        .sio
+                        .gamepad1
+                        .as_any()
+                        .downcast_mut::<Justifier>()
+                    else {
+                        panic!("oop failed");
+                    };
+                    guncon.shoot_offscreen = true;
+                }
+                (MouseButton::Right, false) => {
+                    let Some(guncon) = self
+                        .system
+                        .sio
+                        .gamepad1
+                        .as_any()
+                        .downcast_mut::<Justifier>()
+                    else {
+                        panic!("oop failed");
+                    };
+                    guncon.shoot_offscreen = false;
+                }
+                _ => {}
+            }
+        } else if self.guncon {
             let buttons = self.system.sio.gamepad1.get_buttons();
             match (button, is_pressed) {
                 (MouseButton::Left, true) => {
@@ -1837,10 +1956,6 @@ impl State {
                 }
                 _ => {}
             }
-            if is_pressed {
-            } else {
-            }
-        } else if self.mouse1 || self.mouse2 {
             let mouse = if self.mouse1 {
                 &mut self.system.sio.gamepad1
             } else {
@@ -2156,7 +2271,7 @@ impl ApplicationHandler<State> for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         window.set_title("rpsx-emu");
-        if self.cli.guncon {
+        if self.cli.guncon || self.cli.justifier {
             let w = 96;
             let h = 96;
             let rgba = include_bytes!("crosshair.rgba");

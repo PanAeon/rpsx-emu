@@ -24,8 +24,10 @@ pub struct Sio {
 }
 
 impl Sio {
-    pub fn new(negcon: bool, mouse1: bool, mouse2:bool, guncon: bool) -> Self {
-        let gamepad1: Box<dyn Controller> = if guncon {
+    pub fn new(negcon: bool, mouse1: bool, mouse2:bool, guncon: bool, justifier: bool) -> Self {
+        let gamepad1: Box<dyn Controller> = if justifier {
+            Box::new(Justifier::default())
+        } else if guncon {
             Box::new(GunCon::default())
         } else if mouse1 {
             Box::new(Mouse::default())
@@ -764,6 +766,143 @@ impl GunCon {
         // if current_state == GamepadState::IdLow {
             // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
         // }
+        let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
+        next_state_is_valid.then_some(next_state)
+    }
+}
+
+
+
+#[derive(Serialize, Deserialize)]
+pub struct Justifier {
+    state: JustifierState,
+    in_ack: bool,
+    pub digital_switches: u16,
+    pub joystick_axes: [u8; 4],
+    pub shoot_offscreen: bool,
+}
+impl Default for Justifier {
+    fn default() -> Self {
+        Self {
+            state: JustifierState::default(),
+            digital_switches: 0xFFFF,
+            joystick_axes: [0x0,0x0, 0x0, 0x0] ,
+            in_ack: Default::default(),
+            shoot_offscreen: false
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum JustifierState {
+    #[default]
+    Init,
+    IdLow,
+    IdHigh,
+    SwitchLow,
+    SwitchHigh,
+    // AnalogInput0,
+    // AnalogInput1,
+    // AnalogInput2,
+    // AnalogInput3,
+}
+
+/*
+* __Halfword 0 (Controller Info)___________________
+  0-15  Controller Info  (5A31h=Konami Lightgun; Timer/IRQ10 type)
+  __Halfword 1 (Buttons)
+  0-2   Not used                 (All bits always 1)
+  3     Start Button (Left Side) (0=Pressed, 1=Released)  ;aka Joypad Start
+  4-13  Not used                 (All bits always 1)
+  14    Back Button  (Rear End)  (0=Pressed, 1=Released)  ;aka Joypad X-Button
+  15    Trigger Button           (0=Pressed, 1=Released)  ;aka Joypad []-Button
+*/
+
+#[typetag::serde]
+impl Controller for Justifier {
+    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
+        const ID: [u8;2] = 0x5A31_u16.to_le_bytes();
+        let received = match self.state {
+            JustifierState::Init => 0xFF,
+
+            JustifierState::IdLow => ID[0],
+            JustifierState::IdHigh => ID[1],
+
+            JustifierState::SwitchLow => {
+                self.digital_switches as u8
+            },
+            JustifierState::SwitchHigh => {
+                (self.digital_switches >> 8)  as u8
+            }, 
+
+            // JustifierState::AnalogInput0 => 0,
+            // JustifierState::AnalogInput1 => 0,
+            // JustifierState::AnalogInput2 => axes[Axis::LeftX as usize],
+            // JustifierState::AnalogInput3 => axes[Axis::LeftY as usize],
+        };
+
+        if let Some(state) = self.next(self.state, data) {
+            self.state = state;
+            self.in_ack = state != JustifierState::Init;
+            received
+        } else {
+            self.reset();
+            0xFF
+        }
+    }
+
+    fn in_ack(&self) -> bool {
+        self.in_ack
+    }
+
+    fn reset(&mut self) {
+        self.in_ack = false;
+        self.state = JustifierState::Init;
+    }
+
+    fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
+        self.joystick_axes = [right.0, right.1, left.0, left.1];
+    }
+
+    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+        &mut self.joystick_axes
+    }
+
+
+    fn set_buttons(&mut self, buttons: u16) {
+        self.digital_switches = buttons;
+    }
+    fn get_buttons(&self) -> u16 {
+        self.digital_switches
+    }
+    fn set_analog_mode(&mut self, _is_analog: bool) {
+        info!("analog mode is ignored for negcon")
+    }
+    fn get_analog_mode(&self) -> bool {
+        true
+    }
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+
+}
+
+impl Justifier {
+    const ANALOG_STATES: [(JustifierState, Option<u8>); 5] = [
+        (JustifierState::Init, Some(0x00)),
+        (JustifierState::IdLow, Some(0x01)),
+        (JustifierState::IdHigh, Some(0x42)),
+        (JustifierState::SwitchLow, None),
+        (JustifierState::SwitchHigh, None),
+        // (JustifierState::AnalogInput0, None),
+        // (JustifierState::AnalogInput1, None),
+    ];
+    fn next(&self, current_state: JustifierState, received_byte: u8) -> Option<JustifierState> {
+        let idx = current_state as usize;
+
+
+        let (next_state, check_byte) = Self::ANALOG_STATES[(idx + 1) % Self::ANALOG_STATES.len()];
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
     }

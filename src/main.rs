@@ -1254,6 +1254,7 @@ impl State {
                     scheduler::Event::LightGun(tick, first, last) => {
                         self.system.scheduler.unschedule_light_gun();
 
+                        self.system.irqctl.set_ctl_light();
                         let line = self.system.gpu.current_line;
                         let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
                         let current_tick = (current_cycle * 11 / 7) as u16;
@@ -1262,9 +1263,8 @@ impl State {
                         } else {
                             // println!("target: {}, current: {}", tick, current_tick);
                             let error = tick as i32 - current_tick as i32;
-                            if error.abs() < 50 {
-                               self.system.irqctl.set_ctl_light();
-                            }
+                            // if error.abs() < 50 {
+                            // }
                             // if tick > current_tick {
                             /*  */    
                                 
@@ -1652,6 +1652,8 @@ impl State {
 
         const NTSC_TOTAL_LINES: u16 = 263;
         let m_irq_tick = (ticks*7) + 240;
+
+                             // println!("target tick: {} (0..3413) ", m_irq_tick);
         let start_line_ofsset = 54;
         let end_line_offset = start_line_ofsset - 6;
         let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;

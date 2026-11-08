@@ -1371,6 +1371,7 @@ impl GamepadMode {
         match self {
             Self::Digital => 0x5A41_u16.to_le_bytes(),
             Self::Analog => 0x5A73_u16.to_le_bytes(),
+            // Self::Analog => 0x5A79_u16.to_le_bytes(),// dual shock 2, doesn't work like this
         }
     }
     pub fn set(&mut self, in_analog: bool) {
@@ -1401,9 +1402,13 @@ impl GamepadMode {
 
 
         let (next_state, check_byte) = state_table[(idx + 1) % state_table.len()];
-        // if current_state == GamepadState::IdLow {
-            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
-        // }
+        if current_state == GamepadState::IdLow {
+            // if received_byte == 0x43 {
+            //     panic!("gotcha!")
+            // }
+            // so it works..
+            println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        }
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
     }

@@ -1345,6 +1345,7 @@ pub enum GamepadMode {
     #[default]
     Digital,
     Analog,
+    Config
 }
 
 impl GamepadMode {
@@ -1371,6 +1372,7 @@ impl GamepadMode {
         match self {
             Self::Digital => 0x5A41_u16.to_le_bytes(),
             Self::Analog => 0x5A73_u16.to_le_bytes(),
+            Self::Config => 0x5AF3_u16.to_le_bytes(),
             // Self::Analog => 0x5A79_u16.to_le_bytes(),// dual shock 2, doesn't work like this
         }
     }
@@ -1386,6 +1388,7 @@ impl GamepadMode {
         match self {
             Self::Digital => false,
             Self::Analog => true,
+            Self::Config => true,
         }
     }
 
@@ -1393,6 +1396,7 @@ impl GamepadMode {
         match self {
             Self::Digital => &Self::DIGITAL_STATES,
             Self::Analog => &Self::ANALOG_STATES,
+            Self::Config => &Self::ANALOG_STATES,
         }
     }
 
@@ -1402,13 +1406,14 @@ impl GamepadMode {
 
 
         let (next_state, check_byte) = state_table[(idx + 1) % state_table.len()];
-        if current_state == GamepadState::IdLow {
+        // if current_state == GamepadState::IdLow {
             // if received_byte == 0x43 {
             //     panic!("gotcha!")
             // }
+            // ok,  next byte checks if we want 
             // so it works..
-            println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
-        }
+            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        // }
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
     }

@@ -1253,26 +1253,41 @@ impl State {
                     scheduler::Event::Dma => dma::dma_event(&mut self.system),
                     scheduler::Event::LightGun(tick, first, last) => {
                         self.system.scheduler.unschedule_light_gun();
+                        let Some(guncon) = self
+                            .system
+                            .sio
+                            .gamepad1
+                            .as_any()
+                            .downcast_mut::<Justifier>()
+                        else {
+                            panic!("oop failed");
+                        };
 
-                        self.system.irqctl.set_ctl_light();
+                        if !guncon.shoot_offscreen {
+                            self.system.irqctl.set_ctl_light();
+                        }
                         let line = self.system.gpu.current_line;
                         let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
                         let current_tick = (current_cycle * 11 / 7) as u16;
-                        let target_line  = if line < first as u32 || line > last as u32 {
+                        let tmr: u32 = crate::timers::load(&mut self.system, 0);
+                        // self.system.timers.timers[0].counter = current_tick as u32;
+                        self.system.timers.timers[0].counter = tick as u32;
+                        // self.system.timers.timers[1].counter = line;
+                        // println!("timer: {}", tmr);
+                        let target_line = if line < first as u32 || line > last as u32 {
                             first
                         } else {
                             // println!("target: {}, current: {}", tick, current_tick);
-                            let error = tick as i32 - current_tick as i32;
+                            // let error = tick as i32 - current_tick as i32;
                             // if error.abs() < 50 {
                             // }
                             // if tick > current_tick {
-                            /*  */    
-                                
+                            /*  */
+
                             // } else {
-                                // (line as u16 + 1, 3413 - tick + current_tick) 
+                            // (line as u16 + 1, 3413 - tick + current_tick)
                             // }
                             line as u16 + 1
-                            
                         };
                         let cycles = self.cycles_until_line_and_tick(target_line, tick);
                         self.system.scheduler.schedule(
@@ -1628,7 +1643,7 @@ impl State {
         let mut current_line = self.system.gpu.current_line as u16;
         let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
         let current_tick = current_cycle * 11 / 7;
-        let fractional_ticks = 0;//current_cycle * 11 % 7;
+        let fractional_ticks = 0; //current_cycle * 11 % 7;
         let ticks = if tick as u64 >= current_tick {
             tick as u64 - current_tick
         } else {
@@ -1649,16 +1664,18 @@ impl State {
         self.system.scheduler.unschedule_light_gun();
         let (ticks, lines) = self.get_pointer_pos(self.mouse_pos.0, self.mouse_pos.1);
 
-
         const NTSC_TOTAL_LINES: u16 = 263;
-        let m_irq_tick = (ticks*7) + 240;
+        // const NTSC_FREQ: f64 = 53693175.0;
+        // let divider = NTSC_FREQ / 8000000.0;
+        let m_irq_tick = (ticks * 5).saturating_sub(300);
 
-                             // println!("target tick: {} (0..3413) ", m_irq_tick);
-        let start_line_ofsset = 54;
+        // println!("target tick: {} (0..3413) ", m_irq_tick);
+        let start_line_ofsset = 48;
         let end_line_offset = start_line_ofsset - 6;
         let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
         let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
-
+        // let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
+        // let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
 
         let cycles = self.cycles_until_line_and_tick(lines, m_irq_tick);
         self.system.scheduler.schedule(

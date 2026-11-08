@@ -73,7 +73,7 @@ bitfield::bitfield! {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Timer {
-    counter: u32,
+    pub counter: u32,
     mode: Mode,
     target: u16,
     last_read: u64
@@ -115,7 +115,7 @@ impl Timer {
 
 #[derive(Serialize, Deserialize)]
 pub struct Timers {
-    timers: [Timer; 3],
+    pub timers: [Timer; 3],
     in_hsync: bool,
     in_vsync: bool,
     hblanks: u32,

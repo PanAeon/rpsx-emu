@@ -679,7 +679,7 @@ impl Controller for GunCon {
     fn send_and_receive_byte(&mut self, data: u8) -> u8 {
         const ID: [u8;2] = 0x5A63_u16.to_le_bytes();
         let axes = if self.shoot_offscreen {
-            &[0x0d,0x01, 0x88, 0x00]
+            &[0x01,0x00, 0xa, 0x00]
         } else {
             &self.joystick_axes
         };

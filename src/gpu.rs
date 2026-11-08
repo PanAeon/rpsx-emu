@@ -1292,7 +1292,7 @@ impl Gpu {
     }
 
     // from swan station
-    pub fn update_crt_display_params(&self) -> (u16, u16, u16, u16) {
+    pub fn update_crt_display_params(&self) -> (u16, u16, u16, u16, u16, u16, u16, u16) {
         const NTSC_TICKS_PER_LINE: u16 = 3413;
         const NTSC_TOTAL_LINES: u16 = 263;
 
@@ -1398,6 +1398,10 @@ impl Gpu {
             display_vram_top,
             display_vram_width,
             display_vram_height,
+            horizontal_visible_start,
+            horizontal_visible_end,
+            vertical_visible_start,
+            vertical_visible_end
         )
     }
 
@@ -1453,7 +1457,7 @@ impl Gpu {
                     depth,
                 } => {
 
-            let (sx, sy, width, height) = self.update_crt_display_params();
+            let (sx, sy, width, height,_,_,_,_) = self.update_crt_display_params();
                     // println!(">>{}, {}, {}, {}", sx, sy, width, height);
                     (
                     width as usize * self.scale as usize,

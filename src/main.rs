@@ -3,6 +3,7 @@ use gilrs::Axis;
 use log::LevelFilter;
 use log::info;
 use wgpu_profiler::GpuProfiler;
+use winit::window::CustomCursor;
 // use env_logger::fmt::style::Color;
 use std::io::Read;
 use std::ops::Mul;
@@ -1527,12 +1528,61 @@ impl State {
         }
     }
 
+    fn get_display_pos(&mut self, x: f64, y: f64) -> (f64, f64) {
+        // I understant in ticks / lines
+        let (_, _, width, height, hs, he, vs, ve) = self.system.gpu.update_crt_display_params();
+        let scale = height as f64 / self.config.height as f64;
+        let w = width as f64 / scale / self.config.width as f64;
+        let h: f64;
+        let mut bx: f64 = (1.0 - w) / 2.0;
+        let mut by: f64 = 0.0;
+
+        if w * width as f64 > self.output_width as f64 {
+            let scale = width as f64 / self.config.width as f64;
+            h = height as f64 / scale / self.config.height as f64;
+            bx = 0.0;
+            by = (1.0 - h) / 2.0;
+        }
+        let mx = (x - bx * self.config.width as f64)
+              // / (self.config.width as f64);
+            / (self.config.width as f64 - 2.0 * bx * self.config.width as f64);
+        let my = (y - by * self.config.height as f64)
+        // / self.config.height as f64;
+            / (self.config.height as f64 - 2.0 * by * self.config.height as f64);
+
+        // let mx = mx * (he as f64 - hs as  f64) / width as f64;// +  bx * width as f64;
+        let mx = mx * 0.72; //TODO: why?
+        let my  = my * 0.91;
+
+        let mx = mx * 3413.0 + hs as f64;
+        let my = my * 263.0 + vs as f64;
+        // println!("mx:  {}, my: {}", mx, my);
+        (mx, my)
+    }
+
+    fn get_pointer_pos(&mut self, x: f64, y: f64) -> (u16, u16) {
+        let (ticks, lines) = self.get_display_pos(x, y);
+        let tick_offset = -140.0;
+        let ticks = ticks+tick_offset;
+
+        const NTSC_FREQ : f64 = 53693175.0;
+        // 8MHz units for X = 44100*768*11/7 = 53222400 / 8000000 = 6.6528
+        let divider = NTSC_FREQ / 8000000.0;
+
+        let m_pos_x = (ticks / divider) as u16;
+        let m_pos_y = lines as u16;
+
+        // println!(">>>> {} {}", m_pos_x, m_pos_y);
+
+        (m_pos_x, m_pos_y)
+    }
+
     fn handle_mouse_moved(&mut self, x: f64, y: f64) {
         self.mouse_moved = true;
         if self.guncon {
-            let (_, _, width, height) = self.system.gpu.update_crt_display_params();
+            let (_, _, width, height, hs, he, vs, ve) = self.system.gpu.update_crt_display_params();
             let scale = height as f64 / self.config.height as f64;
-            let  w = width as f64 / scale / self.config.width as f64;
+            let w = width as f64 / scale / self.config.width as f64;
             let h: f64;
             let mut bx: f64 = (1.0 - w) / 2.0;
             let mut by: f64 = 0.0;
@@ -1543,11 +1593,16 @@ impl State {
                 bx = 0.0;
                 by = (1.0 - h) / 2.0;
             }
-            let mx =  (x - bx* self.config.width as f64) / (self.config.width as f64 - 2.0 * bx  * self.config.width as f64);
-            let my = (y - by*self.config.height as f64)  / (self.config.height as f64 - 2.0 * by * self.config.height as f64);
+            let mx = (x - bx * self.config.width as f64)
+                / (self.config.width as f64 - 2.0 * bx * self.config.width as f64);
+            let my = (y - by * self.config.height as f64)
+                / (self.config.height as f64 - 2.0 * by * self.config.height as f64);
             // println!("mx:  {}, my: {}", mx, my);
-            let mx = mx.clamp(0.0, 1.0) * (0x1CD-0x4D) as f64 + 0x4D as f64;
-            let my = my.clamp(0.0, 1.0) * (0xF8-0x19) as f64 + 0x19 as f64;
+            // let line_offset = 0.0;
+            // let tick_offset = 0.0;
+            let mx = mx.clamp(0.0, 1.0) * (0x1CD - 0x4D) as f64 + 0x4D as f64;
+            let my = my.clamp(0.0, 1.0) * (0xF8 - 0x19) as f64 + 0x19 as f64;
+            let (mx, my) = self.get_pointer_pos(x, y);
             let [b0, b1] = (mx as u16).to_le_bytes();
             let [b2, b3] = (my as u16).to_le_bytes();
             self.system.sio.gamepad1.set_stick_axis((b2, b3), (b0, b1));
@@ -2101,6 +2156,16 @@ impl ApplicationHandler<State> for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         window.set_title("rpsx-emu");
+        if self.cli.guncon {
+            let w = 96;
+            let h = 96;
+            let rgba = include_bytes!("crosshair.rgba");
+            // let rgba = vec![255; (w * h * 4) as usize];
+            let source = CustomCursor::from_rgba(rgba, w, h, w / 2, h / 2).unwrap();
+            let custom_cursor = event_loop.create_custom_cursor(source);
+            window.set_cursor(custom_cursor);
+        }
+
         self.state = Some(pollster::block_on(State::new(window, self.cli.clone())).unwrap());
     }
 

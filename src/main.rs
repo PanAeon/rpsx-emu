@@ -1261,7 +1261,6 @@ impl State {
                     scheduler::Event::DsrOff => self.system.sio.turn_dsr_off(),
                     scheduler::Event::Dma => dma::dma_event(&mut self.system),
                     scheduler::Event::LightGun(tick, first, last) => {
-                        println!("ligght event");
                         self.system.scheduler.unschedule_light_gun();
                         let Some(justifier) = self
                             .system
@@ -1280,8 +1279,18 @@ impl State {
                         // let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
                         // let current_tick = (current_cycle * 11 / 7) as u16;
                         // let tmr: u32 = crate::timers::load(&mut self.system, 0);
-                        // self.system.timers.timers[0].counter = current_tick as u32;
-                        self.system.timers.timers[0].counter = tick as u32;
+                        // self.system.timers.timers[0].counter = tick  as u32  / 5;
+                        // self.system.timers.timers[0].counter = tick as u32 / 2;
+                        // self.system.timers.timers[1].counter = line as u32;
+                        // let t1 = self.system.timers.timers[1].counter;
+                        if self.system.timers.timers[0].counter !=  0 {
+                          println!("t0: {}", self.system.timers.timers[0].counter);
+                        }
+                        // const NTSC_FREQ: f64 = 53693175.0;
+                        // let divider = NTSC_FREQ / 8000000.0;
+                        // let total = ticks as u64 + lines as u64 * NTSC_TICKS_PER_LINE;
+                        // let tk = (tick as f64 - 140.0) / divider; 
+                        // println!("target_pos: {}, {}", tk as u32,line);
                         // self.system.timers.timers[1].counter = line;
                         // println!("timer: {}", tmr);
                         let target_line = if line < first as u32 || line > last as u32 {
@@ -1641,10 +1650,11 @@ impl State {
         // 8MHz units for X = 44100*768*11/7 = 53222400 / 8000000 = 6.6528
         let divider = NTSC_FREQ / 8000000.0;
 
+
         let m_pos_x = (ticks / divider) as u16;
         let m_pos_y = lines as u16;
 
-        // println!(">>>> {} {}", m_pos_x, m_pos_y);
+        // println!(">>>> src pos: {} {}", m_pos_x, m_pos_y);
 
         (m_pos_x, m_pos_y)
     }
@@ -1672,22 +1682,25 @@ impl State {
     }
     pub fn schedule_justifier_irq(&mut self) {
         self.system.scheduler.unschedule_light_gun();
-        let (ticks, lines) = self.get_pointer_pos(self.mouse_pos.0, self.mouse_pos.1);
+        let (ticks, lines) = self.get_display_pos(self.mouse_pos.0, self.mouse_pos.1);
 
         const NTSC_TOTAL_LINES: u16 = 263;
         // const NTSC_FREQ: f64 = 53693175.0;
         // let divider = NTSC_FREQ / 8000000.0;
         // let m_irq_tick = (ticks * 5).saturating_sub(300);
-        let m_irq_tick = 2*ticks;//(ticks * 5).saturating_sub(300);
+        // 8MHz units for X = 44100*768*11/7 = 53222400 / 8000000 = 6.6528
+        let m_irq_tick = ticks as u16;//(ticks * 5).saturating_sub(300);
+        let lines  =  lines as u16;
 
         // println!("target tick: {} (0..3413) ", m_irq_tick);
-        let start_line_ofsset = 72;
-        let end_line_offset = start_line_ofsset - 6;
+        let start_line_ofsset = 12;
+        let end_line_offset = 6;
         let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
         let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
         // let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
         // let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
 
+        // self.justifier_irq = Some((m_irq_tick, m_irq_first_line, m_irq_last_line));
         let cycles = self.cycles_until_line_and_tick(lines, m_irq_tick);
         self.system.scheduler.schedule(
             scheduler::Event::LightGun(m_irq_tick, m_irq_first_line, m_irq_last_line),

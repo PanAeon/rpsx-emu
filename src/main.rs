@@ -1422,7 +1422,7 @@ impl State {
             //     // self.interpreter.check_for_tty_output();
             // }
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
-            cdrom::CDRom::tick(&mut self.system, 3 * num_cycles);
+            cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
             self.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {

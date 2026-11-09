@@ -1986,6 +1986,7 @@ impl State {
                 }
                 _ => {}
             }
+        } else {
             let mouse = if self.mouse1 {
                 &mut self.system.sio.gamepad1
             } else {

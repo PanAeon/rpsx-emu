@@ -194,7 +194,7 @@ impl Timers {
 
 
 
-    fn update_value(system: &mut System, which: usize) {
+    pub fn update_value(system: &mut System, which: usize) {
         let timer =  &mut system.timers.timers[which];
 
         let clock_delta = (system.scheduler.cycle - timer.last_read) as u32;

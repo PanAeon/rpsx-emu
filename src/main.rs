@@ -1250,6 +1250,7 @@ impl State {
                         self.system.gpu.exit_hsync();
                         timers::Timers::exit_hsync(&mut self.system);
                         self.line_start_cycle = self.system.scheduler.cycle;
+                        // println!(">>{}", self.system.scheduler.cycle % 2172 );
                     }
                     scheduler::Event::CDRomResultIrq(_resp) => {
                         // cdrom::CDRom::process_response(&mut self.system, resp);
@@ -1277,17 +1278,34 @@ impl State {
                         }
                         let line = self.system.gpu.current_line;
                         // let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
-                        // let current_tick = (current_cycle * 11 / 7) as u16;
-                        // let tmr: u32 = crate::timers::load(&mut self.system, 0);
+                        // let current_tick = (current_cycle * 11 / 7);
+                        let cycle = tick as u32 * 7  / 11;
 
-         let system_cycles = (((tick as u64 * 451584 +  715908) / 715909).saturating_sub(380) / 3).saturating_sub(20);
+                        // rescale to 385..923
+                        let cycle = cycle as f64;
+                        let cycle = 923.0 * (cycle - 385.0) / 1500.0;
+                         // self.system.timers.timers[0].counter = cycle  as u32;
+
+                        // println!("current cycle: {}", cycle);
+
+                        // let tick_diff = if tick as u64 <= current_tick {
+                        //     current_tick - tick as u64
+                        // } else {
+                        //     3413 - tick as u64 + current_tick
+                        // };
+
+                        // let tmr: u32 = crate::timers::load(&mut self.system, 0);
+                        // println!("current_tick: {}", current_tick);
+                        // println!(self.syst)
+
+         // let system_cycles = (((tick as u64 * 451584 +  715908) / 715909).saturating_sub(380) / 3).saturating_sub(20);
                         // self.system.timers.timers[0].counter = system_cycles as u32 ;// in cpu mode apparently
-                        // self.system.timers.timers[0].counter = tick  as u32  / 5;
+                        // self.system.timers.timers[0].counter = tick  as u32;
                         // self.system.timers.timers[0].counter = tick as u32 / 2;
                         // self.system.timers.timers[1].counter = line as u32;
                         // let t1 = self.system.timers.timers[1].counter;
                         if self.system.timers.timers[0].counter !=  0 {
-                          println!("t0: {}", self.system.timers.timers[0].counter);
+                          // println!("t0: {}", self.system.timers.timers[0].counter);
                           // println!("timer0 mode: {:?}", self.system.timers.timers[0].mode);
                           // println!("timer1 mode: {:?}", self.system.timers.timers[1].mode);
                           // println!("timer2 mode: {:?}", self.system.timers.timers[2].mode);
@@ -1314,7 +1332,7 @@ impl State {
                             // }
                             line as u16 + 1
                         };
-                        let cycles = self.cycles_until_line_and_tick(target_line, tick);
+                        let cycles = self.cycles_until_line_and_tick(target_line, tick as u16);
                         self.system.scheduler.schedule(
                             scheduler::Event::LightGun(tick, first, last),
                             cycles,
@@ -1424,6 +1442,9 @@ impl State {
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
             cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
             self.system.scheduler.advance(2 * num_cycles); // 40???
+            // crate::timers::Timers::update_value(&mut self.system, 0);
+            // crate::timers::Timers::update_value(&mut self.system, 1);
+            // crate::timers::Timers::update_value(&mut self.system, 2);
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -1668,8 +1689,9 @@ impl State {
     pub fn cycles_until_line_and_tick(&mut self, line: u16, tick: u16) -> u64 {
         let mut current_line = self.system.gpu.current_line as u16;
         let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
-        let current_tick = current_cycle * 11 / 7;
-        let fractional_ticks = 0; //current_cycle * 11 % 7;
+        // println!("tick: {}", tick);
+        let current_tick = (current_cycle) * 11 / 7;
+        let fractional_ticks = current_cycle * 11 % 7;
         let ticks = if tick as u64 >= current_tick {
             tick as u64 - current_tick
         } else {

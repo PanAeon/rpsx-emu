@@ -223,7 +223,7 @@ impl Timers {
             ClockSource::CpuDiv8 => clock_delta / 8,
             ClockSource::Dot => clock_delta / (system.gpu.get_clock_divider() as u32),
             ClockSource::HBlank => {
-                let h = system.timers.hblanks;
+                let h = system.timers.hblanks; // are we  sure?
                 system.timers.hblanks = 0;
                 h
             }

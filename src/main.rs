@@ -852,7 +852,7 @@ impl State {
                 .then(|| cli.filename.expect("sideload binary to be present")),
             ctrl_pressed: false,
             negcon: cli.negcon,
-            use_interpreter: cli.interpreter,
+            use_interpreter: cli.justifier || cli.interpreter,
             scale,
             mouse1: cli.mouse1,
             mouse2: cli.mouse2,
@@ -865,7 +865,12 @@ impl State {
         };
 
         for (id, gamepad) in state.gilrs.as_ref().unwrap().gamepads() {
-            info!("{} is {:?} ; ff supported? {}", gamepad.name(), gamepad.power_info(), gamepad.is_ff_supported());
+            info!(
+                "{} is {:?} ; ff supported? {}",
+                gamepad.name(),
+                gamepad.power_info(),
+                gamepad.is_ff_supported()
+            );
             if gamepad.name().eq("Microsoft Xbox Controller") {
                 state.active_gamepad = Some(id)
             }
@@ -1152,13 +1157,16 @@ impl State {
 
     #[cold]
     fn call_interpreter(&mut self) {
-        let num_cycles = 20;
+        let num_cycles = 8;
         for _ in 1..num_cycles {
             self.interpreter.run_next_instruction(&mut self.system);
             // self.interpreter.check_for_tty_output();
         }
         cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
         self.system.scheduler.advance(2 * num_cycles); // 40???
+                // crate::timers::Timers::update_value(&mut self.system, 0);
+                // crate::timers::Timers::update_value(&mut self.system, 1);
+                // crate::timers::Timers::update_value(&mut self.system, 2);
     }
     fn update(&mut self, _event_loop: &ActiveEventLoop) {
         self.update_gamepad();
@@ -1279,12 +1287,12 @@ impl State {
                         let line = self.system.gpu.current_line;
                         // let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
                         // let current_tick = (current_cycle * 11 / 7);
-                        let cycle = tick as u32 * 7  / 11;
+                        // let cycle = tick as u32 * 7 / 11;
 
                         // rescale to 385..923
-                        let cycle = cycle as f64;
-                        let cycle = 923.0 * (cycle - 385.0) / 1500.0;
-                         // self.system.timers.timers[0].counter = cycle  as u32;
+                        // let cycle = cycle as f64;
+                        // let cycle = 923.0 * (cycle - 385.0) / 1500.0;
+                        // self.system.timers.timers[0].counter = cycle  as u32;
 
                         // println!("current cycle: {}", cycle);
 
@@ -1298,22 +1306,22 @@ impl State {
                         // println!("current_tick: {}", current_tick);
                         // println!(self.syst)
 
-         // let system_cycles = (((tick as u64 * 451584 +  715908) / 715909).saturating_sub(380) / 3).saturating_sub(20);
+                        // let system_cycles = (((tick as u64 * 451584 +  715908) / 715909).saturating_sub(380) / 3).saturating_sub(20);
                         // self.system.timers.timers[0].counter = system_cycles as u32 ;// in cpu mode apparently
                         // self.system.timers.timers[0].counter = tick  as u32;
                         // self.system.timers.timers[0].counter = tick as u32 / 2;
                         // self.system.timers.timers[1].counter = line as u32;
                         // let t1 = self.system.timers.timers[1].counter;
-                        if self.system.timers.timers[0].counter !=  0 {
-                          // println!("t0: {}", self.system.timers.timers[0].counter);
-                          // println!("timer0 mode: {:?}", self.system.timers.timers[0].mode);
-                          // println!("timer1 mode: {:?}", self.system.timers.timers[1].mode);
-                          // println!("timer2 mode: {:?}", self.system.timers.timers[2].mode);
+                        if self.system.timers.timers[0].counter != 0 {
+                            // println!("t0: {}", self.system.timers.timers[0].counter);
+                            // println!("timer0 mode: {:?}", self.system.timers.timers[0].mode);
+                            // println!("timer1 mode: {:?}", self.system.timers.timers[1].mode);
+                            // println!("timer2 mode: {:?}", self.system.timers.timers[2].mode);
                         }
                         // const NTSC_FREQ: f64 = 53693175.0;
                         // let divider = NTSC_FREQ / 8000000.0;
                         // let total = ticks as u64 + lines as u64 * NTSC_TICKS_PER_LINE;
-                        // let tk = (tick as f64 - 140.0) / divider; 
+                        // let tk = (tick as f64 - 140.0) / divider;
                         // println!("target_pos: {}, {}", tk as u32,line);
                         // self.system.timers.timers[1].counter = line;
                         // println!("timer: {}", tmr);
@@ -1442,9 +1450,12 @@ impl State {
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
             cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
             self.system.scheduler.advance(2 * num_cycles); // 40???
-            // crate::timers::Timers::update_value(&mut self.system, 0);
-            // crate::timers::Timers::update_value(&mut self.system, 1);
-            // crate::timers::Timers::update_value(&mut self.system, 2);
+            // if self.justifier {
+            //     // TODO: check timers, it must work somehow..
+            //     crate::timers::Timers::update_value(&mut self.system, 0);
+            //     crate::timers::Timers::update_value(&mut self.system, 1);
+            //     crate::timers::Timers::update_value(&mut self.system, 2);
+            // }
         }
         //     for _ in 0..200 {
         //         self.cpu.run_next_instruction();
@@ -1677,7 +1688,6 @@ impl State {
         // 8MHz units for X = 44100*768*11/7 = 53222400 / 8000000 = 6.6528
         let divider = NTSC_FREQ / 8000000.0;
 
-
         let m_pos_x = (ticks / divider) as u16;
         let m_pos_y = lines as u16;
 
@@ -1717,12 +1727,12 @@ impl State {
         // let divider = NTSC_FREQ / 8000000.0;
         // let m_irq_tick = (ticks * 5).saturating_sub(300);
         // 8MHz units for X = 44100*768*11/7 = 53222400 / 8000000 = 6.6528
-        let m_irq_tick = ticks as u16;//(ticks * 5).saturating_sub(300);
-        let lines  =  lines as u16;
+        let m_irq_tick = (ticks as u16).saturating_sub(370); //(ticks * 5).saturating_sub(300);
+        let lines = lines as u16;
 
         // println!("target tick: {} (0..3413) ", m_irq_tick);
-        let start_line_ofsset = 12;
-        let end_line_offset = 6;
+        let start_line_ofsset = 34;
+        let end_line_offset = 28;
         let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
         let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
         // let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;

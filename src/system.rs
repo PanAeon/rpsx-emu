@@ -1,3 +1,4 @@
+use gilrs::Gilrs;
 use serde::Serialize;
 
 use crate::{
@@ -110,6 +111,9 @@ pub struct System {
     pub gpu: Gpu,
     #[serde(skip)]
     pub block_cache: BlockCache,
+
+    #[serde(skip)]
+    pub gilrs: Option<Gilrs>
 }
 
 const REGION_MASK: [u32; 8] = [
@@ -157,6 +161,7 @@ impl System {
             mdec,
             gpu,
             block_cache,
+            gilrs: None
         }
     }
     pub fn load<T: Addressable>(&mut self, addr: u32) -> T {
@@ -270,7 +275,7 @@ impl System {
             // return println!("Unhandled write to TIMERS register {:x} = {:x}", offset, value.as_u32());
         }
         if let Some(offset) = map::JOYSTICK.contains(address) {
-            return crate::sio::Sio::store(self, offset, value);
+            return crate::sio::Sio::store(self,  offset, value);
             // println!("Unhandled write to Joystick register {:x}", addr);
             // return;
         }

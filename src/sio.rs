@@ -1,6 +1,7 @@
-use std::{any::Any, fs::File};
+use std::{any::Any, collections::VecDeque, fs::File};
 
 use arrayvec::ArrayVec;
+use gilrs::{GamepadId, Gilrs, ff::{BaseEffect, BaseEffectType, EffectBuilder, Replay, Ticks}};
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +25,7 @@ pub struct Sio {
 }
 
 impl Sio {
-    pub fn new(negcon: bool, mouse1: bool, mouse2:bool, guncon: bool, justifier: bool) -> Self {
+    pub fn new(negcon: bool, mouse1: bool, mouse2: bool, guncon: bool, justifier: bool) -> Self {
         let gamepad1: Box<dyn Controller> = if justifier {
             Box::new(Justifier::default())
         } else if guncon {
@@ -34,7 +35,7 @@ impl Sio {
         } else if negcon {
             Box::new(NegCon::default())
         } else {
-            Box::new(Gamepad::default())
+            Box::new(Dualshock::default())
         };
         let gamepad2: Box<dyn Controller> = if mouse2 {
             Box::new(Mouse::default())
@@ -71,7 +72,7 @@ impl Sio {
         }
     }
 
-    pub fn store<T: Addressable>(system: &mut System, offset: u32, value: T) {
+    pub fn store<T: Addressable>(system: &mut System,  offset: u32, value: T) {
         let sio = &mut system.sio;
         // 1F801040h+N*10h - SIO#_TX_DATA (W)
         let val = value.as_u32() as u16;
@@ -82,7 +83,7 @@ impl Sio {
                 // try send data
             }
             0x8 => {
-                sio.mode.0 = val &  0x1FF;
+                sio.mode.0 = val & 0x1FF;
             }
             0xA => Self::write_control(system, val),
             0xE => {
@@ -92,7 +93,7 @@ impl Sio {
         };
     }
 
-    pub fn write_control(system: &mut System, val: u16) {
+    pub fn write_control(system: &mut System,  val: u16) {
         let sio = &mut system.sio;
         sio.control.0 = val & !0xC000;
         // println!("control: {:?}", self.control);
@@ -156,16 +157,16 @@ impl Sio {
         self.control.set_rx_enabled(false);
     }
 
-    pub fn send_and_receive_byte(&mut self, data: u8) -> (u8, bool) {
+    pub fn send_and_receive_byte(&mut self, gilrs: &mut Gilrs, data: u8) -> (u8, bool) {
         let port = usize::from(self.control.port_select());
 
         let (byte, next_state) = match self.state {
             State::None => match data {
-                0x01 => self.process_gamepad(port, data),
+                0x01 => self.process_gamepad(gilrs, port, data),
                 0x81 => self.process_memcard(port, data),
                 _ => (0xFF, State::None),
             },
-            State::GamepadComm => self.process_gamepad(port, data),
+            State::GamepadComm => self.process_gamepad(gilrs, port, data),
             State::MemcardComm => self.process_memcard(port, data),
         };
         self.state = next_state;
@@ -173,9 +174,9 @@ impl Sio {
     }
 
     // let's start with one gamepad and one memcard for now...
-    pub fn process_gamepad(&mut self, port: usize, data: u8) -> (u8, State) {
+    pub fn process_gamepad(&mut self,gilrs: &mut Gilrs,  port: usize, data: u8) -> (u8, State) {
         if port == 0 {
-            let byte = self.gamepad1.send_and_receive_byte(data);
+            let byte = self.gamepad1.send_and_receive_byte(gilrs, data);
             let state = if self.gamepad1.in_ack() {
                 State::GamepadComm
             } else {
@@ -183,7 +184,7 @@ impl Sio {
             };
             (byte, state)
         } else {
-            let byte = self.gamepad2.send_and_receive_byte(data);
+            let byte = self.gamepad2.send_and_receive_byte(gilrs, data);
             let state = if self.gamepad2.in_ack() {
                 State::GamepadComm
             } else {
@@ -223,7 +224,9 @@ impl Sio {
 
         if let Some(val) = system.sio.transfer.take() {
             // send/receive
-            let (received, ack) = system.sio.send_and_receive_byte(val);
+
+            let gilrs = system.gilrs.as_mut().unwrap();
+            let (received, ack) = system.sio.send_and_receive_byte(gilrs, val);
 
             let sio = &mut system.sio;
             sio.status.set_dsr_input_level(ack);
@@ -254,7 +257,6 @@ impl Sio {
         system.irqctl.set_ctl_mem();
         system.sio.status.set_interrupt_request(true);
     }
-
 }
 
 // 0     TX Enable (TXEN)      (0=Disable, 1=Enable)
@@ -348,14 +350,14 @@ pub enum State {
 
 #[typetag::serde(tag = "type")]
 pub trait Controller {
-    fn send_and_receive_byte(&mut self, data: u8) -> u8;
+    fn send_and_receive_byte(&mut self, gilrs: &mut Gilrs, data: u8) -> u8;
     fn in_ack(&self) -> bool;
 
     fn reset(&mut self);
 
     fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8));
 
-    fn get_stick_axis(&mut self) -> &mut[u8;4];
+    fn get_stick_axis(&mut self) -> &mut [u8; 4];
 
     fn set_buttons(&mut self, buttons: u16);
 
@@ -402,8 +404,8 @@ enum NegConState {
 
 #[typetag::serde]
 impl Controller for NegCon {
-    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
-        const ID: [u8;2] = 0x5A23_u16.to_le_bytes();
+    fn send_and_receive_byte(&mut self, _: &mut Gilrs, data: u8) -> u8 {
+        const ID: [u8; 2] = 0x5A23_u16.to_le_bytes();
         let received = match self.state {
             NegConState::Init => 0xFF,
 
@@ -422,7 +424,6 @@ impl Controller for NegCon {
         // if self.state == NegConState::SwitchLow {
         //     println!("buttons: 0x{:X}", self.digital_switches);
         // }
-
 
         if let Some(state) = self.next(self.state, data) {
             self.state = state;
@@ -447,10 +448,9 @@ impl Controller for NegCon {
         self.joystick_axes = [right.0, right.1, left.0, left.1];
     }
 
-    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+    fn get_stick_axis(&mut self) -> &mut [u8; 4] {
         &mut self.joystick_axes
     }
-
 
     fn set_buttons(&mut self, buttons: u16) {
         self.digital_switches = buttons;
@@ -467,7 +467,6 @@ impl Controller for NegCon {
     fn as_any(&mut self) -> &mut dyn Any {
         self
     }
-
 }
 
 impl NegCon {
@@ -485,16 +484,14 @@ impl NegCon {
     fn next(&self, current_state: NegConState, received_byte: u8) -> Option<NegConState> {
         let idx = current_state as usize;
 
-
         let (next_state, check_byte) = Self::ANALOG_STATES[(idx + 1) % Self::ANALOG_STATES.len()];
         // if current_state == GamepadState::IdLow {
-            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
         // }
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
     }
 }
-
 
 #[derive(Serialize, Deserialize)]
 pub struct Mouse {
@@ -531,8 +528,8 @@ enum MouseState {
 
 #[typetag::serde]
 impl Controller for Mouse {
-    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
-        const ID: [u8;2] = 0x5A12_u16.to_le_bytes();
+    fn send_and_receive_byte(&mut self,  _: &mut Gilrs,data: u8) -> u8 {
+        const ID: [u8; 2] = 0x5A12_u16.to_le_bytes();
         let received = match self.state {
             MouseState::Init => 0xFF,
 
@@ -540,7 +537,7 @@ impl Controller for Mouse {
             MouseState::IdHigh => ID[1],
 
             MouseState::SwitchLow => self.digital_switches as u8, // not used
-            MouseState::SwitchHigh => (self.digital_switches >> 8)  as u8, // 10 right, 11 left
+            MouseState::SwitchHigh => (self.digital_switches >> 8) as u8, // 10 right, 11 left
 
             MouseState::AnalogInput0 => self.joystick_axes[Axis::RightX as usize],
             MouseState::AnalogInput1 => self.joystick_axes[Axis::RightY as usize],
@@ -551,7 +548,6 @@ impl Controller for Mouse {
         // if self.state == NegConState::SwitchLow {
         //     println!("buttons: 0x{:X}", self.digital_switches);
         // }
-
 
         if let Some(state) = self.next(self.state, data) {
             self.state = state;
@@ -576,10 +572,9 @@ impl Controller for Mouse {
         self.joystick_axes = [right.0, right.1, left.0, left.1];
     }
 
-    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+    fn get_stick_axis(&mut self) -> &mut [u8; 4] {
         &mut self.joystick_axes
     }
-
 
     fn set_buttons(&mut self, buttons: u16) {
         self.digital_switches = buttons;
@@ -614,17 +609,14 @@ impl Mouse {
     fn next(&self, current_state: MouseState, received_byte: u8) -> Option<MouseState> {
         let idx = current_state as usize;
 
-
         let (next_state, check_byte) = Self::ANALOG_STATES[(idx + 1) % Self::ANALOG_STATES.len()];
         // if current_state == GamepadState::IdLow {
-            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
         // }
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
     }
 }
-
-
 
 #[derive(Serialize, Deserialize)]
 pub struct GunCon {
@@ -639,9 +631,9 @@ impl Default for GunCon {
         Self {
             state: GunConState::default(),
             digital_switches: 0xFFFF,
-            joystick_axes: [0x0d,0x01, 0x88, 0x00] ,
+            joystick_axes: [0x0d, 0x01, 0x88, 0x00],
             in_ack: Default::default(),
-            shoot_offscreen: false
+            shoot_offscreen: false,
         }
     }
 }
@@ -678,10 +670,10 @@ enum GunConState {
 */
 #[typetag::serde]
 impl Controller for GunCon {
-    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
-        const ID: [u8;2] = 0x5A63_u16.to_le_bytes();
+    fn send_and_receive_byte(&mut self,  _: &mut Gilrs,data: u8) -> u8 {
+        const ID: [u8; 2] = 0x5A63_u16.to_le_bytes();
         let axes = if self.shoot_offscreen {
-            &[0x01,0x00, 0xa, 0x00]
+            &[0x01, 0x00, 0xa, 0x00]
         } else {
             &self.joystick_axes
         };
@@ -692,7 +684,7 @@ impl Controller for GunCon {
             GunConState::IdHigh => ID[1],
 
             GunConState::SwitchLow => self.digital_switches as u8, // not used
-            GunConState::SwitchHigh => (self.digital_switches >> 8)  as u8, // 10 right, 11 left
+            GunConState::SwitchHigh => (self.digital_switches >> 8) as u8, // 10 right, 11 left
 
             GunConState::AnalogInput0 => axes[Axis::RightX as usize],
             GunConState::AnalogInput1 => axes[Axis::RightY as usize],
@@ -723,10 +715,9 @@ impl Controller for GunCon {
         self.joystick_axes = [right.0, right.1, left.0, left.1];
     }
 
-    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+    fn get_stick_axis(&mut self) -> &mut [u8; 4] {
         &mut self.joystick_axes
     }
-
 
     fn set_buttons(&mut self, buttons: u16) {
         self.digital_switches = buttons;
@@ -743,7 +734,6 @@ impl Controller for GunCon {
     fn as_any(&mut self) -> &mut dyn Any {
         self
     }
-
 }
 
 impl GunCon {
@@ -761,17 +751,14 @@ impl GunCon {
     fn next(&self, current_state: GunConState, received_byte: u8) -> Option<GunConState> {
         let idx = current_state as usize;
 
-
         let (next_state, check_byte) = Self::ANALOG_STATES[(idx + 1) % Self::ANALOG_STATES.len()];
         // if current_state == GamepadState::IdLow {
-            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
         // }
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
     }
 }
-
-
 
 #[derive(Serialize, Deserialize)]
 pub struct Justifier {
@@ -786,9 +773,9 @@ impl Default for Justifier {
         Self {
             state: JustifierState::default(),
             digital_switches: 0xFFFF,
-            joystick_axes: [0x0,0x0, 0x0, 0x0] ,
+            joystick_axes: [0x0, 0x0, 0x0, 0x0],
             in_ack: Default::default(),
-            shoot_offscreen: false
+            shoot_offscreen: false,
         }
     }
 }
@@ -821,21 +808,16 @@ enum JustifierState {
 
 #[typetag::serde]
 impl Controller for Justifier {
-    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
-        const ID: [u8;2] = 0x5A31_u16.to_le_bytes();
+    fn send_and_receive_byte(&mut self,  _: &mut Gilrs,data: u8) -> u8 {
+        const ID: [u8; 2] = 0x5A31_u16.to_le_bytes();
         let received = match self.state {
             JustifierState::Init => 0xFF,
 
             JustifierState::IdLow => ID[0],
             JustifierState::IdHigh => ID[1],
 
-            JustifierState::SwitchLow => {
-                self.digital_switches as u8
-            },
-            JustifierState::SwitchHigh => {
-                (self.digital_switches >> 8)  as u8
-            }, 
-
+            JustifierState::SwitchLow => self.digital_switches as u8,
+            JustifierState::SwitchHigh => (self.digital_switches >> 8) as u8,
             // JustifierState::AnalogInput0 => 0,
             // JustifierState::AnalogInput1 => 0,
             // JustifierState::AnalogInput2 => axes[Axis::LeftX as usize],
@@ -865,10 +847,9 @@ impl Controller for Justifier {
         self.joystick_axes = [right.0, right.1, left.0, left.1];
     }
 
-    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+    fn get_stick_axis(&mut self) -> &mut [u8; 4] {
         &mut self.joystick_axes
     }
-
 
     fn set_buttons(&mut self, buttons: u16) {
         self.digital_switches = buttons;
@@ -885,7 +866,6 @@ impl Controller for Justifier {
     fn as_any(&mut self) -> &mut dyn Any {
         self
     }
-
 }
 
 impl Justifier {
@@ -901,13 +881,11 @@ impl Justifier {
     fn next(&self, current_state: JustifierState, received_byte: u8) -> Option<JustifierState> {
         let idx = current_state as usize;
 
-
         let (next_state, check_byte) = Self::ANALOG_STATES[(idx + 1) % Self::ANALOG_STATES.len()];
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
     }
 }
-
 
 #[derive(Serialize, Deserialize)]
 pub struct Gamepad {
@@ -920,7 +898,7 @@ pub struct Gamepad {
 
 #[typetag::serde]
 impl Controller for Gamepad {
-    fn send_and_receive_byte(&mut self, data: u8) -> u8 {
+    fn send_and_receive_byte(&mut self,  _: &mut Gilrs,data: u8) -> u8 {
         let received = match self.state {
             GamepadState::Init => 0xFF,
 
@@ -939,7 +917,6 @@ impl Controller for Gamepad {
         // if self.state == GamepadState::SwitchLow {
         //     println!("buttons: 0x{:X}", self.digital_switches);
         // }
-
 
         if let Some(state) = self.mode.next(self.state, data) {
             self.state = state;
@@ -965,10 +942,9 @@ impl Controller for Gamepad {
         self.joystick_axes = [right.0, right.1, left.0, left.1];
     }
 
-    fn get_stick_axis(&mut self) -> &mut [u8;4] {
+    fn get_stick_axis(&mut self) -> &mut [u8; 4] {
         &mut self.joystick_axes
     }
-
 
     fn get_buttons(&self) -> u16 {
         self.digital_switches
@@ -1004,6 +980,336 @@ impl Default for Gamepad {
         }
     }
 }
+
+#[derive(Serialize, Deserialize)]
+pub enum DualshockCommand {
+    Idle,
+    Ready,
+    ReadPad,
+    ConfigModeSetMode,
+    SetAnalogueMode,
+    GetAnalogMode,
+    Command46,
+    Command47,
+    Command4AC,
+    GetSetRumble,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Dualshock {
+    cmd: DualshockCommand,
+    tx_buffer: VecDeque<u8>,
+    rx_buffer: Vec<u8>,
+    cmd_step: u32,
+    configuration_mode: bool,
+    analog_mode: bool,
+    in_ack: bool,
+    pub digital_switches: u16,
+    pub joystick_axes: [u8; 4],
+
+    pub rumble_config: [u8;6],
+    motor_state: [u8;2],
+    vibration_bias: [i16;2],
+    // pub small_motor_strength: f32
+    #[serde(skip)]
+    ff_effect: Option<gilrs::ff::Effect>,
+
+    #[serde(skip)]
+    active_gamepad: Option<GamepadId>
+}
+
+impl Dualshock {
+    fn get_mode_id(&self) -> u8 {
+        if self.configuration_mode {
+            0xF
+        } else if self.analog_mode {
+            0x7
+        } else {
+            0x4
+        }
+    }
+
+    fn get_response_num_halfword(&self) -> u8 {
+        if self.configuration_mode || self.analog_mode {
+            0x3
+        } else {
+            0x1
+        }
+    }
+
+    fn get_id_byte(&self) -> u8 {
+        self.get_mode_id() << 4 | self.get_response_num_halfword()
+    }
+
+    fn poll(&mut self) {
+        let status_byte = 0x5A; // could be 0x0
+        // tx_buffer = {GetIDByte(), m_status_byte, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        self.tx_buffer.clear();
+        self.tx_buffer.push_back(self.get_id_byte());
+        self.tx_buffer.push_back(status_byte);
+
+        self.tx_buffer.push_back(self.digital_switches as u8);
+        self.tx_buffer.push_back((self.digital_switches >> 8) as u8);
+
+        if self.analog_mode || self.configuration_mode {
+            self.tx_buffer
+                .push_back(self.joystick_axes[Axis::RightX as usize]);
+            self.tx_buffer
+                .push_back(self.joystick_axes[Axis::RightY as usize]);
+            self.tx_buffer
+                .push_back(self.joystick_axes[Axis::LeftX as usize]);
+            self.tx_buffer
+                .push_back(self.joystick_axes[Axis::LeftY as usize]);
+        }
+    }
+
+    fn push_response(&mut self, response: &[u8]) {
+        let len = (self.get_response_num_halfword() + 1) * 2;
+        self.tx_buffer.clear();
+        // for i in 0..len as usize {
+        //     self.tx_buffer.push_back(response[i]);
+        // }
+        self.tx_buffer.extend(&response[0..len as usize]);
+    }
+
+    // this is from https://github.com/stenzek/duckstation/blob/master/src/core/analog_controller.cpp#L359
+    pub fn get_motor_strength(&self, motor: u8) -> f32 {
+        let state = if motor == SMALL_MOTOR {
+            if self.motor_state[SMALL_MOTOR as usize] & 0x01 != 0x00 {
+                255
+            } else {
+                0
+            }
+        } else {
+            self.motor_state[LARGE_MOTOR as usize]
+        };
+
+        // Curve from https://github.com/KrossX/Pokopom/blob/master/Pokopom/Input_XInput.cpp#L210
+        let x = (state as i16 + self.vibration_bias[motor as usize]).clamp(0, 255) as f64;
+        let strength = 0.006474549734772402 * x.powi(3) - 1.258165252213538 * x.powi(2) +
+                          156.82454281087692 * x + 3.637978807091713e-11;
+       if state != 0 {
+            (strength / 65535.0) as f32
+       } else {
+            0.0
+       }
+    }
+
+    pub fn set_ff(&mut self, gilrs: &mut Gilrs, motor: u8, strength:f32) {
+        if self.active_gamepad.is_none() {
+            for (id, gamepad) in gilrs.gamepads() {
+                // info!("{} is {:?} ; ff supported? {}", gamepad.name(), gamepad.power_info(), gamepad.is_ff_supported());
+                if gamepad.name().eq("Microsoft Xbox Controller") {
+                    self.active_gamepad = Some(id)
+                }
+            }
+        }
+        if strength != 0.0 {
+                println!("go go go go");
+                let duration = Ticks::from_ms(16);
+                let empty = Ticks::default();
+
+                let effect = EffectBuilder::new()
+                    // .add_effect(BaseEffect {
+                    //     kind: BaseEffectType::Strong { magnitude: 60_000 },
+                    //     scheduling: Replay {
+                    //         play_for: duration,
+                    //         with_delay: duration * 3,
+                    //         ..Default::default()
+                    //     },
+                    //     envelope: Default::default(),
+                    // })
+                    .add_effect(BaseEffect {
+                        kind: BaseEffectType::Weak {
+                            magnitude: (strength * 60000.0) as u16,
+                        },
+                        scheduling: Replay {
+                            after: empty,
+                            play_for: duration,
+                            with_delay: empty
+                            // with_delay: duration,
+                             // ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .gamepads(&[self.active_gamepad.unwrap()])
+                    .finish(gilrs)
+                    .unwrap();
+
+                effect.play().unwrap();
+                self.ff_effect = Some(effect);
+
+            } else {
+            self.ff_effect.as_mut().iter().for_each(|x| {
+                x.stop().unwrap();
+            });
+        }
+    }
+
+    pub fn set_motor_state(&mut self, gilrs: &mut Gilrs, motor: u8, value: u8) {
+        if self.motor_state[motor as usize] != value {
+            self.motor_state[motor as usize] = value;
+
+            let hvalue = self.get_motor_strength(motor);
+            println!("Set {} motor to {} (raw {})", if motor == LARGE_MOTOR { "large" } else {"small"}, hvalue, self.motor_state[motor as usize]);
+            self.set_ff(gilrs, motor, hvalue);
+            // self.small_motor_strength = hvalue;
+        }
+    }
+}
+
+#[typetag::serde]
+impl Controller for Dualshock {
+    // Self::Digital => 0x5A41_u16.to_le_bytes(),
+    // Self::Analog => 0x5A73_u16.to_le_bytes(),
+    // Self::Config => 0x5AF3_u16.to_le_bytes(),
+    fn send_and_receive_byte(&mut self,  gilrs: &mut Gilrs,data: u8) -> u8 {
+        let status_byte = 0x5A; // could be 0x0
+        self.rx_buffer.push(data);
+        match self.cmd {
+            DualshockCommand::Idle => {
+                if data == 0x01 {
+                    self.cmd = DualshockCommand::Ready;
+                    self.in_ack = true;
+                    return 0xFF;
+                }
+                println!("not in ack, got: {}", data);
+                self.in_ack = false;
+                return 0xFF;
+            }
+
+            DualshockCommand::Ready => {
+                // Ready
+                if data == 0x42 {
+                    println!("read pad");
+                    self.cmd = DualshockCommand::ReadPad;
+                    self.poll();
+                // } else if data == 0x43 {
+                //     self.cmd = DualshockCommand::ConfigModeSetMode;
+                //     if !self.configuration_mode {
+                //         self.poll();
+                //     } else {
+                //         self.push_response(&[self.get_id_byte(), status_byte, 0, 0, 0, 0, 0, 0]);
+                //     }
+                } else if data == 0x45 {
+                    self.cmd = DualshockCommand::GetAnalogMode;
+                    println!("get_analogmode..");
+                    self.push_response(&[self.get_id_byte(), status_byte, 0x01, 0x02, self.analog_mode as u8, 0x02, 0x01, 0]);
+                } else {
+                    println!("unhandled command: 0x{:X}", data);
+                    self.in_ack = false;
+                    return 0xFF;
+                }
+            }
+            DualshockCommand::ReadPad => {
+                if self.cmd_step >= 2 && self.cmd_step < 7 {
+                    let motor_to_set = self.rumble_config[(self.cmd_step - 2) as usize];
+                    if motor_to_set <= LARGE_MOTOR {
+                        self.set_motor_state(gilrs, motor_to_set, data);
+                    }
+                }
+            }
+            DualshockCommand::ConfigModeSetMode => {
+                if self.tx_buffer.len() == 1 {
+                    self.configuration_mode = self.rx_buffer[3] == 1;
+
+                    if self.configuration_mode {
+                        // dual shock enabled = true
+                        // status = 0x5A;
+                    }
+                    println!("0x{:02x}({}) config mode", self.rx_buffer[3], if self.configuration_mode { "enter" } else { "leave"});
+                    println!("{:?}", self.rx_buffer);
+
+                }
+            }
+            DualshockCommand::GetAnalogMode => {
+            }
+            _ => unimplemented!(""),
+        };
+
+        // if let Some(state) = self.mode.next(self.state, data) {
+        //     self.state = state;
+        //     self.in_ack = state != DualshockState::Init;
+        //     received
+        // } else {
+        //     self.reset();
+        //     0xFF
+        // }
+        let response = self.tx_buffer.pop_front().expect("smth");
+        self.cmd_step += 1;
+        self.in_ack = !self.tx_buffer.is_empty();
+        if self.tx_buffer.is_empty() {
+            self.cmd = DualshockCommand::Idle;
+            self.cmd_step = 0;
+            self.rx_buffer.clear();
+        }
+        return response;
+    }
+
+    fn in_ack(&self) -> bool {
+        self.in_ack
+    }
+
+    fn reset(&mut self) {
+        // println!("reset");
+        self.in_ack = false;
+        self.configuration_mode = false;
+        // self.analog_mode = false;
+        self.cmd = DualshockCommand::Idle;
+    }
+
+    fn set_stick_axis(&mut self, left: (u8, u8), right: (u8, u8)) {
+        self.joystick_axes = [right.0, right.1, left.0, left.1];
+    }
+
+    fn get_stick_axis(&mut self) -> &mut [u8; 4] {
+        &mut self.joystick_axes
+    }
+
+    fn get_buttons(&self) -> u16 {
+        self.digital_switches
+    }
+
+    fn set_analog_mode(&mut self, is_analog: bool) {
+        if self.analog_mode == is_analog {
+            return;
+        }
+        self.analog_mode = is_analog;
+        self.reset();
+    }
+    fn get_analog_mode(&self) -> bool {
+        self.analog_mode
+    }
+
+    fn set_buttons(&mut self, buttons: u16) {
+        self.digital_switches = buttons;
+    }
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl Default for Dualshock {
+    fn default() -> Self {
+        Self {
+            cmd: DualshockCommand::Idle,
+            tx_buffer: VecDeque::new(),
+            rx_buffer: vec![],
+            cmd_step: 0,
+            analog_mode: false,
+            configuration_mode: false,
+            digital_switches: 0xFFFF,
+            joystick_axes: [0x80; 4],
+            in_ack: Default::default(),
+            rumble_config: [0x0; 6],
+            motor_state: [0x0; 2],
+            vibration_bias: [8,8],
+            ff_effect: None,
+            active_gamepad: None
+        }
+    }
+}
+
 const FRAME_SIZE: usize = 0x80;
 
 #[derive(Serialize, Deserialize)]
@@ -1027,14 +1333,13 @@ pub struct Memcard {
     #[serde(skip)]
     data: Box<[u8]>, // 0x20000
     #[serde(skip)]
-    pub path: String
-    // file: Option<File>,
+    pub path: String, // file: Option<File>,
 }
 
 impl Memcard {
     pub fn new(path: &str) -> Self {
         // let file = File::open(path).expect("Inalid file path for memcard");
-        let mut data =  vec![0_u8; 0x20000].into_boxed_slice();
+        let mut data = vec![0_u8; 0x20000].into_boxed_slice();
         let filedata = std::fs::read(path).expect("can't read memcard");
         data.copy_from_slice(&filedata);
         Memcard {
@@ -1074,12 +1379,12 @@ impl Memcard {
             MemcardState::AckMsb => (self.sector_number >> 8) as u8,
             MemcardState::AckLsb => (self.sector_number & 0xFF) as u8,
             MemcardState::Flag => u8::from(self.directory_not_read) << 3,
-            
+
             MemcardState::SendMsb => {
                 self.sector_number = u16::from(data) << 8;
                 self.checksum = data;
                 0x00
-            },
+            }
 
             MemcardState::SendLsb => {
                 self.sector_number |= u16::from(data);
@@ -1092,7 +1397,7 @@ impl Memcard {
                 }
 
                 0x00
-            },
+            }
 
             MemcardState::RecvSector => {
                 if data != 0 {
@@ -1107,7 +1412,7 @@ impl Memcard {
                 }
 
                 byte
-            },
+            }
 
             MemcardState::SendSector => {
                 self.sector_buffer[128 - self.bytes_left] = data;
@@ -1119,7 +1424,7 @@ impl Memcard {
                 }
 
                 0
-            },
+            }
 
             MemcardState::RecvChecksum => self.checksum,
             MemcardState::SendChecksum => {
@@ -1129,7 +1434,7 @@ impl Memcard {
                     EndResponse::BadChecksum
                 };
                 0
-            },
+            }
             MemcardState::MemEnd => {
                 if self.command == MemcardCommand::Write {
                     self.save_sector();
@@ -1172,7 +1477,6 @@ impl Memcard {
         let address = (self.sector_number as usize) * FRAME_SIZE;
         self.data[address..address + 128].copy_from_slice(&self.sector_buffer);
         self.is_dirty = true;
-
     }
 
     pub fn reset(&mut self) {
@@ -1345,7 +1649,7 @@ pub enum GamepadMode {
     #[default]
     Digital,
     Analog,
-    Config
+    Config,
 }
 
 impl GamepadMode {
@@ -1404,15 +1708,14 @@ impl GamepadMode {
         let idx = current_state as usize;
         let state_table = self.state_table();
 
-
         let (next_state, check_byte) = state_table[(idx + 1) % state_table.len()];
         // if current_state == GamepadState::IdLow {
-            // if received_byte == 0x43 {
-            //     panic!("gotcha!")
-            // }
-            // ok,  next byte checks if we want 
-            // so it works..
-            // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
+        // if received_byte == 0x43 {
+        //     panic!("gotcha!")
+        // }
+        // ok,  next byte checks if we want
+        // so it works..
+        // println!("data: {:X}, next_state: {:?}, check_byte: {:?}", received_byte, next_state, check_byte);
         // }
         let next_state_is_valid = check_byte.is_none_or(|b| b == received_byte);
         next_state_is_valid.then_some(next_state)
@@ -1429,3 +1732,6 @@ pub fn save_memcards(system: &mut std::pin::Pin<Box<System>>) {
         system.sio.memcard2.is_dirty = false;
     }
 }
+
+const SMALL_MOTOR : u8 = 0;
+const LARGE_MOTOR : u8 = 1;

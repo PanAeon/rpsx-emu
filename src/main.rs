@@ -1,5 +1,10 @@
 use cpal::traits::StreamTrait;
 use gilrs::Axis;
+use gilrs::ff::BaseEffect;
+use gilrs::ff::BaseEffectType;
+use gilrs::ff::EffectBuilder;
+use gilrs::ff::Replay;
+use gilrs::ff::Ticks;
 use log::LevelFilter;
 use log::info;
 use wgpu::hal::vulkan::conv::map_filter_mode;
@@ -13,6 +18,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread::current;
+use std::time::Duration;
 use wgpu::util::DeviceExt;
 use winit::keyboard::Key;
 use winit::{
@@ -32,6 +38,7 @@ use crate::dynarec::Dynarec;
 use crate::gpu::DisplayDepth;
 use crate::save_state::load_state;
 use crate::save_state::save_state;
+use crate::sio::Dualshock;
 use crate::sio::GunCon;
 use crate::sio::Justifier;
 use crate::sio::Sio;
@@ -256,7 +263,7 @@ pub struct State {
     audio_sender: crossbeam::channel::Sender<[i16; 2]>,
     audio_stream: cpal::Stream,
     paused: bool,
-    gilrs: Gilrs,
+    gilrs: Option<Gilrs>,
     active_gamepad: Option<GamepadId>,
     output_width: usize,
     output_height: usize,
@@ -281,6 +288,7 @@ pub struct State {
     guncon: bool,
     justifier: bool,
     line_start_cycle: u64,
+    // ff_effect: Option<gilrs::ff::Effect>,
 }
 
 impl State {
@@ -830,7 +838,7 @@ impl State {
             audio_stream,
             audio_sender,
             paused: false,
-            gilrs: Gilrs::new().unwrap(),
+            gilrs: Some(Gilrs::new().unwrap()),
             active_gamepad: None,
             output_width: 0,
             output_height: 0,
@@ -853,10 +861,11 @@ impl State {
             guncon: cli.guncon,
             justifier: cli.justifier,
             line_start_cycle: 0,
+            // ff_effect: None
         };
 
-        for (id, gamepad) in state.gilrs.gamepads() {
-            info!("{} is {:?}", gamepad.name(), gamepad.power_info());
+        for (id, gamepad) in state.gilrs.as_ref().unwrap().gamepads() {
+            info!("{} is {:?} ; ff supported? {}", gamepad.name(), gamepad.power_info(), gamepad.is_ff_supported());
             if gamepad.name().eq("Microsoft Xbox Controller") {
                 state.active_gamepad = Some(id)
             }
@@ -1252,8 +1261,9 @@ impl State {
                     scheduler::Event::DsrOff => self.system.sio.turn_dsr_off(),
                     scheduler::Event::Dma => dma::dma_event(&mut self.system),
                     scheduler::Event::LightGun(tick, first, last) => {
+                        println!("ligght event");
                         self.system.scheduler.unschedule_light_gun();
-                        let Some(guncon) = self
+                        let Some(justifier) = self
                             .system
                             .sio
                             .gamepad1
@@ -1263,13 +1273,13 @@ impl State {
                             panic!("oop failed");
                         };
 
-                        if !guncon.shoot_offscreen {
+                        if !justifier.shoot_offscreen {
                             self.system.irqctl.set_ctl_light();
                         }
                         let line = self.system.gpu.current_line;
-                        let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
-                        let current_tick = (current_cycle * 11 / 7) as u16;
-                        let tmr: u32 = crate::timers::load(&mut self.system, 0);
+                        // let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
+                        // let current_tick = (current_cycle * 11 / 7) as u16;
+                        // let tmr: u32 = crate::timers::load(&mut self.system, 0);
                         // self.system.timers.timers[0].counter = current_tick as u32;
                         self.system.timers.timers[0].counter = tick as u32;
                         // self.system.timers.timers[1].counter = line;
@@ -1613,7 +1623,7 @@ impl State {
             / (self.config.height as f64 - 2.0 * by * self.config.height as f64);
 
         // let mx = mx * (he as f64 - hs as  f64) / width as f64;// +  bx * width as f64;
-        let mx = mx * 0.72; //TODO: why?
+        let mx = mx * 0.72; //TODO: why?, needed for guncon
         let my = my * 0.91;
 
         let mx = mx * 3413.0 + hs as f64;
@@ -1667,10 +1677,11 @@ impl State {
         const NTSC_TOTAL_LINES: u16 = 263;
         // const NTSC_FREQ: f64 = 53693175.0;
         // let divider = NTSC_FREQ / 8000000.0;
-        let m_irq_tick = (ticks * 5).saturating_sub(300);
+        // let m_irq_tick = (ticks * 5).saturating_sub(300);
+        let m_irq_tick = 2*ticks;//(ticks * 5).saturating_sub(300);
 
         // println!("target tick: {} (0..3413) ", m_irq_tick);
-        let start_line_ofsset = 48;
+        let start_line_ofsset = 72;
         let end_line_offset = start_line_ofsset - 6;
         let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
         let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
@@ -1925,7 +1936,7 @@ impl State {
                     self.system.sio.gamepad1.set_buttons(buttons | (1 << 15));
                 }
                 (MouseButton::Right, true) => {
-                    let Some(guncon) = self
+                    let Some(justifier) = self
                         .system
                         .sio
                         .gamepad1
@@ -1934,10 +1945,10 @@ impl State {
                     else {
                         panic!("oop failed");
                     };
-                    guncon.shoot_offscreen = true;
+                    justifier.shoot_offscreen = true;
                 }
                 (MouseButton::Right, false) => {
-                    let Some(guncon) = self
+                    let Some(justifier) = self
                         .system
                         .sio
                         .gamepad1
@@ -1946,7 +1957,7 @@ impl State {
                     else {
                         panic!("oop failed");
                     };
-                    guncon.shoot_offscreen = false;
+                    justifier.shoot_offscreen = false;
                 }
                 _ => {}
             }
@@ -2003,6 +2014,9 @@ impl State {
     }
 
     pub fn update_gamepad(&mut self) {
+        if self.gilrs.is_none() {
+            self.gilrs = self.system.gilrs.take(); // hmm, better push it  to system altogether..
+        }
         if self.mouse1 || self.mouse2 {
             if !self.mouse_moved {
                 let mouse = if self.mouse1 {
@@ -2035,7 +2049,7 @@ impl State {
             event,
             time: _,
             ..
-        }) = self.gilrs.next_event()
+        }) = self.gilrs.as_mut().unwrap().next_event()
         {
             // println!("{:?} New event from {}: {:?}", time, id, event);
             match event {
@@ -2143,6 +2157,8 @@ impl State {
         }
         // println!("0x{:X}", prev_buttons);
         self.system.sio.gamepad1.set_buttons(prev_buttons);
+
+        self.system.gilrs = self.gilrs.take();
     }
 
     pub fn update_negcon(&mut self) {
@@ -2153,7 +2169,7 @@ impl State {
             event,
             time: _,
             ..
-        }) = self.gilrs.next_event()
+        }) = self.gilrs.as_mut().unwrap().next_event()
         {
             // println!("{:?} New event from {}: {:?}", time, id, event);
             match event {
@@ -2392,7 +2408,8 @@ impl ApplicationHandler<State> for App {
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
     env_logger::Builder::new()
-        .filter_module("rpsx_emu", LevelFilter::Info)
+        .filter_level(LevelFilter::Warn)
+        // .filter_module("rpsx_emu::cdrom", LevelFilter::Info)
         .init();
     // env_logger::init();
 

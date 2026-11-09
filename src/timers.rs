@@ -32,6 +32,7 @@ pub enum ClockSource {
 bitfield::bitfield! {
     #[derive(Default, Clone, Copy, Serialize, Deserialize)]
     pub struct Mode(u32);
+    impl Debug;
     sync_enabled, set_sync_enabled: 0;
     u8, sync_mode, _: 2,1;
     reset_to_target, _: 3; //  Reset counter to 0000h  (0=After Counter=FFFFh, 1=After Counter=Target)
@@ -74,7 +75,7 @@ bitfield::bitfield! {
 #[derive(Default, Serialize, Deserialize)]
 pub struct Timer {
     pub counter: u32,
-    mode: Mode,
+    pub mode: Mode,
     target: u16,
     last_read: u64
 }

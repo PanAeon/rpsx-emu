@@ -1279,12 +1279,18 @@ impl State {
                         // let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
                         // let current_tick = (current_cycle * 11 / 7) as u16;
                         // let tmr: u32 = crate::timers::load(&mut self.system, 0);
+
+         let system_cycles = (((tick as u64 * 451584 +  715908) / 715909).saturating_sub(380) / 3).saturating_sub(20);
+                        // self.system.timers.timers[0].counter = system_cycles as u32 ;// in cpu mode apparently
                         // self.system.timers.timers[0].counter = tick  as u32  / 5;
                         // self.system.timers.timers[0].counter = tick as u32 / 2;
                         // self.system.timers.timers[1].counter = line as u32;
                         // let t1 = self.system.timers.timers[1].counter;
                         if self.system.timers.timers[0].counter !=  0 {
                           println!("t0: {}", self.system.timers.timers[0].counter);
+                          // println!("timer0 mode: {:?}", self.system.timers.timers[0].mode);
+                          // println!("timer1 mode: {:?}", self.system.timers.timers[1].mode);
+                          // println!("timer2 mode: {:?}", self.system.timers.timers[2].mode);
                         }
                         // const NTSC_FREQ: f64 = 53693175.0;
                         // let divider = NTSC_FREQ / 8000000.0;
@@ -1416,7 +1422,7 @@ impl State {
             //     // self.interpreter.check_for_tty_output();
             // }
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
-            cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
+            cdrom::CDRom::tick(&mut self.system, 3 * num_cycles);
             self.system.scheduler.advance(2 * num_cycles); // 40???
         }
         //     for _ in 0..200 {

@@ -44,7 +44,7 @@ impl Sio {
         let gamepad2: Box<dyn Controller> = if mouse2 {
             Box::new(Mouse::default())
         } else {
-            Box::new(Gamepad::default())
+            Box::new(Dualshock::default())
         };
         Sio {
             control: Control::default(),

@@ -119,6 +119,8 @@ pub struct Cli {
     guncon: bool,
     #[arg(long)]
     justifier: bool,
+    #[arg(long)]
+    gamepad2: bool,
 }
 
 fn main() {
@@ -287,6 +289,7 @@ pub struct State {
     mouse_moved: bool,
     guncon: bool,
     justifier: bool,
+    gamepad2: bool,
     line_start_cycle: u64,
     // ff_effect: Option<gilrs::ff::Effect>,
 }
@@ -860,6 +863,7 @@ impl State {
             mouse_moved: false,
             guncon: cli.guncon,
             justifier: cli.justifier,
+            gamepad2: cli.gamepad2,
             line_start_cycle: 0,
             // ff_effect: None
         };
@@ -1164,9 +1168,9 @@ impl State {
         }
         cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
         self.system.scheduler.advance(2 * num_cycles); // 40???
-                // crate::timers::Timers::update_value(&mut self.system, 0);
-                // crate::timers::Timers::update_value(&mut self.system, 1);
-                // crate::timers::Timers::update_value(&mut self.system, 2);
+        // crate::timers::Timers::update_value(&mut self.system, 0);
+        // crate::timers::Timers::update_value(&mut self.system, 1);
+        // crate::timers::Timers::update_value(&mut self.system, 2);
     }
     fn update(&mut self, _event_loop: &ActiveEventLoop) {
         self.update_gamepad();
@@ -2095,7 +2099,12 @@ impl State {
             Self::update_negcon(self);
             return;
         }
-        let mut prev_buttons = self.system.sio.gamepad1.get_buttons();
+        let pad = if self.gamepad2 {
+            &self.system.sio.gamepad2
+        } else {
+            &self.system.sio.gamepad1
+        };
+        let mut prev_buttons = pad.get_buttons();
         while let Some(Event {
             id: _,
             event,
@@ -2183,13 +2192,23 @@ impl State {
                     }
                     gilrs::Button::Mode => {
                         info!("analog mode changed!");
-                        let prev = self.system.sio.gamepad1.get_analog_mode();
-                        self.system.sio.gamepad1.set_analog_mode(!prev);
+                        let pad = if self.gamepad2 {
+                            &mut self.system.sio.gamepad2
+                        } else {
+                            &mut self.system.sio.gamepad1
+                        };
+                        let prev = pad.get_analog_mode();
+                        pad.set_analog_mode(!prev);
                     }
                     _ => {} // ignore..
                 },
                 gilrs::EventType::AxisChanged(axis, value, _) => {
-                    let axes = self.system.sio.gamepad1.get_stick_axis();
+                        let pad = if self.gamepad2 {
+                            &mut self.system.sio.gamepad2
+                        } else {
+                            &mut self.system.sio.gamepad1
+                        };
+                    let axes = pad.get_stick_axis();
                     let byte = value.mul_add(127.5, 127.5) as u8;
                     if axis == Axis::LeftStickX {
                         axes[2] = byte;
@@ -2208,7 +2227,12 @@ impl State {
             }
         }
         // println!("0x{:X}", prev_buttons);
-        self.system.sio.gamepad1.set_buttons(prev_buttons);
+        let pad = if self.gamepad2 {
+            &mut self.system.sio.gamepad2
+        } else {
+            &mut self.system.sio.gamepad1
+        };
+        pad.set_buttons(prev_buttons);
 
         self.system.gilrs = self.gilrs.take();
     }

@@ -1175,6 +1175,7 @@ impl State {
     fn update(&mut self, _event_loop: &ActiveEventLoop) {
         self.update_gamepad();
         if self.paused {
+            // std::thread::sleep(Duration::from_millis(64));
             println!("current pc: 0x{:X}", self.system.cpu.regs.pc);
             // self.system.irqctl.status.set_dma(false);
             // self.cpu.system.irqctl.status.set_ctl_mem(true);
@@ -1184,7 +1185,7 @@ impl State {
             // self.system.store(0x800A0874, 0_u32);
             // crate::cdrom::CDRom::write_command(&mut self.system, 0x3); //play
             // self.system.cdrom.write_command();
-            return;
+            // return;
         }
         loop {
             if let Some(event) = self.system.scheduler.get_next_event() {
@@ -1199,7 +1200,7 @@ impl State {
                         self.audio_sender
                             .send(sample)
                             .expect("can't send audio sample");
-                        // if self.audio_sender.len() > 4*735 { // 2.5 * 735
+                        // // if self.audio_sender.len() > 4*735 { // 2.5 * 735
                         //     break;
                         // }
                         //
@@ -2485,7 +2486,7 @@ impl ApplicationHandler<State> for App {
 pub fn run(cli: Cli) -> anyhow::Result<()> {
     env_logger::Builder::new()
         .filter_level(LevelFilter::Warn)
-        // .filter_module("rpsx_emu::cdrom", LevelFilter::Info)
+        .filter_module("rpsx_emu::cdrom", LevelFilter::Info)
         .init();
     // env_logger::init();
 

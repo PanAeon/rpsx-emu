@@ -557,6 +557,7 @@ impl CDRom {
             0x02 => Self::cmd_setloc(system),
             0x03 => Self::cmd_play(system), // cmd play
             0x06 => Self::cmd_readn(system),
+            0x07 => Self::cmd_motor_on(system),
             0x08 => Self::cmd_stop(system),
             0x09 => Self::cmd_pause(system),
             0x0a => Self::cmd_init(system),
@@ -575,7 +576,12 @@ impl CDRom {
             0x1b => Self::cmd_readn(system), // TODO: should be reads
             0x1e => Self::cmd_readtoc(system), // TODO: should be reads
 
-            _ => panic!("Unhandled command: 0x{:x}", cmd),
+            _ => {
+                warn!("Unhandled command: 0x{:x}", cmd);
+                cdrom.push_error(DriveError::InvalidCommand);
+                cdrom.finish_command();
+                Self::set_interrupt(system, 5);
+            },
         };
     }
 
@@ -931,6 +937,40 @@ impl CDRom {
     //     )
     // }
 
+    pub fn cmd_motor_on(system: &mut System) {
+        let cdrom = &mut system.cdrom;
+        match cdrom.cmd_state {
+            CmdState::RecvCmd => {
+                cdrom.cmd_delay = CDROM_AVG_DELAY_CYCLES;
+                cdrom.cmd_state = CmdState::Resp1;
+                // cdrom.stat.set_spindle_motor(true);
+            }
+            CmdState::Resp1 => {
+                // TODO: if no disk present fail with int5(stat,80h)
+                let cdrom = &mut system.cdrom;
+                info!("cmd motoron");
+                let already_on =  cdrom.stat.spindle_motor();
+                if already_on {
+                    cdrom.push_error(DriveError::WrongParameterCount);
+                    // cdrom.push_result_byte(cdrom.stat.0);
+                    system.cdrom.finish_command();
+                    Self::set_interrupt(system, 5);
+                    return;
+                }
+                cdrom.stat.set_spindle_motor(true);
+                // cdrom.begin_reading();
+
+                cdrom.push_result_byte(cdrom.stat.0);
+                cdrom.cmd_state = CmdState::Resp2;
+                Self::set_interrupt(system, 3);
+            }
+            CmdState::Resp2 => {
+                cdrom.push_result_byte(cdrom.stat.0);
+                Self::set_interrupt(system, 2);
+                system.cdrom.finish_command();
+            }
+        }
+    }
     pub fn cmd_readn(system: &mut System) {
         let cdrom = &mut system.cdrom;
         match cdrom.cmd_state {
@@ -1947,7 +1987,7 @@ bitfield::bitfield! {
     _, set_shell_open: 4;
     _, set_id_error: 3;
     _, set_seek_error: 2;
-    _, set_spindle_motor: 1;
+    spindle_motor, set_spindle_motor: 1;
     _, set_error: 0;
 }
 

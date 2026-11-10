@@ -869,8 +869,7 @@ impl Gpu {
 
         let msg = self.renderer_receiver.as_mut().unwrap().recv().expect("ok");
         let RendererResponse::VramToCpuData { data } = msg else {
-            println!("wrong response in sync code...");
-            return;
+            panic!("wrong response in sync code...");
         };
         let data: &[u8] = bytemuck::cast_slice(&data);
         self.vram.copy_from_slice(data);
@@ -928,12 +927,7 @@ impl Gpu {
 
         let msg = self.renderer_receiver.as_mut().unwrap().recv().expect("ok");
         let RendererResponse::VramToCpuData { data } = msg else {
-            println!("panic! wrong response in sync code...");
-            self.gp0_mode = Gp0Mode::ImageStore {
-                current_word: 0,
-                data: vec![0;self.gp0_words_remaining as usize],
-            };
-            return;
+            panic!("panic! wrong response in sync code...");
         };
 
         self.gp0_mode = Gp0Mode::ImageStore {
@@ -1422,16 +1416,6 @@ impl Gpu {
         //     println!("what is going on?");
         //     std::thread::sleep_ms(1000);
         // }
-        let ctx = self.rendering_ctx();
-        self.renderer_sender
-            .as_ref()
-            .unwrap()
-            .send(RendererMsg::RenderFB {
-                framebuffer: framebuffer,
-                full_ram: display_vram,
-                ctx,
-            })
-            .expect("ok");
 
         // match res {
         //     Ok(_) => {},
@@ -1448,6 +1432,16 @@ impl Gpu {
         if display_vram {
             (1024 * self.scale as usize, 512 * self.scale as usize, 0, 0, self.display_depth)
         } else {
+        let ctx = self.rendering_ctx();
+        self.renderer_sender
+            .as_ref()
+            .unwrap()
+            .send(RendererMsg::RenderFB {
+                framebuffer: framebuffer,
+                full_ram: display_vram,
+                ctx,
+            })
+            .expect("ok");
             // let (sx, sy, width, height) = self.update_crt_display_params();
             let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
             match msg {
@@ -1469,8 +1463,8 @@ impl Gpu {
                     depth,
                 )},
                 _ => {
-                    println!("something went wrong.. sync call returned wrong response");
-                    (1024, 512, 0, 0, self.display_depth)
+                    panic!("something went wrong.. sync call returned wrong response");
+                    // (1024, 512, 0, 0, self.display_depth)
                 }
             }
         }

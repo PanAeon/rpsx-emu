@@ -11,6 +11,7 @@ anyhow = "*"
 vek = "*"
 bytemuck = {version = "*", features = [ "derive" ] }
 bitfield = "*"
+proc-bitfield = "0.5.3"
 cgmath = "0.18"
 pollster = "*"
 web-time = "*"

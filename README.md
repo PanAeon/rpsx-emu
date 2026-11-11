@@ -6,9 +6,9 @@
 
 ## Resources
 * [jsgroth blog](https://jsgroth.dev/blog/posts/ps1-spu-part-3/)
-* [jsgroth's cofeepsx](https://codeberg.org/jsgroth/CoffeePSX)
 * [psx spec](https://psx-spx.consoledev.net/)
 * [nocash spec](https://problemkaputt.de/psx-spx.htm)
+* [psx.wiki](https://psx.wiki/category/hardware/https://psx.wiki/category/hardware/)
 
 * [psx-guide](https://github.com/simias/psx-guide)
 * [jsgroth tutorials](https://jsgroth.dev/blog/posts/ps1-sideloading/)
@@ -26,6 +26,7 @@
 * [starpsx](https://github.com/kaezrr/starpsx/tree/main)
 * [rsx-redux](https://github.com/annethereshewent/rsx-redux/tree/main)
 * [pchan](https://github.com/wyvernbw/pchan/tree/master)
+* [jsgroth's cofeepsx](https://codeberg.org/jsgroth/CoffeePSX)
 
 
 * [nupsx, zig](https://github.com/maxpoletaev/nupsx/tree/master)

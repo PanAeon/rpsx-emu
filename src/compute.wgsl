@@ -465,7 +465,7 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                             let prev = readExistingColorCached(vec2(x, y), bounds);
                             c = blend_with_background(c, prev, transparency);
                         } else {
-                            continue;
+                            // continue;
                         }
                     }
 
@@ -1251,18 +1251,24 @@ fn main(
     let bin = vec2(workgroup_id.x * 8, workgroup_id.y * 8) + local_invocation_id.xy;
     let bounds = get_partition(bin);
 
+
+    let bin_idx = (bin.y * 128 + bin.x);
+    let num_vertices = bins_buffer[bin_idx];
+    let v_offset = bins_buffer[128 * 64 + bin_idx];
+    let vert_offset = 2 * (128 * 64) + v_offset;
+
+    // TODO: whyyyy????
+    if num_vertices == 0 {
+        return;
+    }
+
     for (var j: i32 = bounds.y; j <= bounds.w; j++) {
         for (var i: i32 = bounds.x; i <= bounds.z; i++) {
             var packed = textureLoad(vram_t, vec2(i,j)).r;
             cache[(j - bounds.y) * 8 + i - bounds.x] = packed;
         }
     }
-
-    let bin_idx = (bin.y * 128 + bin.x);
-    let num_vertices = bins_buffer[bin_idx];
-    let v_offset = bins_buffer[128 * 64 + bin_idx];
-    let vert_offset = 2 * (128 * 64) + v_offset;
-    // let bounds = get_partition(bin);
+    // textureBarrier();
 
     for (var i: u32 = 0; i < num_vertices; i++) {
         // let idx = (64 * (bin.y * 128 + bin.x)) + i;
@@ -1285,6 +1291,7 @@ fn main(
         // draw_triangle_shaded_textured( v1, v2, v3, bounds);
         // }
     }
+
 
     for (var j: i32 = bounds.y; j <= bounds.w; j++) {
         for (var i: i32 = bounds.x; i <= bounds.z; i++) {

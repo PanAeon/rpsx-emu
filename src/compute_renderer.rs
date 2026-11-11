@@ -14,7 +14,8 @@ use crate::{
     renderer::{Clut, RendererMsg, RendererResponse, RenderingContext, Texture},
 };
 
-const VERT_BUFFER_SIZE: usize = 3 * 256;
+// const VERT_BUFFER_SIZE: usize = 3 * 256;
+const VERT_BUFFER_SIZE: usize = 3 * 1024;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {

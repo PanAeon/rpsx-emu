@@ -2486,7 +2486,7 @@ impl ApplicationHandler<State> for App {
 pub fn run(cli: Cli) -> anyhow::Result<()> {
     env_logger::Builder::new()
         .filter_level(LevelFilter::Warn)
-        .filter_module("rpsx_emu::cdrom", LevelFilter::Info)
+        // .filter_module("rpsx_emu::cdrom", LevelFilter::Info)
         .init();
     // env_logger::init();
 

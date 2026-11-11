@@ -112,6 +112,10 @@ pub struct System {
     #[serde(skip)]
     pub block_cache: BlockCache,
 
+    memctrl: [u32;9],
+    ram_size: u32,
+    cache_control: u32,
+
     #[serde(skip)]
     pub gilrs: Option<Gilrs>
 }
@@ -161,7 +165,10 @@ impl System {
             mdec,
             gpu,
             block_cache,
-            gilrs: None
+            gilrs: None,
+            memctrl: [0;9],
+            cache_control: 0,
+            ram_size: 0
         }
     }
     pub fn load<T: Addressable>(&mut self, addr: u32) -> T {
@@ -229,6 +236,12 @@ impl System {
             // println!("Unhandled read from Joystick register {:x}", addr);
             // return T::from_u32(0);
             return self.sio2.load(offset);
+        }
+        if let Some(_) = map::CACHE_CONTROL.contains(address) {
+            if T::width() != AccessWidth::Word {
+                panic!("Unhandled read from CACHE_CONTROL register")
+            }
+            return T::from_u32(self.cache_control)
         }
         // if address >= 0xfffff000 {
         //     println!("Unhandled read from ??? address {:x}", address);
@@ -303,7 +316,12 @@ impl System {
             return println!("Unhandled write to RAM_SIZE register");
         }
         if let Some(_) = map::CACHE_CONTROL.contains(address) {
-            return println!("Unhandled write to CACHE_CONTROL register");
+            if T::width() != AccessWidth::Word {
+                panic!("Unhandled write to CACHE_CONTROL register")
+            }
+            self.cache_control = value.as_u32();
+            return;
+            
         }
         if let Some(offset) = map::IRQ_CONTROL.contains(address) {
             return self.irqctl.store(offset, value);

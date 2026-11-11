@@ -4,6 +4,12 @@ use std::{
     thread::JoinHandle,
 };
 
+const NTSC_TOTAL_LINES: u32 = 263;
+const PAL_TOTAL_LINES: u32 = 314;
+
+const NTSC_TICKS_PER_LINE: u64 = 3413;
+const PAL_TICKS_PER_LINE: u64 = 3406;
+
 use crate::renderer::{RendererMsg, RendererResponse, RenderingContext};
 use crate::system::{AccessWidth, Addressable};
 use serde::{Deserialize, Serialize};
@@ -74,11 +80,14 @@ pub struct Gpu {
     pub renderer_handle: Option<JoinHandle<()>>,
     #[serde(with = "serde_bytes")]
     vram: Box<[u8]>,
-    pub scale: u32
+    pub scale: u32,
+
+    pub video_standard: VideoStandard,
 }
 
 impl Gpu {
     pub fn new(
+        video_standard: VideoStandard,
         renderer_sender: Sender<RendererMsg>,
         renderer_receiver: Receiver<RendererResponse>,
         renderer_handle: JoinHandle<()>,
@@ -122,7 +131,7 @@ impl Gpu {
             display_line_start: 0,
             display_line_end: 0,
 
-
+            video_standard,
 
             gp0_command: CommandBuffer::new(),
             gp0_words_remaining: 0,
@@ -1287,21 +1296,50 @@ impl Gpu {
         };
     }
 
+    pub fn get_display_lines(&self) -> u32 {
+        match self.video_standard {
+            VideoStandard::NTSC => NTSC_TOTAL_LINES,
+            VideoStandard::PAL => PAL_TOTAL_LINES,
+        }
+    }
+    pub fn get_gpu_freq(&self) -> f64 {
+        match self.video_standard {
+            VideoStandard::NTSC => 53693175.0,
+            VideoStandard::PAL => 53203425.0,
+        }
+    }
+
+    pub fn get_tick_per_line(&self) -> u64 {
+        match self.video_standard {
+            VideoStandard::NTSC => NTSC_TICKS_PER_LINE,
+            VideoStandard::PAL => PAL_TICKS_PER_LINE,
+        }
+    }
+
+    pub fn gpu_ticks_to_system_cycles(&self, ticks: u64, fractional_ticks: u64) -> u64 {
+        match self.video_standard {
+            VideoStandard::NTSC => (ticks * 451584 + fractional_ticks + 715908) / 715909,
+            VideoStandard::PAL => (ticks * 451584 + fractional_ticks + 709378) / 709378,
+        }
+    }
+
     // from swan station
     pub fn update_crt_display_params(&self) -> (u16, u16, u16, u16, u16, u16, u16, u16) {
-        const NTSC_TICKS_PER_LINE: u16 = 3413;
-        const NTSC_TOTAL_LINES: u16 = 263;
+        let horizontal_total = self.get_tick_per_line() as u16;
+        let vertical_total = self.get_display_lines() as u16;
 
         const NTSC_HORIZONTAL_ACTIVE_START: u16 = 488;
         const NTSC_HORIZONTAL_ACTIVE_END: u16 = 3288;
         const NTSC_VERTICAL_ACTIVE_START: u16 = 16;
         const NTSC_VERTICAL_ACTIVE_END: u16 = 256;
 
+        const PAL_HORIZONTAL_ACTIVE_START: u16 = 488;
+        const PAL_HORIZONTAL_ACTIVE_END: u16 = 3300;
+        const PAL_VERTICAL_ACTIVE_START: u16 = 20;
+        const PAL_VERTICAL_ACTIVE_END: u16 = 308;
+
         const VRAM_WIDTH: u16 = 1024;
         const VRAM_HEIGHT: u16 = 512;
-
-        let horizontal_total = NTSC_TICKS_PER_LINE;
-        let vertical_total = NTSC_TOTAL_LINES;
 
         // let dot_clock_dividers = [10, 8, 5, 4, 7, 7, 7, 7];
         // let horizontal_resolution_index =
@@ -1317,14 +1355,29 @@ impl Gpu {
         let vertical_display_start = self.display_line_start.min(vertical_total);
         let vertical_display_end = self.display_line_end.min(vertical_total);
 
-        let horizontal_visible_start = horizontal_display_start
-            .clamp(NTSC_HORIZONTAL_ACTIVE_START, NTSC_HORIZONTAL_ACTIVE_END);
-        let horizontal_visible_end =
-            horizontal_display_end.clamp(horizontal_visible_start, NTSC_HORIZONTAL_ACTIVE_END);
-        let vertical_visible_start =
-            vertical_display_start.clamp(NTSC_VERTICAL_ACTIVE_START, NTSC_VERTICAL_ACTIVE_END);
-        let vertical_visible_end =
-            vertical_display_end.clamp(vertical_display_start, NTSC_VERTICAL_ACTIVE_END);
+        let horizontal_visible_start;
+        let horizontal_visible_end;
+        let vertical_visible_start;
+        let vertical_visible_end;
+        if self.video_standard == VideoStandard::NTSC {
+            horizontal_visible_start = horizontal_display_start
+                .clamp(NTSC_HORIZONTAL_ACTIVE_START, NTSC_HORIZONTAL_ACTIVE_END);
+            horizontal_visible_end =
+                horizontal_display_end.clamp(horizontal_visible_start, NTSC_HORIZONTAL_ACTIVE_END);
+            vertical_visible_start =
+                vertical_display_start.clamp(NTSC_VERTICAL_ACTIVE_START, NTSC_VERTICAL_ACTIVE_END);
+            vertical_visible_end =
+                vertical_display_end.clamp(vertical_display_start, NTSC_VERTICAL_ACTIVE_END);
+        } else {
+            horizontal_visible_start = horizontal_display_start
+                .clamp(PAL_HORIZONTAL_ACTIVE_START, PAL_HORIZONTAL_ACTIVE_END);
+            horizontal_visible_end =
+                horizontal_display_end.clamp(horizontal_visible_start, PAL_HORIZONTAL_ACTIVE_END);
+            vertical_visible_start =
+                vertical_display_start.clamp(PAL_VERTICAL_ACTIVE_START, PAL_VERTICAL_ACTIVE_END);
+            vertical_visible_end =
+                vertical_display_end.clamp(vertical_display_start, PAL_VERTICAL_ACTIVE_END);
+        }
 
         let y_shift = self.interlaced as u8;
         let height_shift = y_shift;
@@ -1348,11 +1401,11 @@ impl Gpu {
         };
 
         // adjust vram rectangle
-        let mut horizontal_skip_pixels: u16 = 0;
-        let mut display_vram_left: u16 = 0;
-        let mut display_vram_top: u16 = 0;
-        let mut display_origin_left: u16 = 0;
-        let mut display_origin_top: u16 = 0;
+        let horizontal_skip_pixels: u16;
+        let display_vram_left: u16;
+        let display_vram_top: u16;
+        let display_origin_left: u16;
+        let display_origin_top: u16;
         if horizontal_display_start >= horizontal_visible_start {
             display_origin_left =
                 (horizontal_display_start - horizontal_visible_start) / dot_clock_divider;
@@ -1397,7 +1450,7 @@ impl Gpu {
             horizontal_visible_start,
             horizontal_visible_end,
             vertical_visible_start,
-            vertical_visible_end
+            vertical_visible_end,
         )
     }
 
@@ -1430,18 +1483,24 @@ impl Gpu {
         // };
 
         if display_vram {
-            (1024 * self.scale as usize, 512 * self.scale as usize, 0, 0, self.display_depth)
+            (
+                1024 * self.scale as usize,
+                512 * self.scale as usize,
+                0,
+                0,
+                self.display_depth,
+            )
         } else {
-        let ctx = self.rendering_ctx();
-        self.renderer_sender
-            .as_ref()
-            .unwrap()
-            .send(RendererMsg::RenderFB {
-                framebuffer: framebuffer,
-                full_ram: display_vram,
-                ctx,
-            })
-            .expect("ok");
+            let ctx = self.rendering_ctx();
+            self.renderer_sender
+                .as_ref()
+                .unwrap()
+                .send(RendererMsg::RenderFB {
+                    framebuffer: framebuffer,
+                    full_ram: display_vram,
+                    ctx,
+                })
+                .expect("ok");
             // let (sx, sy, width, height) = self.update_crt_display_params();
             let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
             match msg {
@@ -1452,16 +1511,16 @@ impl Gpu {
                     sy,
                     depth,
                 } => {
-
-            let (sx, sy, width, height,_,_,_,_) = self.update_crt_display_params();
+                    let (sx, sy, width, height, _, _, _, _) = self.update_crt_display_params();
                     // println!(">>{}, {}, {}, {}", sx, sy, width, height);
                     (
-                    width as usize * self.scale as usize,
-                    height as usize * self.scale as usize,
-                    sx as usize * self.scale as usize,
-                    sy as usize * self.scale as usize,
-                    depth,
-                )},
+                        width as usize * self.scale as usize,
+                        height as usize * self.scale as usize,
+                        sx as usize * self.scale as usize,
+                        sy as usize * self.scale as usize,
+                        depth,
+                    )
+                }
                 _ => {
                     panic!("something went wrong.. sync call returned wrong response");
                     // (1024, 512, 0, 0, self.display_depth)
@@ -1772,7 +1831,6 @@ impl Colour {
     }
 
     pub fn from_pixel(pixel: u16) -> Self {
-
         let r = convert_5bit_to_8bit(pixel & 0x1F);
         let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
         let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
@@ -3414,3 +3472,9 @@ pub static GP0_COMMANDS: [Command; 0x100] = [
         out_of_band: true,
     },
 ];
+
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
+pub enum VideoStandard {
+    NTSC,
+    PAL,
+}

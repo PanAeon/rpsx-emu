@@ -683,11 +683,12 @@ impl State {
         let dma = dma::Dma::new();
         // let gpu = gpu::Gpu::new();
         let spu = spu::Spu::new();
-        let cdrom = CDRom::new(if cli.sideload {
+        let mut cdrom = CDRom::new(if cli.sideload {
             None
         } else {
             cli.filename.clone()
         });
+        let video_standard = cdrom.get_region().get_video_standard();
         // let spu = spu::Spu::default();
         let irqctl = irq::InterruptController::default();
         let sio = sio::Sio::new(
@@ -700,7 +701,7 @@ impl State {
         let sio2 = sio2::Sio2::new();
         let mdec = mdec::Mdec::new();
         let mut scheduler = scheduler::Scheduler::default();
-        scheduler.init();
+        scheduler.init(video_standard);
         let timers = timers::Timers::new();
 
         let software_render = cli.softgpu;
@@ -727,7 +728,7 @@ impl State {
                 )
             }
         };
-        let gpu = gpu::Gpu::new(sender, receiver, handle, scale);
+        let gpu = gpu::Gpu::new(video_standard, sender, receiver, handle, scale);
         let block_cache = block_cache::BlockCache::new();
         let cpu = dynarec::Dynarec::new();
         let system = system::System::new(
@@ -1161,11 +1162,12 @@ impl State {
 
     #[cold]
     fn call_interpreter(&mut self) {
-        let num_cycles = 8;
-        for _ in 1..num_cycles {
+        let num_cycles = 1;
+        // let num_cycles = 8;
+        // for _ in 1..num_cycles {
             self.interpreter.run_next_instruction(&mut self.system);
             // self.interpreter.check_for_tty_output();
-        }
+        // }
         cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
         self.system.scheduler.advance(2 * num_cycles); // 40???
         // crate::timers::Timers::update_value(&mut self.system, 0);
@@ -1653,8 +1655,10 @@ impl State {
     }
 
     fn get_display_pos(&mut self, x: f64, y: f64) -> (f64, f64) {
+        let ticks_per_line = self.system.gpu.get_tick_per_line() as f64;
+        let display_lines = self.system.gpu.get_display_lines() as f64;
         // I understant in ticks / lines
-        let (_, _, width, height, hs, he, vs, ve) = self.system.gpu.update_crt_display_params();
+        let (_, _, width, height, hs, _, vs, _) = self.system.gpu.update_crt_display_params();
         let scale = height as f64 / self.config.height as f64;
         let w = width as f64 / scale / self.config.width as f64;
         let h: f64;
@@ -1678,8 +1682,8 @@ impl State {
         let mx = mx * 0.72; //TODO: why?, needed for guncon
         let my = my * 0.91;
 
-        let mx = mx * 3413.0 + hs as f64;
-        let my = my * 263.0 + vs as f64;
+        let mx = mx * ticks_per_line + hs as f64;
+        let my = my * display_lines + vs as f64;
         // println!("mx:  {}, my: {}", mx, my);
         (mx, my)
     }
@@ -1689,9 +1693,9 @@ impl State {
         let tick_offset = -140.0;
         let ticks = ticks + tick_offset;
 
-        const NTSC_FREQ: f64 = 53693175.0;
+        let freq = self.system.gpu.get_gpu_freq();
         // 8MHz units for X = 44100*768*11/7 = 53222400 / 8000000 = 6.6528
-        let divider = NTSC_FREQ / 8000000.0;
+        let divider = freq / 8000000.0;
 
         let m_pos_x = (ticks / divider) as u16;
         let m_pos_y = lines as u16;
@@ -1702,8 +1706,10 @@ impl State {
     }
 
     pub fn cycles_until_line_and_tick(&mut self, line: u16, tick: u16) -> u64 {
+        let ticks_per_line = self.system.gpu.get_tick_per_line();
+        let display_lines = self.system.gpu.get_display_lines() as u16;
         let mut current_line = self.system.gpu.current_line as u16;
-        let current_cycle = (self.system.scheduler.cycle - self.line_start_cycle);
+        let current_cycle = self.system.scheduler.cycle - self.line_start_cycle;
         // println!("tick: {}", tick);
         let current_tick = (current_cycle) * 11 / 7;
         let fractional_ticks = current_cycle * 11 % 7;
@@ -1711,23 +1717,22 @@ impl State {
             tick as u64 - current_tick
         } else {
             current_line += 1;
-            3413 + tick as u64 - current_tick
+            ticks_per_line + tick as u64 - current_tick
         };
         let lines = if line > current_line {
-            (line - current_line)
+            line - current_line
         } else {
-            263 - current_line + line
+            display_lines - current_line + line
         };
-        const NTSC_TICKS_PER_LINE: u64 = 3413;
-        let total = ticks as u64 + lines as u64 * NTSC_TICKS_PER_LINE;
-        let system_cycles = ((total * 451584 + fractional_ticks + 715908) / 715909);
+        let total = ticks as u64 + lines as u64 * ticks_per_line;
+        let system_cycles = self.system.gpu.gpu_ticks_to_system_cycles(total, fractional_ticks);
         system_cycles
     }
     pub fn schedule_justifier_irq(&mut self) {
         self.system.scheduler.unschedule_light_gun();
         let (ticks, lines) = self.get_display_pos(self.mouse_pos.0, self.mouse_pos.1);
 
-        const NTSC_TOTAL_LINES: u16 = 263;
+        let display_lines = self.system.gpu.get_display_lines() as u16;
         // const NTSC_FREQ: f64 = 53693175.0;
         // let divider = NTSC_FREQ / 8000000.0;
         // let m_irq_tick = (ticks * 5).saturating_sub(300);
@@ -1738,10 +1743,10 @@ impl State {
         // println!("target tick: {} (0..3413) ", m_irq_tick);
         let start_line_ofsset = 34;
         let end_line_offset = 28;
-        let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
-        let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
-        // let m_irq_first_line = (lines + NTSC_TOTAL_LINES - start_line_ofsset) % NTSC_TOTAL_LINES;
-        // let m_irq_last_line = (lines + NTSC_TOTAL_LINES - end_line_offset) % NTSC_TOTAL_LINES;
+        let m_irq_first_line = (lines + display_lines - start_line_ofsset) % display_lines;
+        let m_irq_last_line = (lines + display_lines - end_line_offset) % display_lines;
+        // let m_irq_first_line = (lines + display_lines - start_line_ofsset) % display_lines;
+        // let m_irq_last_line = (lines + display_lines - end_line_offset) % display_lines;
 
         // self.justifier_irq = Some((m_irq_tick, m_irq_first_line, m_irq_last_line));
         let cycles = self.cycles_until_line_and_tick(lines, m_irq_tick);

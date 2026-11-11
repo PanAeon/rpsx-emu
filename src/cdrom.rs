@@ -6,6 +6,7 @@ use arrayvec::ArrayVec;
 
 use crate::cd_cache::CdCache;
 use crate::cdrom_xa::XaState;
+use crate::gpu::VideoStandard;
 // use crate::cdxa::{self, AdpcmHistory, HighResResampler, LowResResampler, decode_audio_sector};
 use crate::iso9660;
 use crate::system::{Addressable, System};
@@ -387,6 +388,21 @@ impl CDRom {
             // high_res_resamplers: Default::default(),
             // low_res_resamplers: Default::default(),
         }
+    }
+
+    pub fn get_region(&mut self) -> Region {
+        let region = if let Some(disk) = self.disk.as_mut() {
+            let serial = extract_serial_number( disk.cache.as_mut().unwrap());
+            if let Some(serial) = serial {
+                serial.region()
+            } else {
+                None
+            }
+            
+        } else {
+            None
+        };
+        region.unwrap_or(Region::NorthAmerica)
     }
 
     // ---------------------- Regs IO --------------------------------------------------
@@ -2206,6 +2222,16 @@ pub enum Region {
     NorthAmerica,
     /// Europe (PAL): SCEE
     Europe,
+}
+
+impl Region {
+    pub fn get_video_standard(&self) -> VideoStandard {
+        match self {
+            Region::Japan => VideoStandard::NTSC,
+            Region::NorthAmerica => VideoStandard::NTSC,
+            Region::Europe => VideoStandard::PAL,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

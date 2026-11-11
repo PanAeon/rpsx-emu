@@ -1,6 +1,5 @@
 use crate::{
-    system::{Addressable, System},
-    scheduler::{LINE_DURATION, TimerInterrupt},
+    gpu::VideoStandard, scheduler::{NTSC_LINE_DURATION, PAL_LINE_DURATION, TimerInterrupt}, system::{Addressable, System},
 };
 use serde::{Deserialize, Serialize};
 
@@ -148,12 +147,16 @@ impl Timers {
     }
 
     pub fn ticks_to_cycles(system: &System, which: usize, ticks: u32) -> u64 {
+        let line_duration = match system.gpu.video_standard {
+            VideoStandard::NTSC => NTSC_LINE_DURATION,
+            VideoStandard::PAL => PAL_LINE_DURATION,
+        };
         let ticks = ticks as u64;
         match system.timers.clock_source(which) {
             ClockSource::Cpu => ticks,
             ClockSource::CpuDiv8 => ticks * 8,
             ClockSource::Dot => ticks * (system.gpu.get_clock_divider() as u64),
-            ClockSource::HBlank => ticks * LINE_DURATION,
+            ClockSource::HBlank => ticks * line_duration,
         }
     }
 
@@ -195,10 +198,9 @@ impl Timers {
 
 
     pub fn update_value(system: &mut System, which: usize) {
-        let timer =  &mut system.timers.timers[which];
 
+        let timer =  &system.timers.timers[which];
         let clock_delta = (system.scheduler.cycle - timer.last_read) as u32;
-        timer.last_read = system.scheduler.cycle;
 
         match system.timers.sync_mode(which) {
             SyncMode::Paused => return,
@@ -228,6 +230,16 @@ impl Timers {
                 h
             }
         };
+        let cycle_remainder = match system.timers.clock_source(which) {
+            ClockSource::Cpu => 0,
+            ClockSource::CpuDiv8 => clock_delta % 8,
+            ClockSource::Dot => clock_delta % (system.gpu.get_clock_divider() as u32),
+            ClockSource::HBlank => {
+                0
+            }
+        };
+        let timer =  &mut system.timers.timers[which];
+        timer.last_read = system.scheduler.cycle - cycle_remainder as u64;
 
         let timer =  &mut system.timers.timers[which];
         let old_counter = timer.counter as u64;
@@ -303,7 +315,7 @@ impl Timers {
             let prev = timer.mode.irq_disabled();
             let next = !prev;
             timer.mode.set_irq_disabled(next);
-            prev && !next // FIXME: woot?
+            prev && !next
         } else {
             timer.mode.set_irq_disabled(true);
             true

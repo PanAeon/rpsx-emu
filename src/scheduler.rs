@@ -1,13 +1,14 @@
 use arrayvec::ArrayVec;
 
-use crate::{ scheduler::Event::CDRomResultIrq};
+use crate::{ gpu::VideoStandard, scheduler::Event::CDRomResultIrq};
 use serde::{Deserialize, Serialize};
 
-pub const LINE_DURATION: u64 = 2172; // in cpu cycles NTSC, 263 scanlines per frame
-pub const HBLANK_DURATION: u64 = 390;
-// pub const SPU_INTERVAL: u64 = 668;
-// pub const SAMPLES_PER_FRAME: u64 = 735;
-// pub const CLOCKS_PER_FRAME: u64 = SAMPLES_PER_FRAME * SPU_INTERVAL;
+pub const NTSC_LINE_DURATION: u64 = 2172; // in cpu cycles NTSC, 263 scanlines per frame
+pub const PAL_LINE_DURATION: u64 = 2153; // in cpu cycles NTSC, 263 scanlines per frame
+pub const NTSC_HBLANK_DURATION: u64 = 538;
+pub const PAL_HBLANK_DURATION: u64 = 538;
+// pub const NTSC_HBLANK_DURATION: u64 = 390;
+// pub const PAL_HBLANK_DURATION: u64 = 390;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct TimerInterrupt {
@@ -119,13 +120,30 @@ impl Scheduler {
         self.cycle += num_cycles;
     }
 
-    pub fn init(&mut self) {
-        self.schedule(Event::VBlankStart, LINE_DURATION * 240, Some(LINE_DURATION * 263));
-        self.schedule(Event::VBlankEnd, LINE_DURATION * 263, Some(LINE_DURATION * 263));
-        self.schedule(Event::HBlankStart, LINE_DURATION - HBLANK_DURATION, Some(LINE_DURATION));
-        self.schedule(Event::HBlankEnd, LINE_DURATION, Some(LINE_DURATION));
+    pub fn init(&mut self, video_standard: VideoStandard) {
+        let line_duration = match video_standard {
+            VideoStandard::NTSC => NTSC_LINE_DURATION,
+            VideoStandard::PAL => PAL_LINE_DURATION,
+        };
+        let hblank_duration = match video_standard {
+            VideoStandard::NTSC => NTSC_HBLANK_DURATION,
+            VideoStandard::PAL => PAL_HBLANK_DURATION,
+        };
+
+        let total_lines = match video_standard {
+            VideoStandard::NTSC => 263,
+            VideoStandard::PAL => 314,
+        };
+        let display_lines = match video_standard {
+            VideoStandard::NTSC => 240,
+            VideoStandard::PAL => 256,// approx.
+        };
+        self.schedule(Event::VBlankStart, line_duration * display_lines, Some(line_duration * total_lines));
+        self.schedule(Event::VBlankEnd, line_duration * total_lines, Some(line_duration * total_lines));
+        self.schedule(Event::HBlankStart, line_duration - hblank_duration, Some(line_duration));
+        self.schedule(Event::HBlankEnd, line_duration, Some(line_duration));
         self.schedule(Event::SpuTick, 768, Some(768));
-        self.schedule(Event::Dma, 128, Some(128));
+        // self.schedule(Event::Dma, 128, Some(128));
     }
 
 }

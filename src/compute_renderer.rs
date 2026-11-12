@@ -475,16 +475,11 @@ impl ComputeRenderer {
         if !self.vertices.is_empty() {
             {
                 let width = self.drawing_area_bottom_right.0.saturating_sub(self.drawing_area_top_left.0) + 1;
-                let mut width_bin_x = width / 128;
-                if width_bin_x * 128 < width {
-                    width_bin_x += 1;
-                }
+                let width_bin_x = (width + 127) / 128;
 
                 let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1 + 1;
-                let mut width_bin_y = height / 64;
-                if width_bin_y * 64 < height {
-                    width_bin_y += 1;
-                }
+                let width_bin_y = (height + 63) / 64;
+
                 if width_bin_x == 0 || width_bin_y == 0 {
                     self.vertices.clear();
                     return;
@@ -1243,16 +1238,10 @@ impl ComputeRenderer {
                 }
                 println!("invocations: {}", results.len());
                 let width = self.drawing_area_bottom_right.0 - self.drawing_area_top_left.0 + 1;
-                let mut width_bin_x = (width) / 128;
-                if width_bin_x * 128 < width {
-                    width_bin_x += 1;
-                }
+                let width_bin_x = (width + 127) / 128;
 
                 let height = self.drawing_area_bottom_right.1 - self.drawing_area_top_left.1 + 1;
-                let mut width_bin_y = (height) / 64;
-                if width_bin_y * 64 < (height) {
-                    width_bin_y += 1;
-                }
+                let width_bin_y = (height + 63) / 64;
                 println!("bin: {}x{}", width_bin_x, width_bin_y);
             }
             None => println!("No profiling results available yet!"),

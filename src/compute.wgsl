@@ -391,8 +391,8 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
     // let bias2 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p1, p2, p0));
     // let bias3 = select(-0.000000000000001, 0.000000000000000000001, !is_top_left(p2, p0, p1));
 
-    for (var y = bds.y; y <= bds.w; y++) {
-        for (var x = bds.x; x <= bds.z; x++) {
+    for (var y = bds.y; y < bds.w; y++) {
+        for (var x = bds.x; x < bds.z; x++) {
             let e0 = test_edge_top_left(p0, p1, x, y);
             let e1 = test_edge_top_left(p1, p2, x, y);
             let e2 = test_edge_top_left(p2, p0, x, y);
@@ -1186,21 +1186,13 @@ fn barycentric(v1: vec2<i32>, v2: vec2<i32>, v3: vec2<i32>, x: i32, y: i32) -> v
 }
 
 fn get_partition(id: vec2<u32>) -> vec4<i32> {
-    var width_bin_x = (uniforms.drawing_area_right - uniforms.drawing_area_left + 1) / 128;
-    if width_bin_x * 128 < (uniforms.drawing_area_right - uniforms.drawing_area_left + 1) {
-        width_bin_x++;
-    }
-    var width_bin_y = (uniforms.drawing_area_bottom - uniforms.drawing_area_top + 1) / 64;
-    if width_bin_y * 64 < (uniforms.drawing_area_bottom - uniforms.drawing_area_top + 1) {
-        width_bin_y++;
-    }
-    // let width_x = 1024u / 8;
-    // let width_y = 512u / 8;
+    var width_bin_x = (uniforms.drawing_area_right - uniforms.drawing_area_left + 128) / 128;
+    var width_bin_y = (uniforms.drawing_area_bottom - uniforms.drawing_area_top + 64) / 64;
     return vec4<i32>(
         i32(id.x) * width_bin_x + uniforms.drawing_area_left - 1,
         i32(id.y) * width_bin_y + uniforms.drawing_area_top - 1,
-        min(uniforms.drawing_area_right, (i32(id.x) + 1) * width_bin_x - 1 + uniforms.drawing_area_left - 1),
-        min(uniforms.drawing_area_bottom, (i32(id.y) + 1) * width_bin_y - 1 + uniforms.drawing_area_top - 1),
+        min(uniforms.drawing_area_right, (i32(id.x) + 1) * width_bin_x  + uniforms.drawing_area_left - 1),
+        min(uniforms.drawing_area_bottom, (i32(id.y) + 1) * width_bin_y  + uniforms.drawing_area_top - 1),
     );
 }
 fn get_bounds(v1: vec2<i32>, v2: vec2<i32>, v3: vec2<i32>) -> vec4<i32> {

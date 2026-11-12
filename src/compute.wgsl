@@ -474,13 +474,13 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                         let prev = readExistingColorCached(vec2(x, y), bounds);
                         // let prev = read_16bit(vec2(x, y));
                         if (prev.w ) == 0  {
-                            cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                            // cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
                             
-                             // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                             textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                         }
                     } else {
-                        cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
-                        // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        // cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                        textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                     }
                 } else {
                     var c = vec4<f32>(col, 0.0);
@@ -505,12 +505,12 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                         // let prev = read_16bit(vec2(x, y));
                         if (prev.w) == 0 {
                             // hmm, brokes silent hill when enabled (black squares)
-                            // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
-                            cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                            textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                            // cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
                         }
                     } else {
-                        cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
-                        // textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
+                        // cache[(y - bounds.y) * 8 + x - bounds.x] = pixel;
+                        textureStore(vram_t, vec2<u32>(u32(x), u32(y)), vec4(pixel, 0, 0, 0));
                     }
                 }
             }
@@ -1055,8 +1055,8 @@ fn unpack_color(v: u32) -> vec4<f32> {
 }
 
 fn readExistingColorCached(v: vec2<i32>, bounds: vec4<i32>) -> vec4<f32> {
-    // let color = read_16bit(v);
-    let color = cache[(v.y - bounds.y) * 8 + v.x - bounds.x];
+    let color = read_16bit(v);
+    // let color = cache[(v.y - bounds.y) * 8 + v.x - bounds.x];
     return unpack_color(color);
 }
 fn readExistingColor(v: vec2<i32>) -> vec4<f32> {
@@ -1224,7 +1224,7 @@ fn intersect(a: vec4<i32>, b: vec4<i32>) -> vec4<i32> {
     return vec4<i32>(cx, cy, dx, dy);
 }
 
-var<private> cache: array<u32, 64>;
+// var<private> cache: array<u32, 64>;
 
 @compute @workgroup_size(8,8,1)
 fn main(
@@ -1263,12 +1263,12 @@ fn main(
     }
 
     textureBarrier();
-    for (var j: i32 = bounds.y; j <= bounds.w; j++) {
-        for (var i: i32 = bounds.x; i <= bounds.z; i++) {
-            var packed = textureLoad(vram_t, vec2(i,j)).r;
-            cache[(j - bounds.y) * 8 + i - bounds.x] = packed;
-        }
-    }
+    // for (var j: i32 = bounds.y; j <= bounds.w; j++) {
+    //     for (var i: i32 = bounds.x; i <= bounds.z; i++) {
+    //         var packed = textureLoad(vram_t, vec2(i,j)).r;
+    //         cache[(j - bounds.y) * 8 + i - bounds.x] = packed;
+    //     }
+    // }
 
     for (var i: u32 = 0; i < num_vertices; i++) {
         // let idx = (64 * (bin.y * 128 + bin.x)) + i;
@@ -1293,12 +1293,12 @@ fn main(
     }
 
 
-    for (var j: i32 = bounds.y; j <= bounds.w; j++) {
-        for (var i: i32 = bounds.x; i <= bounds.z; i++) {
-            let packed = cache[(j - bounds.y) * 8 + i - bounds.x];
-            textureStore(vram_t, vec2(i,j), vec4(packed,0,0,0));
-        }
-    }
+    // for (var j: i32 = bounds.y; j <= bounds.w; j++) {
+    //     for (var i: i32 = bounds.x; i <= bounds.z; i++) {
+    //         let packed = cache[(j - bounds.y) * 8 + i - bounds.x];
+    //         textureStore(vram_t, vec2(i,j), vec4(packed,0,0,0));
+    //     }
+    // }
     // textureBarrier();
     //
     // now we have local_invocation_id.xy to play with...

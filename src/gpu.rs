@@ -1,5 +1,6 @@
 use crossbeam::channel::{Receiver, Sender};
 use std::{
+    fmt::Display,
     sync::{Arc, Mutex},
     thread::JoinHandle,
 };
@@ -1108,9 +1109,16 @@ impl Gpu {
 
         self.hres = HorizontalRes::from_fields(hr1, hr2);
 
+        self.interlaced = val & 0x20 != 0;
         self.vres = match val & 0x4 != 0 {
             false => VerticalRes::Y240Lines,
-            true => VerticalRes::Y480Lines,
+            true => {
+                if self.interlaced {
+                    VerticalRes::Y480Lines
+                } else {
+                    VerticalRes::Y240Lines
+                }
+            } // only when interlaced...
         };
 
         self.vmode = match val & 0x8 != 0 {
@@ -1122,8 +1130,6 @@ impl Gpu {
             false => DisplayDepth::D15Bits,
             true => DisplayDepth::D24Bits,
         };
-
-        self.interlaced = val & 0x20 != 0;
 
         if val & 0x80 != 0 {
             panic!("Unsupported display mode {:08x}", val);
@@ -1505,21 +1511,37 @@ impl Gpu {
             let msg = self.renderer_receiver.as_ref().unwrap().recv().expect("ok");
             match msg {
                 RendererResponse::FBUpdated {
-                    width,
-                    height,
-                    sx,
-                    sy,
+                    width: _,
+                    height: _,
+                    sx: _,
+                    sy: _,
                     depth,
                 } => {
                     let (sx, sy, width, height, _, _, _, _) = self.update_crt_display_params();
                     // println!(">>{}, {}, {}, {}", sx, sy, width, height);
-                    (
-                        width as usize * self.scale as usize,
-                        height as usize * self.scale as usize,
-                        sx as usize * self.scale as usize,
-                        sy as usize * self.scale as usize,
-                        depth,
-                    )
+                    // println!("interlaced? {}, height: {}", self.interlaced, height);
+                    if depth == DisplayDepth::D24Bits {
+                        let height = if self.interlaced {
+                            height as usize * self.scale as usize/2 // TODO: Y?
+                        } else {
+                            height as usize * self.scale as usize
+                        };
+                        (
+                            width as usize * self.scale as usize,
+                            height,
+                            sx as usize * self.scale as usize * 2 / 3,
+                            sy as usize * self.scale as usize,
+                            depth,
+                        )
+                    } else {
+                        (
+                            width as usize * self.scale as usize,
+                            height as usize * self.scale as usize,
+                            sx as usize * self.scale as usize,
+                            sy as usize * self.scale as usize,
+                            depth,
+                        )
+                    }
                 }
                 _ => {
                     panic!("something went wrong.. sync call returned wrong response");

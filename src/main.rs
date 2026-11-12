@@ -2157,6 +2157,12 @@ impl State {
                     gilrs::Button::RightTrigger => {
                         prev_buttons &= !(0x1 << (crate::sio::Button::R1 as usize));
                     }
+                    gilrs::Button::LeftThumb => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::L3 as usize));
+                    }
+                    gilrs::Button::RightThumb => {
+                        prev_buttons &= !(0x1 << (crate::sio::Button::R3 as usize));
+                    }
                     _ => {} // ignore..
                 },
                 gilrs::EventType::ButtonReleased(button, _) => match button {
@@ -2196,6 +2202,12 @@ impl State {
                     gilrs::Button::RightTrigger => {
                         prev_buttons |= 0x1 << (crate::sio::Button::R1 as usize);
                     }
+                    gilrs::Button::LeftThumb => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::L3 as usize);
+                    }
+                    gilrs::Button::RightThumb => {
+                        prev_buttons |= 0x1 << (crate::sio::Button::R3 as usize);
+                    }
                     gilrs::Button::Mode => {
                         info!("analog mode changed!");
                         let pad = if self.gamepad2 {
@@ -2216,14 +2228,15 @@ impl State {
                         };
                     let axes = pad.get_stick_axis();
                     let byte = value.mul_add(127.5, 127.5) as u8;
+                    let rev_byte = value.mul_add(-127.5, -127.5) as u8;
                     if axis == Axis::LeftStickX {
                         axes[2] = byte;
                     } else if axis == Axis::LeftStickY {
-                        axes[1] = byte;
+                        axes[3] = rev_byte;
                     } else if axis == Axis::RightStickX {
                         axes[0] = byte;
                     } else if axis == Axis::RightStickY {
-                        axes[3] = byte; // correct
+                        axes[1] = rev_byte; // correct
                     }
                     // self.system.sio.gamepad1.set_stick_axis(left, right);
                 }

@@ -1948,11 +1948,12 @@ bitfield::bitfield! {
     _, set_busy_status: 7;
 }
 
-bitfield::bitfield! {
+proc_bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize)]
-    pub struct ADPCTL(u8);
-    adpmute, _: 0;
-    chngatv, _: 5;
+    pub struct ADPCTL(pub u8) : {
+        pub adpmute: bool @ 0,
+        pub chngatv: bool @ 5,
+    }
 }
 
 // 0-2 CLRINT     Acknowledge HC05 interrupt "flags" (0=no change, 1=clear)

@@ -1150,7 +1150,7 @@ fn interpolate_color(lambda: vec3<f32>, c0: vec3<f32>, c1: vec3<f32>, c2: vec3<f
 fn interpolate_uv(lambda: vec3<f32>, uv0: vec2<i32>, uv1: vec2<i32>, uv2: vec2<i32>) -> vec2<i32> {
     let u = lambda[0] * f32(uv0[0]) + lambda[1] * f32(uv1[0]) + lambda[2] * f32(uv2[0]);
     let v = lambda[0] * f32(uv0[1]) + lambda[1] * f32(uv1[1]) + lambda[2] * f32(uv2[1]);
-    return vec2<i32>(vec2(u, v));
+    return vec2<i32>(vec2(u+0.5, v+0.5));
 }
 
 fn rgb8_split_color(value: u32) -> vec3<f32> {
@@ -1262,13 +1262,13 @@ fn main(
         return;
     }
 
+    textureBarrier();
     for (var j: i32 = bounds.y; j <= bounds.w; j++) {
         for (var i: i32 = bounds.x; i <= bounds.z; i++) {
             var packed = textureLoad(vram_t, vec2(i,j)).r;
             cache[(j - bounds.y) * 8 + i - bounds.x] = packed;
         }
     }
-    // textureBarrier();
 
     for (var i: u32 = 0; i < num_vertices; i++) {
         // let idx = (64 * (bin.y * 128 + bin.x)) + i;
@@ -1299,6 +1299,7 @@ fn main(
             textureStore(vram_t, vec2(i,j), vec4(packed,0,0,0));
         }
     }
+    // textureBarrier();
     //
     // now we have local_invocation_id.xy to play with...
 

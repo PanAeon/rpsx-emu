@@ -362,7 +362,7 @@ impl Renderer {
                         dst,
                         size,
                         ctx,
-                    } => renderer.vram2vram_blit(*src, *dst, *size),
+                    } => renderer.vram2vram_blit(*src, *dst, *size, &ctx),
                     RendererMsg::RenderFB {
                         framebuffer,
                         full_ram,
@@ -386,7 +386,7 @@ impl Renderer {
                         size,
                         data,
                         ctx,
-                    } => renderer.cpu_to_vram_copy(*top_left, *size, data),
+                    } => renderer.cpu_to_vram_copy(*top_left, *size, data, &ctx),
                     RendererMsg::VramToCpuCopy { top_left, size } => {
                         let data = renderer.vram_to_cpu_copy(*top_left, *size);
                         match to_gpu_sender.send(RendererResponse::VramToCpuData { data }) {
@@ -460,7 +460,6 @@ impl Renderer {
         Some((x0.max(l), y0.max(t), x1.min(r), y1.min(b)))
     }
 
-
     pub fn vram_write_color(&mut self, address: usize, color: Colour, ctx: &RenderingContext) {
         if ctx.preserve_masked_pixels && (self.vram[address + 1] & 0x80) != 0 {
             return;
@@ -490,15 +489,6 @@ impl Renderer {
         }
 
         panic!("not impl")
-        // for x in min_x..max_x {
-        //     for y in min_y..max_y {
-        //         let vram_addr = 2 * (y * 1024 + x) as usize;
-        //
-        //         let [pixel_lsb, pixel_msb] = color.to_le_bytes();
-        //         self.vram[vram_addr] = pixel_lsb;
-        //         self.vram[vram_addr + 1] = pixel_msb & 0xEF;
-        //     }
-        // }
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -667,11 +657,6 @@ impl Renderer {
 
             self.vram_write_color(vram_addr, pixel, ctx);
 
-            // let [lsb, msb] = pixel.to_le_bytes();
-
-            // self.vram[vram_addr] = lsb;
-            // self.vram[vram_addr + 1] = msb;
-
             let e2 = 2 * err;
             if e2 >= dy {
                 if x == x1 {
@@ -690,17 +675,6 @@ impl Renderer {
         }
     }
 
-    pub fn compute_texel_offset(&self, x: usize, y: usize, ctx: &RenderingContext) -> [usize; 2] {
-        let x_mask = ctx.texture_window_x_mask as usize;
-        let y_mask = ctx.texture_window_y_mask as usize;
-        let x_offset = ctx.texture_window_x_offset as usize;
-        let y_offset = ctx.texture_window_y_offset as usize;
-
-        [
-            (x & (!(x_mask * 8))) | ((x_offset & x_mask) * 8),
-            (y & (!(y_mask * 8))) | ((y_offset & y_mask) * 8),
-        ]
-    }
     pub fn draw_polygon<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         colors: &mut [Colour; 4],
@@ -835,9 +809,14 @@ impl Renderer {
 
             let colors = [colors[0], colors[1], colors[2]];
             let uv = [uv[0], uv[1], uv[2]];
-            let texture_mapping = if textured {Some(uv)} else {None};
-            let interpolator =
-                Interpolator::new(vs, interpolation_denominator, shaded, colors, texture_mapping);
+            let texture_mapping = if textured { Some(uv) } else { None };
+            let interpolator = Interpolator::new(
+                vs,
+                interpolation_denominator,
+                shaded,
+                colors,
+                texture_mapping,
+            );
             for y in min_y..=max_y {
                 let py = _mm256_set1_epi32(y);
 
@@ -902,9 +881,8 @@ impl Renderer {
                         b = _mm256_packs_epi32(b1, b2);
                     }
 
-                    let mut semi_transparency_bits = _mm256_set1_epi16(!0);
-                    let mut mask_bits =
-                            _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
+                    let mut semi_transparency_bits = _mm256_set1_epi16(1 << 15);
+                    let mut mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
 
                     if textured {
                         // let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
@@ -1050,8 +1028,8 @@ impl Renderer {
         textured: bool,
         ctx: &RenderingContext,
     ) {
+        use std::arch::x86_64::_mm256_set1_epi16;
         use std::arch::x86_64::{__m256i, _mm256_storeu_si256};
-        use std::arch::x86_64::{_mm256_set1_epi16, _mm256_set1_epi32};
 
         v.x += ctx.drawing_x_offset as i32;
         v.y += ctx.drawing_y_offset as i32;
@@ -1062,12 +1040,12 @@ impl Renderer {
         else {
             return;
         };
-            // if max_x - min_x > 1023 || max_y - min_y > 511 {
-            //     return;
-            // }
+        // if max_x - min_x > 1023 || max_y - min_y > 511 {
+        //     return;
+        // }
         // if max_x > 1023 || max_y > 511 {
         //     return
-        // } 
+        // }
         let vram_ptr = self.vram.as_mut_ptr() as *mut u16;
 
         let min_x_aligned = min_x & !0xF;
@@ -1078,7 +1056,6 @@ impl Renderer {
         let color_r = _mm256_set1_epi16(color.r as i16);
         let color_g = _mm256_set1_epi16(color.g as i16);
         let color_b = _mm256_set1_epi16(color.b as i16);
-        let color_u16 = color.to_u16();
 
         let clut = Clut::new(clut);
         let texture = Texture {
@@ -1134,8 +1111,8 @@ impl Renderer {
                             ),
                         )
                     };
-                    let mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
-                    let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
+                    let mut mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
+                    let mut semi_transparency_bits = _mm256_set1_epi16(1 << 15);
 
                     let mut r = color_r;
                     let mut g = color_g;
@@ -1160,7 +1137,11 @@ impl Renderer {
                             _mm256_cmpeq_epi16(texels, _mm256_setzero_si256()),
                             write_mask,
                         );
+                        semi_transparency_bits =
+                            _mm256_and_si256(texels, _mm256_set1_epi16(1 << 15));
+                        mask_bits = _mm256_or_si256(mask_bits, semi_transparency_bits);
                         let (tr, tg, tb) = convert_15bit_to_24bit(texels);
+
                         if BLEND {
                             r = modulate_texture_color(tr, r);
                             g = modulate_texture_color(tg, g);
@@ -1171,18 +1152,6 @@ impl Renderer {
                             b = tb;
                         }
                     }
-                    // let v = _mm256_set1_epi16(uv[1] as i16);
-
-                    // {
-                    // println!("u0: {}, v0: {}", uv[0], uv[1]);
-                    // let arr: [u16; 16] = std::mem::transmute(u);
-                    // println!("us: {:?}", arr);
-                    // let arr: [u16; 16] = std::mem::transmute(v);
-                    // println!("vs: {:?}", arr);
-                    // }
-
-                    // let arr: [u16; 16] = std::mem::transmute(texels);
-                    // println!("texels: {:?}", arr);
 
                     // Truncate color from from 8-bit RGB components to 5-bit
                     r = _mm256_srli_epi16::<3>(r);
@@ -1216,8 +1185,22 @@ impl Renderer {
         }
     }
 
+    pub fn vram_write(&mut self, address: usize, lsb: u8, msb: u8, ctx: &RenderingContext) {
+        if ctx.preserve_masked_pixels && (self.vram[address + 1] & 0x80) != 0 {
+            return;
+        }
+        let msb = msb | (ctx.force_set_mask_bit as u8) << 7;
+        self.vram[address] = lsb;
+        self.vram[address + 1] = msb;
+    }
     // affected by blit settings... but ... what .. it's not this
-    pub fn vram2vram_blit(&mut self, src: Vertex, dst: Vertex, size: Vertex) {
+    pub fn vram2vram_blit(
+        &mut self,
+        src: Vertex,
+        dst: Vertex,
+        size: Vertex,
+        ctx: &RenderingContext,
+    ) {
         let width = size.x as usize;
         let height = size.y as usize;
 
@@ -1228,7 +1211,8 @@ impl Renderer {
                 let pixel_msb = self.vram[vram_addr + 1];
 
                 let vram_addr = 2 * ((y + dst.y as usize) * 1024 + x + (dst.x as usize));
-                self.vram[vram_addr] = pixel_lsb;
+                self.vram_write(vram_addr, pixel_lsb, pixel_msb, ctx);
+                // self.vram[vram_addr] = pixel_lsb;
                 self.vram[vram_addr + 1] = pixel_msb;
             }
         }
@@ -1284,20 +1268,6 @@ impl Renderer {
                 output_frame_buffer[i] = self.vram[2 * i] as u32;
                 output_frame_buffer[i] |= (self.vram[2 * i + 1] as u32) << 8;
             }
-            // output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
-            // for y in 0..512 {
-            //     for x in 0..1024 {
-            //         let vram_addr = 2 * (1024 * y + x);
-            //         let pixel =
-            //             u16::from_le_bytes([self.vram[vram_addr], self.vram[vram_addr + 1]]);
-            //
-            //         let r = convert_5bit_to_8bit(pixel & 0x1F);
-            //         let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-            //         let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
-            //
-            //         output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-            //     }
-            // }
             (1024, 512, 0, 0, ctx.display_depth)
         } else {
             let (sx, sy, width, height, _interlaced) = (
@@ -1311,49 +1281,17 @@ impl Renderer {
                 output_frame_buffer[i] = self.vram[2 * i] as u32;
                 output_frame_buffer[i] |= (self.vram[2 * i + 1] as u32) << 8;
             }
-            // output_frame_buffer.copy_from_slice(bytemuck::cast_slice(&self.vram[0..]));
-            // match ctx.display_depth {
-            //     DisplayDepth::D15Bits => {
-            //         for y in 0..height {
-            //             for x in 0..width {
-            //                 let vram_addr = 2 * (1024 * (sy + y) + (sx + x));
-            //                 let pixel = u16::from_le_bytes([
-            //                     self.vram[vram_addr],
-            //                     self.vram[vram_addr + 1],
-            //                 ]);
-            //
-            //                 let r = convert_5bit_to_8bit(pixel & 0x1F);
-            //                 let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
-            //                 let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
-            //
-            //                 output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-            //             }
-            //         }
-            //     }
-            //     DisplayDepth::D24Bits => {
-            //         for y in 0..height {
-            //             for x in 0..width {
-            //                 let vram_addr = 2 * (1024 * (y + sy)) + 3 * sx + 3 * x;
-            //                 let r = self.vram[vram_addr];
-            //                 let g = self.vram[vram_addr + 1];
-            //                 let b = self.vram[vram_addr + 2];
-            //
-            //                 output_frame_buffer[1024 * y + x] = Color { r, g, b, a: 255 };
-            //             }
-            //         }
-            //     }
-            // };
-            // black out lines outside of display field (wrong impl)
-            // let vrange = (ctx.display_line_end - ctx.display_line_start) as usize;
-            // if height >= vrange {
-            //     let starting_row = vrange * 1024 * if interlaced { 2 } else { 1 };
-            //     output_frame_buffer[starting_row..].fill(Color { r: 0, g: 0, b: 0, a: 255});
-            // }
             (width, height, sx, sy, ctx.display_depth)
         }
     }
 
-    pub fn cpu_to_vram_copy(&mut self, top_left: (u16, u16), size: (u16, u16), data: &Vec<u32>) {
+    pub fn cpu_to_vram_copy(
+        &mut self,
+        top_left: (u16, u16),
+        size: (u16, u16),
+        data: &Vec<u32>,
+        ctx: &RenderingContext,
+    ) {
         let mut current_row = 0;
         let mut current_col = 0;
         // 2 halfwords per GP0 write
@@ -1367,8 +1305,9 @@ impl Renderer {
                 let [lsb, msb] = halfword.to_le_bytes();
                 let vram_addr = 2 * (1024 * vram_row + vram_col);
 
-                self.vram[vram_addr] = lsb;
-                self.vram[vram_addr + 1] = msb;
+                self.vram_write(vram_addr, lsb, msb, ctx);
+                // self.vram[vram_addr] = lsb;
+                // self.vram[vram_addr + 1] = msb;
 
                 current_col += 1;
                 if current_col == size.0 {
@@ -1419,29 +1358,6 @@ impl Renderer {
     }
 }
 
-// clockwise order (psx has inverted y coord)
-fn ensure_vertex_order(vs: &mut [Vertex]) {
-    let cross_product_z =
-        (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
-    if cross_product_z < 0 {
-        vs.swap(0, 1);
-        // std::mem::swap(v0, v1);
-    }
-}
-
-fn ensure_vertex_order2<T: Clone>(vs: &mut [Vertex], attrs: &mut [T]) {
-    let cross_product_z =
-        (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
-    if cross_product_z < 0 {
-        let tmp = vs[0];
-        vs[0] = vs[1];
-        vs[1] = tmp;
-        let tmp = attrs[0].clone();
-        attrs[0] = attrs[1].clone();
-        attrs[1] = tmp;
-        // std::mem::swap(v0, v1);
-    }
-}
 fn ensure_vertex_order3<T: Clone, E: Clone>(vs: &mut [Vertex], attrs: &mut [T], attrs1: &mut [E]) {
     let cross_product_z =
         (vs[1].x - vs[0].x) * (vs[2].y - vs[0].y) - (vs[1].y - vs[0].y) * (vs[2].x - vs[0].x);
@@ -1476,55 +1392,6 @@ fn ensure_vertex_order3<T: Clone, E: Clone>(vs: &mut [Vertex], attrs: &mut [T], 
 
 fn cross_product_z(v0: Vertex, v1: Vertex, v2: Vertex) -> i32 {
     (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x)
-}
-
-fn is_inside_triangle(p: Vertex, v0: Vertex, v1: Vertex, v2: Vertex) -> bool {
-    for (va, vb) in [(v0, v1), (v1, v2), (v2, v0)] {
-        let cpz = cross_product_z(va, vb, p);
-        if cpz < 0 {
-            return false;
-        }
-        if cpz == 0 {
-            // If the cross product Z component is 0, this point lies exactly on an edge.
-            // Per the top-left rule, this pixel should be rasterized only if it does not lie
-            // on a bottom or right edge.
-
-            // Assuming clockwise order and an inverted Y axis, if the Y value increases from Va to Vb,
-            // this edge is right-oriented
-            if vb.y > va.y {
-                // Pixel lies on a right-oriented edge, skip
-                return false;
-            }
-
-            // If the Y coordinates are equal and the X coordinate decreases, this is a horizontal bottom edge
-            if vb.y == va.y && vb.x < va.x {
-                // Pixel lies on a horizontal bottom edge, skip
-                return false;
-            }
-
-            // Otherwise, this is either a horizontal top edge or a left-oriented edge; rasterize it
-            // (If it doesn't also lie on a different edge that is bottom/right)
-        }
-    }
-
-    true
-}
-
-fn compute_barycentric_coordinates(p: Vertex, v0: Vertex, v1: Vertex, v2: Vertex) -> [f64; 3] {
-    let denominator = cross_product_z(v0, v1, v2);
-    if denominator == 0 {
-        return [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
-    }
-    let denominator: f64 = denominator.into();
-    let lambda0 = f64::from(cross_product_z(v1, v2, p)) / denominator;
-    let lambda1 = f64::from(cross_product_z(v2, v0, p)) / denominator;
-    let lambda2 = 1.0 - lambda0 - lambda1;
-    [lambda0, lambda1, lambda2]
-}
-fn compute_normal_coordinates(p: [f64; 3], vs: &[[u16; 2]]) -> [usize; 2] {
-    let x = p[0] * (vs[0][0] as f64) + p[1] * (vs[1][0] as f64) + p[2] * (vs[2][0] as f64);
-    let y = p[0] * (vs[0][1] as f64) + p[1] * (vs[1][1] as f64) + p[2] * (vs[2][1] as f64);
-    [x.round() as usize, y.round() as usize]
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1562,7 +1429,7 @@ pub struct Texture {
 
 impl Texture {
     pub fn new_avx2(data: u16, clut: Clut) -> Self {
-        let base_x = ((data & 0xf) as usize); // n * 64
+        let base_x = (data & 0xf) as usize; // n * 64
         let base_y = (((data >> 4) & 1) as usize) * 256; // n * 256
         let semi_transparency = ((data >> 5) & 3) as u8;
         let dithering = (data >> 9) & 1 != 0; // not used!!!
@@ -1615,69 +1482,7 @@ impl Texture {
     pub fn get_texpage_base(&self) -> [u8; 2] {
         [(self.base_x / 64) as u8, (self.base_y / 256) as u8]
     }
-
-    pub fn get_texel(
-        &self,
-        renderer: &Renderer,
-        uv_x: usize,
-        uv_y: usize,
-        ctx: &RenderingContext,
-    ) -> Colour {
-        let [uv_x, uv_y] = renderer.compute_texel_offset(uv_x, uv_y, ctx);
-
-        let (pixel_lsb, pixel_msb) = match self.depth {
-            TextureDepth::T4Bit => {
-                let pixel =
-                    renderer.vram[self.base_y * 2048 + uv_y * 2048 + 2 * self.base_x + uv_x / 2];
-                let index = (pixel >> 4 * (uv_x & 1)) & 0xF;
-
-                self.clut.get_color(renderer, index)
-            }
-            TextureDepth::T8Bit => {
-                // Width 2048...
-                let index =
-                    renderer.vram[self.base_y * 2048 + uv_y * 2048 + 2 * self.base_x + uv_x];
-
-                self.clut.get_color(renderer, index)
-            }
-            TextureDepth::T15Bit => {
-                let texture_x = self.base_x + uv_x;
-                let texture_y = self.base_y + uv_y;
-                let pixel_lsb = renderer.vram[2 * (texture_y * 1024 + texture_x)];
-                let pixel_msb = renderer.vram[2 * (texture_y * 1024 + texture_x) + 1];
-                (pixel_lsb, pixel_msb)
-                // let vram_addr = 2 * (y * 1024 + x) as usize;
-
-                // self.vram[vram_addr] = pixel_lsb;
-                // self.vram[vram_addr + 1] = pixel_msb;
-            }
-        };
-
-        Colour::from_bytes(pixel_msb, pixel_lsb)
-    }
 }
-
-fn interpolate_color(lambda: &[f64], colors: &[Colour]) -> Colour {
-    let colors_r: Vec<f64> = colors.iter().map(|c| f64::from(c.r)).collect();
-    let colors_g: Vec<f64> = colors.iter().map(|c| f64::from(c.g)).collect();
-    let colors_b: Vec<f64> = colors.iter().map(|c| f64::from(c.b)).collect();
-
-    let r =
-        (lambda[0] * colors_r[0] + lambda[1] * colors_r[1] + lambda[2] * colors_r[2]).round() as u8;
-    let g =
-        (lambda[0] * colors_g[0] + lambda[1] * colors_g[1] + lambda[2] * colors_g[2]).round() as u8;
-    let b =
-        (lambda[0] * colors_b[0] + lambda[1] * colors_b[1] + lambda[2] * colors_b[2]).round() as u8;
-
-    Colour { r, g, b, m: 0 }
-}
-
-const DITHER_TABLE: &[[i8; 4]; 4] = &[
-    [-4, 0, -3, 1],
-    [2, -2, 3, 1],
-    [-3, 1, -4, 0],
-    [3, -1, 2, -2],
-];
 
 const VECTOR_DITHER_TABLE: &[[i16; 16]; 4] = &[
     [-4, 0, -3, 1, -4, 0, -3, 1, -4, 0, -3, 1, -4, 0, -3, 1],
@@ -1686,22 +1491,10 @@ const VECTOR_DITHER_TABLE: &[[i16; 16]; 4] = &[
     [3, -1, 2, -2, 3, -1, 2, -2, 3, -1, 2, -2, 3, -1, 2, -2],
 ];
 
-fn apply_dithering(color: Colour, p: Vertex) -> Colour {
-    let offset = DITHER_TABLE[(p.y & 3) as usize][(p.x & 3) as usize];
-    Colour {
-        r: color.r.saturating_add_signed(offset),
-        g: color.g.saturating_add_signed(offset),
-        b: color.b.saturating_add_signed(offset),
-        m: color.m,
-    }
-}
-
 pub const OPAQUE: bool = false;
 pub const SEMI_TRANS: bool = true;
 pub const BLEND: bool = true;
 pub const RAW: bool = false;
-pub const TEXTURED: bool = true;
-pub const UNTEXTURED: bool = false;
 
 // https://codeberg.org/jsgroth/CoffeePSX/src/commit/ed7c266bf43cf9ffd4211be6d8cf15c8424033f2/crates/ps1-core/src/gpu/rasterizer/simd/avx2.rs
 // input vectors: i16x16
@@ -1804,13 +1597,15 @@ unsafe fn combine_rgb_components(r: __m256i, g: __m256i, b: __m256i) -> __m256i 
 // using _mm256_packus_epi32 or _mm256_packs_epi32
 #[target_feature(enable = "avx2")]
 unsafe fn unpack_epi16_vector(v: __m256i) -> (__m256i, __m256i) {
-    let low_shuffle_mask: __m256i = mem::transmute(*LOW_SHUFFLE_MASK);
-    let high_shuffle_mask: __m256i = mem::transmute(*HIGH_SHUFFLE_MASK);
+    unsafe {
+        let low_shuffle_mask: __m256i = mem::transmute(*LOW_SHUFFLE_MASK);
+        let high_shuffle_mask: __m256i = mem::transmute(*HIGH_SHUFFLE_MASK);
 
-    let low = _mm256_shuffle_epi8(v, low_shuffle_mask);
-    let high = _mm256_shuffle_epi8(v, high_shuffle_mask);
+        let low = _mm256_shuffle_epi8(v, low_shuffle_mask);
+        let high = _mm256_shuffle_epi8(v, high_shuffle_mask);
 
-    (low, high)
+        (low, high)
+    }
 }
 const LOW_SHUFFLE_MASK: &[u8; 32] = &[
     0, 1, 0x80, 0x80, 2, 3, 0x80, 0x80, 4, 5, 0x80, 0x80, 6, 7, 0x80, 0x80, 16, 17, 0x80, 0x80, 18,
@@ -1880,34 +1675,38 @@ unsafe fn read_texture(
 // Return value is u16s stored in an i32x8 vector.
 #[target_feature(enable = "avx2")]
 unsafe fn read_4bpp_texture(vram: *mut u16, texture: &Texture, u: __m256i, v: __m256i) -> __m256i {
-    let vram_y = _mm256_add_epi32(v, _mm256_set1_epi32(texture.base_y as i32));
-    let vram_x_words = _mm256_add_epi32(
-        _mm256_srli_epi32::<3>(u),
-        _mm256_set1_epi32((32 * texture.base_x) as i32),
-    );
+    unsafe {
+        let vram_y = _mm256_add_epi32(v, _mm256_set1_epi32(texture.base_y as i32));
+        let vram_x_words = _mm256_add_epi32(
+            _mm256_srli_epi32::<3>(u),
+            _mm256_set1_epi32((32 * texture.base_x) as i32),
+        );
 
-    let vram_addr = _mm256_or_si256(_mm256_slli_epi32::<9>(vram_y), vram_x_words);
-    let vram_shift = _mm256_slli_epi32::<2>(_mm256_and_si256(u, _mm256_set1_epi32(0x07)));
+        let vram_addr = _mm256_or_si256(_mm256_slli_epi32::<9>(vram_y), vram_x_words);
+        let vram_shift = _mm256_slli_epi32::<2>(_mm256_and_si256(u, _mm256_set1_epi32(0x07)));
 
-    let vram_words = _mm256_i32gather_epi32::<4>(vram.cast::<i32>(), vram_addr);
-    let clut_indices = _mm256_and_si256(
-        _mm256_srlv_epi32(vram_words, vram_shift),
-        _mm256_set1_epi32(0xF),
-    );
+        let vram_words = _mm256_i32gather_epi32::<4>(vram.cast::<i32>(), vram_addr);
+        let clut_indices = _mm256_and_si256(
+            _mm256_srlv_epi32(vram_words, vram_shift),
+            _mm256_set1_epi32(0xF),
+        );
 
-    let clut_offset = ((1024 * texture.clut.base_y) | (texture.clut.base_x)) as usize;
-    let clut = vram.add(clut_offset);
+        let clut_offset = ((1024 * texture.clut.base_y) | (texture.clut.base_x)) as usize;
+        let clut = vram.add(clut_offset);
 
-    read_clut(clut, clut_indices)
+        read_clut(clut, clut_indices)
+    }
 }
 
 #[target_feature(enable = "avx2")]
 unsafe fn read_clut(clut: *mut u16, clut_indices: __m256i) -> __m256i {
-    let addrs = _mm256_srli_epi32::<1>(clut_indices);
-    let shifts = _mm256_slli_epi32::<4>(_mm256_and_si256(clut_indices, _mm256_set1_epi32(1)));
+    unsafe {
+        let addrs = _mm256_srli_epi32::<1>(clut_indices);
+        let shifts = _mm256_slli_epi32::<4>(_mm256_and_si256(clut_indices, _mm256_set1_epi32(1)));
 
-    let colors = _mm256_i32gather_epi32::<4>(clut.cast::<i32>(), addrs);
-    _mm256_and_si256(_mm256_srlv_epi32(colors, shifts), _mm256_set1_epi32(0xFFFF))
+        let colors = _mm256_i32gather_epi32::<4>(clut.cast::<i32>(), addrs);
+        _mm256_and_si256(_mm256_srlv_epi32(colors, shifts), _mm256_set1_epi32(0xFFFF))
+    }
 }
 
 // Read a row of 8 texels from an 8bpp texture.
@@ -1915,28 +1714,30 @@ unsafe fn read_clut(clut: *mut u16, clut_indices: __m256i) -> __m256i {
 // Return value is u16s stored in an i32x8 vector.
 #[target_feature(enable = "avx2")]
 unsafe fn read_8bpp_texture(vram: *mut u16, texture: &Texture, u: __m256i, v: __m256i) -> __m256i {
-    let vram_y = _mm256_add_epi32(v, _mm256_set1_epi32(texture.base_y as i32));
-    let vram_x_words = _mm256_and_si256(
-        _mm256_add_epi32(
-            _mm256_srli_epi32::<2>(u),
-            _mm256_set1_epi32((32 * texture.base_x) as i32),
-        ),
-        _mm256_set1_epi32(0x1FF),
-    );
+    unsafe {
+        let vram_y = _mm256_add_epi32(v, _mm256_set1_epi32(texture.base_y as i32));
+        let vram_x_words = _mm256_and_si256(
+            _mm256_add_epi32(
+                _mm256_srli_epi32::<2>(u),
+                _mm256_set1_epi32((32 * texture.base_x) as i32),
+            ),
+            _mm256_set1_epi32(0x1FF),
+        );
 
-    let vram_addr = _mm256_or_si256(_mm256_slli_epi32::<9>(vram_y), vram_x_words);
-    let vram_shift = _mm256_slli_epi32::<3>(_mm256_and_si256(u, _mm256_set1_epi32(3)));
+        let vram_addr = _mm256_or_si256(_mm256_slli_epi32::<9>(vram_y), vram_x_words);
+        let vram_shift = _mm256_slli_epi32::<3>(_mm256_and_si256(u, _mm256_set1_epi32(3)));
 
-    let vram_words = _mm256_i32gather_epi32::<4>(vram.cast::<i32>(), vram_addr);
-    let clut_indices = _mm256_and_si256(
-        _mm256_srlv_epi32(vram_words, vram_shift),
-        _mm256_set1_epi32(0xFF),
-    );
+        let vram_words = _mm256_i32gather_epi32::<4>(vram.cast::<i32>(), vram_addr);
+        let clut_indices = _mm256_and_si256(
+            _mm256_srlv_epi32(vram_words, vram_shift),
+            _mm256_set1_epi32(0xFF),
+        );
 
-    let clut_offset = ((1024 * texture.clut.base_y) | (texture.clut.base_x)) as usize;
-    let clut = vram.add(clut_offset);
+        let clut_offset = ((1024 * texture.clut.base_y) | (texture.clut.base_x)) as usize;
+        let clut = vram.add(clut_offset);
 
-    read_clut(clut, clut_indices)
+        read_clut(clut, clut_indices)
+    }
 }
 
 // Read a row of 8 texels from a 15bpp texture.
@@ -2008,19 +1809,21 @@ unsafe fn compute_write_mask(
     v12_is_not_bottom_right: i32,
     v20_is_not_bottom_right: i32,
 ) -> __m256i {
-    _mm256_and_si256(
+    unsafe {
         _mm256_and_si256(
-            check_edge(vs[0], vs[1], px, py, v01_is_not_bottom_right),
             _mm256_and_si256(
-                check_edge(vs[1], vs[2], px, py, v12_is_not_bottom_right),
-                check_edge(vs[2], vs[0], px, py, v20_is_not_bottom_right),
+                check_edge(vs[0], vs[1], px, py, v01_is_not_bottom_right),
+                _mm256_and_si256(
+                    check_edge(vs[1], vs[2], px, py, v12_is_not_bottom_right),
+                    check_edge(vs[2], vs[0], px, py, v20_is_not_bottom_right),
+                ),
             ),
-        ),
-        _mm256_andnot_si256(
-            _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.0), px),
-            _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.1 + 1), px),
-        ),
-    )
+            _mm256_andnot_si256(
+                _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.0), px),
+                _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.1 + 1), px),
+            ),
+        )
+    }
 }
 
 // Determine which of the 8 points are inside a single triangle edge.
@@ -2034,16 +1837,18 @@ unsafe fn check_edge(
     py: __m256i,
     is_not_bottom_right: i32,
 ) -> __m256i {
-    let cpz = cross_prod_z(v0, v1, px, py);
-    let zero = _mm256_setzero_si256();
+    unsafe {
+        let cpz = cross_prod_z(v0, v1, px, py);
+        let zero = _mm256_setzero_si256();
 
-    _mm256_or_si256(
-        _mm256_cmpgt_epi32(cpz, zero),
-        _mm256_and_si256(
-            _mm256_cmpeq_epi32(cpz, zero),
-            _mm256_set1_epi32(is_not_bottom_right),
-        ),
-    )
+        _mm256_or_si256(
+            _mm256_cmpgt_epi32(cpz, zero),
+            _mm256_and_si256(
+                _mm256_cmpeq_epi32(cpz, zero),
+                _mm256_set1_epi32(is_not_bottom_right),
+            ),
+        )
+    }
 }
 
 // Compute the Z component of the cross product (v1 - v0) x (P - v0) for each point P.
@@ -2177,11 +1982,16 @@ impl Interpolator {
     // Return values are R/G/B color components as i32x8 vectors.
     #[target_feature(enable = "avx2")]
     unsafe fn interpolate_color(&self, px: __m256i, py: __m256i) -> (__m256i, __m256i, __m256i) {
-        let r = interpolate_component(px, py, self.base_x, self.base_y, self.base_r, self.r_step);
-        let g = interpolate_component(px, py, self.base_x, self.base_y, self.base_g, self.g_step);
-        let b = interpolate_component(px, py, self.base_x, self.base_y, self.base_b, self.b_step);
+        unsafe {
+            let r =
+                interpolate_component(px, py, self.base_x, self.base_y, self.base_r, self.r_step);
+            let g =
+                interpolate_component(px, py, self.base_x, self.base_y, self.base_g, self.g_step);
+            let b =
+                interpolate_component(px, py, self.base_x, self.base_y, self.base_b, self.b_step);
 
-        (r, g, b)
+            (r, g, b)
+        }
     }
 
     // Compute the interpolated U/V coordinates for the given points.
@@ -2189,10 +1999,14 @@ impl Interpolator {
     // Return values are U/V coordinates as i32x8 vectors.
     #[target_feature(enable = "avx2")]
     unsafe fn interpolate_uv(&self, px: __m256i, py: __m256i) -> (__m256i, __m256i) {
-        let u = interpolate_component(px, py, self.base_x, self.base_y, self.base_u, self.u_step);
-        let v = interpolate_component(px, py, self.base_x, self.base_y, self.base_v, self.v_step);
+        unsafe {
+            let u =
+                interpolate_component(px, py, self.base_x, self.base_y, self.base_u, self.u_step);
+            let v =
+                interpolate_component(px, py, self.base_x, self.base_y, self.base_v, self.v_step);
 
-        (u, v)
+            (u, v)
+        }
     }
 }
 
@@ -2225,20 +2039,22 @@ unsafe fn interpolate_component(
     base_component: i32,
     step: Step,
 ) -> __m256i {
-    let dx = _mm256_sub_epi32(px, _mm256_set1_epi32(base_x));
-    let dy = _mm256_sub_epi32(py, _mm256_set1_epi32(base_y));
+    unsafe {
+        let dx = _mm256_sub_epi32(px, _mm256_set1_epi32(base_x));
+        let dy = _mm256_sub_epi32(py, _mm256_set1_epi32(base_y));
 
-    let value_fixedpoint = _mm256_add_epi32(
-        _mm256_set1_epi32(base_component),
-        _mm256_add_epi32(
-            _mm256_mullo_epi32(dx, _mm256_set1_epi32(step.x)),
-            _mm256_mullo_epi32(dy, _mm256_set1_epi32(step.y)),
-        ),
-    );
+        let value_fixedpoint = _mm256_add_epi32(
+            _mm256_set1_epi32(base_component),
+            _mm256_add_epi32(
+                _mm256_mullo_epi32(dx, _mm256_set1_epi32(step.x)),
+                _mm256_mullo_epi32(dy, _mm256_set1_epi32(step.y)),
+            ),
+        );
 
-    mask_epi32_to_u8(_mm256_srli_epi32::<{ Interpolator::SHIFT as i32 }>(
-        value_fixedpoint,
-    ))
+        mask_epi32_to_u8(_mm256_srli_epi32::<{ Interpolator::SHIFT as i32 }>(
+            value_fixedpoint,
+        ))
+    }
 }
 
 #[target_feature(enable = "avx2")]

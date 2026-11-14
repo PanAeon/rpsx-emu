@@ -1,6 +1,8 @@
+use std::fmt;
+
 use crate::{gte::Gte, system::{Addressable, System}};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Instruction(pub u32);
 
 impl Instruction {
@@ -159,6 +161,86 @@ impl Instruction {
             return true;
         }
         false
+    }
+}
+
+impl fmt::Debug for Instruction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.opcode() {
+            0x00 => match self.secondary_opcode() {
+                0x00 => f.write_str("op_sll"),
+                0x02 => f.write_str("op_srl"),
+                0x03 => f.write_str("op_sra"),
+                0x04 => f.write_str("op_sllv"),
+                0x06 => f.write_str("op_srlv"),
+                0x07 => f.write_str("op_srav"),
+                0x08 => f.write_str("op_jr"),
+                0x09 => f.write_str("op_jalr"),
+                0x0C => f.write_str("op_syscall"),
+                0x0D => f.write_str("op_break"),
+                0x10 => f.write_str("op_mfhi"),
+                0x11 => f.write_str("op_mthi"),
+                0x12 => f.write_str("op_mflo"),
+                0x13 => f.write_str("op_mtlo"),
+                0x18 => f.write_str("op_mult"),
+                0x19 => f.write_str("op_multu"),
+                0x1A => f.write_str("op_div"),
+                0x1B => f.write_str("op_divu"),
+                0x20 => f.write_str("op_add"),
+                0x21 => f.write_str("op_addu"),
+                0x22 => f.write_str("op_sub"),
+                0x23 => f.write_str("op_subu"),
+                0x24 => f.write_str("op_and"),
+                0x25 => f.write_str("op_or"),
+                0x26 => f.write_str("op_xor"),
+                0x27 => f.write_str("op_nor"),
+                0x2A => f.write_str("op_slt"),
+                0x2B => f.write_str("op_sltu"),
+                _    => f.write_str("op_illegal"), // TODO: bltz/bgez undocumented dupes
+            },
+            0x01 => f.write_str("op_bxx"),
+            0x02 => f.write_str("op_j"),
+            0x03 => f.write_str("op_jal"),
+            0x04 => f.write_str("op_beq"),
+            0x05 => f.write_str("op_bne"),
+            0x06 => f.write_str("op_blez"),
+            0x07 => f.write_str("op_bgtz"),
+            0x08 => f.write_str("op_addi"),
+            0x09 => f.write_str("op_addiu"),
+            0x0A => f.write_str("op_slti"),
+            0x0B => f.write_str("op_sltiu"),
+            0x0C => f.write_str("op_andi"),
+            0x0D => f.write_str("op_ori"),
+            0x0E => f.write_str("op_xori"),
+            0x0F => f.write_str("op_lui"),
+            0x10 => f.write_str("op_cop0"),
+            0x11 => f.write_str("op_cop1"),
+            0x12 => f.write_str("op_cop2"),
+            0x13 => f.write_str("op_cop3"),
+            0x20 => f.write_str("op_lb"),
+            0x21 => f.write_str("op_lh"),
+            0x22 => f.write_str("op_lwl"),
+            0x23 => f.write_str("op_lw"),
+            0x24 => f.write_str("op_lbu"),
+            0x25 => f.write_str("op_lhu"),
+            0x26 => f.write_str("op_lwr"),
+            0x28 => f.write_str("op_sb"),
+            0x29 => f.write_str("op_sh"),
+            0x2a => f.write_str("op_swl"),
+            0x2b => f.write_str("op_sw"),
+            0x2e => f.write_str("op_swr"),
+            0x30 => f.write_str("op_lwc0"),
+            0x31 => f.write_str("op_lwc1"),
+            0x32 => f.write_str("op_lwc2"),
+            0x33 => f.write_str("op_lwc3"),
+            0x38 => f.write_str("op_swc0"),
+            0x39 => f.write_str("op_swc1"),
+            0x3A => f.write_str("op_swc2"),
+            0x3B => f.write_str("op_swc3"),
+            // _ => panic!("Unhandled instruction: {:08X}, opcode: {:02X}", instr, instr.opcode())
+            _ => f.write_str("illegal"),
+        }
+        // f.debug_tuple("Instruction").field(&self.0).finish()
     }
 }
 

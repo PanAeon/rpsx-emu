@@ -8,8 +8,10 @@ use crate::system::{
     store_word,
 };
 use crate::{cpu::Instruction, gte::Gte, system::System};
+use cranelift::codegen::cursor::Cursor;
 use crossbeam::channel::{Receiver, Sender};
 use iced_x86::{Decoder, DecoderOptions, Encoder, Formatter, GasFormatter, MemoryOperand};
+use log::{error, warn};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -19,7 +21,7 @@ use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 // use cranelift::codegen::
 // use cranelift_codegen::ir::types::*;
-use cranelift::codegen::ir::{BlockCall, FuncRef, MachMemFlags};
+use cranelift::codegen::ir::{BlockCall, FuncRef, MachMemFlags, Opcode};
 use cranelift::codegen::verifier::verify_function;
 
 use target_lexicon::PointerWidth;
@@ -37,7 +39,7 @@ const REG_BADDR: u32 = 38;
 const REG_LOAD_REG: u32 = 39;
 const REG_LOAD_VAL: u32 = 40;
 
-const BLOCK_LEN: usize = 2371;
+const BLOCK_LEN: usize = 1417;
 
 #[repr(C)]
 #[derive(Serialize, Deserialize, Debug)]
@@ -57,26 +59,25 @@ pub struct Registers {
                           //delay_slot:bool, // set if the current instruction executes in the delay slot
 }
 
-const REGISTER_NAMES: [&str;32] = ["zero", "at",
- "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1",
- "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1",
-  "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9",
-   "k0", "k1", "gp", "sp", "fp", "ra"];
+const REGISTER_NAMES: [&str; 32] = [
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
+    "ra",
+];
 impl Registers {
     pub fn pretty_print(&self) {
         for (i, r) in self.regs.iter().enumerate() {
             println!("{}: 0x{:X}", REGISTER_NAMES[i], r);
         }
-        println!("hi: 0x{:X}",  self.hi);
-        println!("lo: 0x{:X}",  self.lo);
-        println!("pc: 0x{:X}",  self.pc);
-        println!("sr: 0x{:X}",  self.sr);
-        println!("cause: 0x{:X}",  self.cause);
-        println!("epc: 0x{:X}",  self.epc);
-        println!("baddr: 0x{:X}",  self.baddr);
-        println!("load: {:?}",  self.load);
+        println!("hi: 0x{:X}", self.hi);
+        println!("lo: 0x{:X}", self.lo);
+        println!("pc: 0x{:X}", self.pc);
+        println!("sr: 0x{:X}", self.sr);
+        println!("cause: 0x{:X}", self.cause);
+        println!("epc: 0x{:X}", self.epc);
+        println!("baddr: 0x{:X}", self.baddr);
+        println!("load: {:?}", self.load);
     }
-
 }
 pub struct Constants {
     regs: u64,
@@ -374,9 +375,9 @@ fn create_compiler_thread(
             // let mut blocklist = HashSet::new();
             // blocklist.extend(foo);
 
-    //         if pc == 0x80041760 || pc == 0x8004AB00 || pc == 0x8004AA34 {
-    //             continue;
-    // }
+            //         if pc == 0x80041760 || pc == 0x8004AB00 || pc == 0x8004AA34 {
+            //             continue;
+            // }
             //  pc == 0x8003CC98 || pc == 0x800418BC || pc == 0x8003CBC8 {
             // if pc > 0x8003CC98 {
 
@@ -687,9 +688,23 @@ impl Compiler {
                 last_jmp = true;
                 break;
             }
+            let last_block = bldr.bldr.current_block().expect("smth");
+            let last_inst = bldr.bldr.func.layout.last_inst(last_block);
+            let last_opcode = last_inst.map(|last_inst| {
+                let instr = bldr.bldr.func.dfg.insts[last_inst];
+                instr.opcode()
+            });
+            if last_opcode == Some(Opcode::Return) {
+                println!("unaccounted last jump");
+                last_jmp = true;
+
+                break;
+            }
         }
 
-        bldr.push_delay_load_to_regs();
+        // last_inst.opcode();
+
+        bldr.push_delay_load_to_regs(last_jmp);
         if !last_jmp {
             println!("not last jump, start addr: {:X}, len: {}", addr, xs.len());
             bldr.save_context();
@@ -710,7 +725,10 @@ impl Compiler {
         match verify_function(&self.ctx.func, &flags) {
             Ok(()) => {}
             Err(x) => {
-                println!("{}", self.ctx.func.display());
+                for x in xs {
+                    println!("{:?}", x);
+                }
+                // error!("{}", self.ctx.func.display());
                 panic!("{}", x);
             }
         };
@@ -983,7 +1001,8 @@ impl Compiler {
                                 bytes[12] = 0x90;
                             }
                         }
-                        MemAccess::StoreByte => { //  impl is fine, but... ...breaks castlevania
+                        MemAccess::StoreByte => {
+                            //  impl is fine, but... ...breaks castlevania
                             continue;
                             // movb %dl, (%rsi)
 
@@ -1534,8 +1553,14 @@ impl<'a> BlockBuilder<'a> {
 
     fn compile_instr_in_delay_slot(&mut self, instr: Instruction) {
         self.delay_slot = true;
+        if instr.is_unconditional_jump() {
+            self.push_delay_load_to_regs(false);
+            self.delay_slot = false;
+            warn!("skipping two unconditional jumps in a row");
+            return;
+        }
         self.compile_instr(instr);
-        self.push_delay_load_to_regs();
+        self.push_delay_load_to_regs(false);
         // if self.delayed_load.is_some() {
         // println!("missing 6 hot loads!!!");
         // self.compile_delayed_load();
@@ -1669,9 +1694,14 @@ impl<'a> BlockBuilder<'a> {
             .store(MachMemFlags::trusted(), pc, p, REG_PC as i32 * 4);
     }
 
-    fn push_delay_load_to_regs(&mut self) {
+    fn push_delay_load_to_regs(&mut self, last_jmp: bool) {
         if let Some((reg, val)) = self.delayed_load {
             if reg != 0 {
+                if last_jmp {
+                    println!("attempting to load fucking delayed regs after jump");
+                    println!("aborting");
+                    return;
+                }
                 let delayed_load_reg = self.get_reg_write(REG_LOAD_REG);
                 let delayed_load_val = self.get_reg_write(REG_LOAD_VAL);
                 // let val = self.bldr.use_var(var);

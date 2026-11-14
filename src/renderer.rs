@@ -1068,6 +1068,7 @@ impl Renderer {
             let v12_is_not_bottom_right = is_not_bottom_right_edge(vs[1], vs[2]);
             let v20_is_not_bottom_right = is_not_bottom_right_edge(vs[2], vs[0]);
 
+            let colors = [colors[0], colors[1], colors[2]];
             let interpolator = Interpolator::new(vs, interpolation_denominator, true, colors, None);
             for y in min_y..=max_y {
                 let py = _mm256_set1_epi32(y);
@@ -1131,10 +1132,17 @@ impl Renderer {
                     let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
 
                     // Truncate color from from 8-bit RGB components to 5-bit
+                    // r = _mm256_srli_epi16::<3>(r);
+                    // g = _mm256_srli_epi16::<3>(g);
+                    // b = _mm256_srli_epi16::<3>(b);
+
+
+                    if ctx.dithering {
+                        (r, g, b) = apply_dithering_avx2(y, r, g, b);
+                    }
                     r = _mm256_srli_epi16::<3>(r);
                     g = _mm256_srli_epi16::<3>(g);
                     b = _mm256_srli_epi16::<3>(b);
-
                     // If semi-transparency is enabled, blend existing colors with new colors
                     if SEMI_TRANS {
                         let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
@@ -1146,34 +1154,6 @@ impl Renderer {
                             (r, g, b),
                             semi_transparency_mask,
                             ctx.semi_transparency,
-                        );
-                    }
-
-                    if ctx.dithering {
-                        let dither_vector: __m256i =
-                            mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
-
-                        let u8_max = _mm256_set1_epi16(255);
-                        r = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(r, dither_vector),
-                            ),
-                        );
-                        g = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(g, dither_vector),
-                            ),
-                        );
-                        b = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(b, dither_vector),
-                            ),
                         );
                     }
                     let x = x as i16;
@@ -1337,9 +1317,6 @@ impl Renderer {
             let [v0, v1, v2] = vs else {
                 unreachable!("");
             };
-            let [uv0, uv1, uv2] = uv else {
-                panic!("boo");
-            };
 
             let colors = [mono, mono, mono];
 
@@ -1362,6 +1339,8 @@ impl Renderer {
             let min_x_aligned = min_x & !0xF;
             let max_x_aligned = (max_x + 15) & !0xF;
 
+            let padding = min_x - min_x_aligned;
+
             let x_bounds = (min_x, max_x);
 
             let clut = Clut::new(clut);
@@ -1378,8 +1357,10 @@ impl Renderer {
             let v12_is_not_bottom_right = is_not_bottom_right_edge(vs[1], vs[2]);
             let v20_is_not_bottom_right = is_not_bottom_right_edge(vs[2], vs[0]);
 
+            let colors = [colors[0], colors[1], colors[2]];
+            let uv = [uv[0], uv[1], uv[2]];
             let interpolator =
-                Interpolator::new(vs, interpolation_denominator, false, &colors, Some(uv));
+                Interpolator::new(vs, interpolation_denominator, false, colors, Some(uv));
             for y in min_y..=max_y {
                 let py = _mm256_set1_epi32(y);
 
@@ -1388,8 +1369,17 @@ impl Renderer {
                     // The 16 X coordinates are split up such that vectors can later be converted from
                     // two i32x8 vectors to a single i16x16 vector using _mm256_packs_epi32
 
-                    let px1 =
-                        _mm256_setr_epi32(x, x + 1, x + 2, x + 3, x + 8, x + 9, x + 10, x + 11);
+                    let x1 = x;
+                    let px1 = _mm256_setr_epi32(
+                        x1,
+                        x1 + 1,
+                        x1 + 2,
+                        x1 + 3,
+                        x1 + 8,
+                        x1 + 9,
+                        x1 + 10,
+                        x1 + 11,
+                    );
                     let inside_mask_1 = compute_write_mask(
                         vs,
                         px1,
@@ -1401,14 +1391,14 @@ impl Renderer {
                     );
 
                     let px2 = _mm256_setr_epi32(
-                        x + 4,
-                        x + 5,
-                        x + 6,
-                        x + 7,
-                        x + 12,
-                        x + 13,
-                        x + 14,
-                        x + 15,
+                        x1 + 4,
+                        x1 + 5,
+                        x1 + 6,
+                        x1 + 7,
+                        x1 + 12,
+                        x1 + 13,
+                        x1 + 14,
+                        x1 + 15,
                     );
                     let inside_mask_2 = compute_write_mask(
                         vs,
@@ -1472,38 +1462,19 @@ impl Renderer {
                         b = tb;
                     }
 
-                    if ctx.dithering && BLEND {
-                        let dither_vector: __m256i =
-                            mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
-
-                        let u8_max = _mm256_set1_epi16(255);
-                        r = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(r, dither_vector),
-                            ),
-                        );
-                        g = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(g, dither_vector),
-                            ),
-                        );
-                        b = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(b, dither_vector),
-                            ),
-                        );
-                    }
 
                     // Truncate color from from 8-bit RGB components to 5-bit
+                    // r = _mm256_srli_epi16::<3>(r);
+                    // g = _mm256_srli_epi16::<3>(g);
+                    // b = _mm256_srli_epi16::<3>(b);
+
+                    if ctx.dithering && BLEND {
+                        (r, g, b) = apply_dithering_avx2(y, r, g, b);
+                    }
                     r = _mm256_srli_epi16::<3>(r);
                     g = _mm256_srli_epi16::<3>(g);
                     b = _mm256_srli_epi16::<3>(b);
+
 
                     // If semi-transparency is enabled, blend existing colors with new colors
                     if SEMI_TRANS {
@@ -1694,8 +1665,10 @@ impl Renderer {
             let v12_is_not_bottom_right = is_not_bottom_right_edge(vs[1], vs[2]);
             let v20_is_not_bottom_right = is_not_bottom_right_edge(vs[2], vs[0]);
 
+            let colors = [colors[0], colors[1], colors[2]];
+            let uv = [uv[0], uv[1], uv[2]];
             let interpolator =
-                Interpolator::new(vs, interpolation_denominator, false, &colors, Some(uv));
+                Interpolator::new(vs, interpolation_denominator, false, colors, Some(uv));
             for y in min_y..=max_y {
                 let py = _mm256_set1_epi32(y);
 
@@ -1788,39 +1761,15 @@ impl Renderer {
                         b = tb;
                     }
 
-                    if ctx.dithering && BLEND {
-                        let dither_vector: __m256i =
-                            mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
-
-                        let u8_max = _mm256_set1_epi16(255);
-                        r = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(r, dither_vector),
-                            ),
-                        );
-                        g = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(g, dither_vector),
-                            ),
-                        );
-                        b = _mm256_min_epi16(
-                            u8_max,
-                            _mm256_max_epi16(
-                                _mm256_setzero_si256(),
-                                _mm256_add_epi16(b, dither_vector),
-                            ),
-                        );
-                    }
 
                     // Truncate color from from 8-bit RGB components to 5-bit
+
+                    if ctx.dithering && BLEND {
+                        (r, g, b) = apply_dithering_avx2(y, r, g, b);
+                    }
                     r = _mm256_srli_epi16::<3>(r);
                     g = _mm256_srli_epi16::<3>(g);
                     b = _mm256_srli_epi16::<3>(b);
-
                     // If semi-transparency is enabled, blend existing colors with new colors
                     // if false {
                     if SEMI_TRANS {
@@ -2690,6 +2639,13 @@ const DITHER_TABLE: &[[i8; 4]; 4] = &[
     [3, -1, 2, -2],
 ];
 
+const VECTOR_DITHER_TABLE: &[[i16; 16]; 4] = &[
+    [-4, 0, -3, 1, -4, 0, -3, 1, -4, 0, -3, 1, -4, 0, -3, 1],
+    [2, -2, 3, -1, 2, -2, 3, -1, 2, -2, 3, -1, 2, -2, 3, -1],
+    [-3, 1, -4, 0, -3, 1, -4, 0, -3, 1, -4, 0, -3, 1, -4, 0],
+    [3, -1, 2, -2, 3, -1, 2, -2, 3, -1, 2, -2, 3, -1, 2, -2],
+];
+
 fn apply_dithering(color: Colour, p: Vertex) -> Colour {
     let offset = DITHER_TABLE[(p.y & 3) as usize][(p.x & 3) as usize];
     Colour {
@@ -3066,12 +3022,6 @@ unsafe fn cross_prod_z(v0: Vertex, v1: Vertex, px: __m256i, py: __m256i) -> __m2
     )
 }
 
-const VECTOR_DITHER_TABLE: &[[i16; 16]; 4] = &[
-    [-4, 0, -3, 1, -4, 0, -3, 1, -4, 0, -3, 1, -4, 0, -3, 1],
-    [2, -2, 3, -1, 2, -2, 3, -1, 2, -2, 3, -1, 2, -2, 3, -1],
-    [-3, 1, -4, 0, -3, 1, -4, 0, -3, 1, -4, 0, -3, 1, -4, 0],
-    [3, -1, 2, -2, 3, -1, 2, -2, 3, -1, 2, -2, 3, -1, 2, -2],
-];
 
 #[derive(Debug, Clone, Copy)]
 struct Step {
@@ -3082,7 +3032,7 @@ struct Step {
 impl Step {
     const ZERO: Self = Self { x: 0, y: 0 };
 
-    fn new(v: &[Vertex], component: &[u8], denominator: i32) -> Self {
+    fn new(v: &[Vertex], component: [u8; 3], denominator: i32) -> Self {
         Self {
             x: compute_x_step(v, component, denominator),
             y: compute_y_step(v, component, denominator),
@@ -3116,8 +3066,8 @@ impl Interpolator {
         v: &[Vertex],
         denominator: i32,
         gourad_shading: bool,
-        colors: &[Colour],
-        texture_mapping: Option<&[[u16; 2]]>,
+        colors: [Colour; 3],
+        texture_mapping: Option<[[u16; 2]; 3]>,
     ) -> Self {
         let (base_vertex_idx, base_vertex) = v
             .into_iter()
@@ -3132,14 +3082,14 @@ impl Interpolator {
         };
 
         let (r_step, g_step, b_step) = if gourad_shading {
-            let r: Vec<_> = colors.iter().map(|color| color.r).collect();
-            let g: Vec<_> = colors.iter().map(|color| color.g).collect();
-            let b: Vec<_> = colors.iter().map(|color| color.b).collect();
+            let r = colors.map(|color| color.r);
+            let g = colors.map(|color| color.g);
+            let b = colors.map(|color| color.b);
 
             (
-                Step::new(v, &r, denominator),
-                Step::new(v, &g, denominator),
-                Step::new(v, &b, denominator),
+                Step::new(v, r, denominator),
+                Step::new(v, g, denominator),
+                Step::new(v, b, denominator),
             )
         } else {
             (Step::ZERO, Step::ZERO, Step::ZERO)
@@ -3152,16 +3102,16 @@ impl Interpolator {
                     mapping[base_vertex_idx][1] as u8,
                 );
 
-                let us: Vec<u8> = mapping.iter().map(|x| x[0] as u8).collect();
-                let vs: Vec<u8> = mapping.iter().map(|x| x[1] as u8).collect();
+                let us = mapping.map(|x| x[0] as u8);
+                let vs = mapping.map(|x| x[1] as u8);
 
                 // let us = us.try_into().expect("ok");
                 // let vs = vs.try_into().expect("ok");
 
                 (
                     base_tex_coords,
-                    Step::new(v, &us, denominator),
-                    Step::new(v, &vs, denominator),
+                    Step::new(v, us, denominator),
+                    Step::new(v, vs, denominator),
                 )
             }
             None => ((0, 0), Step::ZERO, Step::ZERO),
@@ -3211,16 +3161,16 @@ fn shift_base_component(component: u8) -> i32 {
     (i32::from(component) << Interpolator::SHIFT) | (1 << (Interpolator::SHIFT - 1))
 }
 
-fn compute_x_step(v: &[Vertex], component: &[u8], denominator: i32) -> i32 {
-    let component: Vec<_> = component.iter().map(|x| *x as i32).collect();
+fn compute_x_step(v: &[Vertex], component: [u8; 3], denominator: i32) -> i32 {
+    let component = component.map(|x| x as i32);
     let raw = component[0] * (v[1].y - v[2].y)
         + component[1] * (v[2].y - v[0].y)
         + component[2] * (v[0].y - v[1].y);
     (raw << Interpolator::SHIFT) / denominator
 }
 
-fn compute_y_step(v: &[Vertex], component: &[u8], denominator: i32) -> i32 {
-    let component: Vec<_> = component.iter().map(|x| *x as i32).collect();
+fn compute_y_step(v: &[Vertex], component: [u8; 3], denominator: i32) -> i32 {
+    let component = component.map(|x| x as i32);
     let raw = component[0] * (v[2].x - v[1].x)
         + component[1] * (v[0].x - v[2].x)
         + component[2] * (v[1].x - v[0].x);
@@ -3255,4 +3205,26 @@ unsafe fn interpolate_component(
 #[target_feature(enable = "avx2")]
 unsafe fn mask_epi32_to_u8(v: __m256i) -> __m256i {
     _mm256_and_si256(v, _mm256_set1_epi32(0xFF))
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn apply_dithering_avx2(y: i32, r: __m256i, g: __m256i, b: __m256i) -> (__m256i, __m256i, __m256i) {
+    unsafe {
+        let dither_vector: __m256i = mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
+
+        let u8_max = _mm256_set1_epi16(255);
+        let r = _mm256_min_epi16(
+            u8_max,
+            _mm256_max_epi16(_mm256_setzero_si256(), _mm256_add_epi16(r, dither_vector)),
+        );
+        let g = _mm256_min_epi16(
+            u8_max,
+            _mm256_max_epi16(_mm256_setzero_si256(), _mm256_add_epi16(g, dither_vector)),
+        );
+        let b = _mm256_min_epi16(
+            u8_max,
+            _mm256_max_epi16(_mm256_setzero_si256(), _mm256_add_epi16(b, dither_vector)),
+        );
+        (r, g, b)
+    }
 }

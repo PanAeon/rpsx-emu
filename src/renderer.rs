@@ -1041,7 +1041,6 @@ impl Renderer {
                 unreachable!("");
             };
 
-
             // bounding box
             let min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
             let max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
@@ -1149,6 +1148,34 @@ impl Renderer {
                             ctx.semi_transparency,
                         );
                     }
+
+                    if ctx.dithering {
+                        let dither_vector: __m256i =
+                            mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
+
+                        let u8_max = _mm256_set1_epi16(255);
+                        r = _mm256_min_epi16(
+                            u8_max,
+                            _mm256_max_epi16(
+                                _mm256_setzero_si256(),
+                                _mm256_add_epi16(r, dither_vector),
+                            ),
+                        );
+                        g = _mm256_min_epi16(
+                            u8_max,
+                            _mm256_max_epi16(
+                                _mm256_setzero_si256(),
+                                _mm256_add_epi16(g, dither_vector),
+                            ),
+                        );
+                        b = _mm256_min_epi16(
+                            u8_max,
+                            _mm256_max_epi16(
+                                _mm256_setzero_si256(),
+                                _mm256_add_epi16(b, dither_vector),
+                            ),
+                        );
+                    }
                     let x = x as i16;
                     let px = _mm256_setr_epi16(
                         x,
@@ -1173,7 +1200,7 @@ impl Renderer {
                     let mut write_mask = _mm256_and_si256(
                         inside_mask,
                         _mm256_andnot_si256(
-                            _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16-1), px),
+                            _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 - 1), px),
                             _mm256_cmpgt_epi16(_mm256_set1_epi16((max_x + 1) as i16), px),
                         ),
                     );
@@ -1279,52 +1306,6 @@ impl Renderer {
         }
 
         panic!("not impl")
-
-        // let clut = Clut::new(clut);
-        // let texture = Texture::new(page, clut);
-
-        // for y in min_y..max_y {
-        //     for x in min_x..max_x {
-        //         let p = Vertex { x, y };
-        //         if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
-        //             let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
-        //             let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
-        //
-        //             let mut pixel = texture.get_texel(self, uv_x, uv_y, ctx);
-        //
-        //             if pixel.is_black() {
-        //                 continue;
-        //             }
-        //
-        //             if BLEND {
-        //                 pixel.blend(mono);
-        //             }
-        //
-        //             let vram_addr = 2 * (y * 1024 + x) as usize;
-        //
-        //             if SEMI_TRANS && pixel.m == 1 {
-        //                 let background_lsb = self.vram[vram_addr];
-        //                 let background_msb = self.vram[vram_addr + 1];
-        //
-        //                 let background = Colour::from_bytes(background_msb, background_lsb);
-        //
-        //                 pixel.blend_with_background(background, texture.semi_transparency);
-        //             }
-        //
-        //             if texture.dithering {
-        //                 pixel.apply_dithering(x, y);
-        //             }
-        //
-        //             self.vram_write_color(vram_addr, pixel, ctx);
-        //             // let [lsb, msb] = pixel.to_le_bytes();
-        //
-        //             // self.vram[vram_addr] = lsb;
-        //             // self.vram[vram_addr + 1] = msb;
-        //         }
-        //     }
-        // }
-
-        // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
     }
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
@@ -1491,8 +1472,9 @@ impl Renderer {
                         b = tb;
                     }
 
-                    if texture.dithering {
-                        let dither_vector: __m256i = mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
+                    if ctx.dithering && BLEND {
+                        let dither_vector: __m256i =
+                            mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
 
                         let u8_max = _mm256_set1_epi16(255);
                         r = _mm256_min_epi16(
@@ -1642,54 +1624,6 @@ impl Renderer {
         }
 
         panic!("not impl");
-
-
-
-
-        //
-        // for y in min_y..max_y {
-        //     for x in min_x..max_x {
-        //         let p = Vertex { x, y };
-        //         if is_inside_triangle(p, vs[0], vs[1], vs[2]) {
-        //             let lambda = compute_barycentric_coordinates(p, vs[0], vs[1], vs[2]);
-        //             let [uv_x, uv_y] = compute_normal_coordinates(lambda, uv);
-        //
-        //             let mut pixel = texture.get_texel(self, uv_x, uv_y, ctx);
-        //
-        //             if pixel.is_black() {
-        //                 continue;
-        //             }
-        //
-        //             if BLEND {
-        //                 let color = interpolate_color(&lambda, colors);
-        //                 pixel.blend(color);
-        //             }
-        //
-        //             let vram_addr = 2 * (y * 1024 + x) as usize;
-        //
-        //             if SEMI_TRANS && pixel.m == 1 {
-        //                 let background_lsb = self.vram[vram_addr];
-        //                 let background_msb = self.vram[vram_addr + 1];
-        //
-        //                 let background = Colour::from_bytes(background_msb, background_lsb);
-        //
-        //                 pixel.blend_with_background(background, texture.semi_transparency);
-        //             }
-        //
-        //             if texture.dithering {
-        //                 pixel = apply_dithering(pixel, p);
-        //             }
-        //
-        //             self.vram_write_color(vram_addr, pixel, ctx);
-        //             // let [lsb, msb] = pixel.to_le_bytes();
-        //             //
-        //             // self.vram[vram_addr] = lsb;
-        //             // self.vram[vram_addr + 1] = msb;
-        //         }
-        //     }
-        // }
-
-        // let [pixel_lsb, pixel_msb] = Self::gp0_color(self.gp0_command[0]);
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -1721,9 +1655,6 @@ impl Renderer {
             // let [pixel_lsb, pixel_msb] = color;
             let [v0, v1, v2] = vs else {
                 unreachable!("");
-            };
-            let [uv0, uv1, uv2] = uv else {
-                panic!("boo");
             };
 
             // let colors = [mono, mono, mono];
@@ -1857,8 +1788,9 @@ impl Renderer {
                         b = tb;
                     }
 
-                    if texture.dithering {
-                        let dither_vector: __m256i = mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
+                    if ctx.dithering && BLEND {
+                        let dither_vector: __m256i =
+                            mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
 
                         let u8_max = _mm256_set1_epi16(255);
                         r = _mm256_min_epi16(
@@ -1890,6 +1822,7 @@ impl Renderer {
                     b = _mm256_srli_epi16::<3>(b);
 
                     // If semi-transparency is enabled, blend existing colors with new colors
+                    // if false {
                     if SEMI_TRANS {
                         let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
                         let semi_transparency_mask =
@@ -3088,7 +3021,7 @@ unsafe fn compute_write_mask(
             ),
         ),
         _mm256_andnot_si256(
-            _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.0 ), px),
+            _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.0), px),
             _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.1 + 1), px),
         ),
     )

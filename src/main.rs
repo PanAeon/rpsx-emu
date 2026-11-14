@@ -2233,7 +2233,8 @@ impl State {
                         };
                     let axes = pad.get_stick_axis();
                     let byte = value.mul_add(127.5, 127.5) as u8;
-                    let rev_byte = value.mul_add(-127.5, -127.5) as u8;
+                    let rev_byte = (byte as i8).mul(-1) as u8; // FIXME: -128?
+                    // let rev_byte = value.mul_add(-127.5, -127.5) as u8;
                     if axis == Axis::LeftStickX {
                         axes[2] = byte;
                     } else if axis == Axis::LeftStickY {

@@ -769,7 +769,7 @@ impl SofterRenderer {
                         pixel.blend_with_background(background, texture.semi_transparency);
                     }
 
-                    if texture.dithering {
+                    if ctx.dithering && BLEND {
                         pixel.apply_dithering(x, y);
                     }
 
@@ -883,7 +883,7 @@ impl SofterRenderer {
                         pixel.blend_with_background(background, texture.semi_transparency);
                     }
 
-                    if texture.dithering {
+                    if ctx.dithering && BLEND {
                         pixel = apply_dithering(pixel, p);
                     }
 

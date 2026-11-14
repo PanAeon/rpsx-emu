@@ -80,6 +80,7 @@ mod interpreter;
 mod iso9660;
 mod presenter;
 mod save_state;
+mod softer_renderer;
 // const FIVE_BIT_TO_8BIT: [u8; 32] = {
 //     let mut table = [0u8; 32];
 //     let mut i = 0;
@@ -121,6 +122,8 @@ pub struct Cli {
     justifier: bool,
     #[arg(long)]
     gamepad2: bool,
+    #[arg(long)]
+    softergpu: bool,
 }
 
 fn main() {
@@ -704,10 +707,10 @@ impl State {
         scheduler.init(video_standard);
         let timers = timers::Timers::new();
 
-        let software_render = cli.softgpu;
+        let software_render = cli.softgpu || cli.softergpu;
 
-        let (sender, receiver, handle) = if software_render {
-            renderer::Renderer::create()
+        let (sender, receiver, handle) = if cli.softgpu {
+            renderer::Renderer::create(cli.profilegpu)
         } else {
             if cli.hw_renderer {
                 crate::hw_renderer::HWRenderer::create(
@@ -718,6 +721,8 @@ impl State {
                     cli.profilegpu,
                     scale,
                 )
+            } else if cli.softergpu {
+                softer_renderer::SofterRenderer::create(cli.profilegpu)
             } else {
                 compute_renderer::ComputeRenderer::create(
                     device.clone(),

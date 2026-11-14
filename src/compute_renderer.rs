@@ -1197,7 +1197,6 @@ impl ComputeRenderer {
     #[allow(dead_code)]
     pub fn print_profiling_results(&self) {
         print!("\x1B[2J\x1B[1;1H"); // Clear terminal and put cursor to first row first column
-        println!("Welcome to wgpu_profiler demo!");
         println!();
         // println!("Enabled device features: {enabled_features:?}");
         // println!();

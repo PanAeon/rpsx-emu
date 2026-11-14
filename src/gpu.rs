@@ -1842,6 +1842,14 @@ impl Colour {
         Colour { r, g, b, m: 0 }
     }
 
+    pub fn from_u16(pixel: u16) -> Self {
+
+        let r = convert_5bit_to_8bit(pixel & 0x1F);
+        let g = convert_5bit_to_8bit((pixel >> 5) & 0x1F);
+        let b = convert_5bit_to_8bit((pixel >> 10) & 0x1F);
+        let m = (pixel >> 15) as u8;
+        Colour { r, g, b, m }
+    }
     pub fn from_bytes(msb: u8, lsb: u8) -> Self {
         let pixel = u16::from_le_bytes([lsb, msb]);
 
@@ -1876,6 +1884,16 @@ impl Colour {
         // pixel
     }
 
+    pub fn to_u16(&self) -> u16 {
+        let r = ((self.r & 0xFF) >> 3) as u16;
+        let g = ((self.g & 0xFF) >> 3) as u16;
+        let b = ((self.b & 0xFF) >> 3) as u16;
+        let m = self.m as u16;
+
+        let pixel = (r | (g << 5) | (b << 10) | (m << 15)) as u16;
+        // let pixel = (self.r as u16) | ((self.g as u16) << 5) | ((self.b as u16) << 10);
+        pixel
+    }
     pub fn to_le_bytes(&self) -> [u8; 2] {
         let r = ((self.r & 0xFF) >> 3) as u16;
         let g = ((self.g & 0xFF) >> 3) as u16;

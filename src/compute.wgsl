@@ -484,17 +484,17 @@ fn draw_triangle_barycentric(v1: Vertex, v2: Vertex, v3: Vertex, bounds: vec4<i3
                     }
                 } else {
                     var c = vec4<f32>(col, 0.0);
-                    if dither {
-                        c *= 255;
-                        var dither_pos: vec2<i32>;
-                        dither_pos = vec2(x, y) % 4;
-                        var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
-                        c.x += f32(dither_value);
-                        c.y += f32(dither_value);
-                        c.z += f32(dither_value);
-                        c = clamp(c, vec4(0), vec4(0xff));
-                        c /= 255;
-                    }
+                    // if dither { TODO: we dither only textures or gourad shading..
+                    //     c *= 255;
+                    //     var dither_pos: vec2<i32>;
+                    //     dither_pos = vec2(x, y) % 4;
+                    //     var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
+                    //     c.x += f32(dither_value);
+                    //     c.y += f32(dither_value);
+                    //     c.z += f32(dither_value);
+                    //     c = clamp(c, vec4(0), vec4(0xff));
+                    //     c /= 255;
+                    // }
                     if semi_trans {
                         let prev = readExistingColorCached(vec2(x, y), bounds);
                         c = blend_with_background(c, prev, transparency);

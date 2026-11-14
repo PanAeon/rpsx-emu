@@ -1022,7 +1022,7 @@ impl Renderer {
         ctx: &RenderingContext,
     ) {
         unsafe {
-            println!("render triangle shaded");
+            // println!("render triangle shaded");
 
             ensure_vertex_order2(vs, colors);
             vs[0].x += ctx.drawing_x_offset as i32;
@@ -3088,7 +3088,7 @@ unsafe fn compute_write_mask(
             ),
         ),
         _mm256_andnot_si256(
-            _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.0 + 1), px),
+            _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.0 ), px),
             _mm256_cmpgt_epi32(_mm256_set1_epi32(x_bounds.1 + 1), px),
         ),
     )

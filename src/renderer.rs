@@ -205,6 +205,8 @@ impl Renderer {
         let (to_gpu_sender, gpu_receiver) = crossbeam::channel::bounded(4096);
         let (to_renderer_sender, receiver) = crossbeam::channel::bounded(4096);
 
+        println!("using avx2 soft gpu");
+
         // let aligned_vram =
         //        vec![0_u32; 1024 * 512 / 2].into_boxed_slice();
 
@@ -258,47 +260,43 @@ impl Renderer {
                         textured,
                         blend,
                         ctx,
-                    } => match (*semi_transparent, *blend, *textured) {
-                        (true, true, true) => renderer
-                            .draw_rectangle_textured::<SEMI_TRANS, BLEND>(
-                                *v,
-                                *side,
-                                *c,
-                                *clut,
-                                [*_u, *_v],
-                                ctx,
-                            ),
-                        (true, false, true) => renderer.draw_rectangle_textured::<SEMI_TRANS, RAW>(
+                    } => match (*semi_transparent, *blend) {
+                        (true, true) => renderer.draw_rectangle::<SEMI_TRANS, BLEND>(
                             *v,
                             *side,
                             *c,
                             *clut,
                             [*_u, *_v],
+                            *textured,
                             ctx,
                         ),
-                        (false, true, true) => renderer.draw_rectangle_textured::<OPAQUE, BLEND>(
+                        (true, false) => renderer.draw_rectangle::<SEMI_TRANS, RAW>(
                             *v,
                             *side,
                             *c,
                             *clut,
                             [*_u, *_v],
+                            *textured,
                             ctx,
                         ),
-                        (false, false, true) => renderer.draw_rectangle_textured::<OPAQUE, RAW>(
+                        (false, true) => renderer.draw_rectangle::<OPAQUE, BLEND>(
                             *v,
                             *side,
                             *c,
                             *clut,
                             [*_u, *_v],
+                            *textured,
                             ctx,
                         ),
-                        (true, false, false) => {
-                            renderer.draw_rectangle::<SEMI_TRANS>(*v, *side, *c, ctx)
-                        }
-                        (false, false, false) => {
-                            renderer.draw_rectangle::<OPAQUE>(*v, *side, *c, ctx)
-                        }
-                        _ => unreachable!("wrong combo"),
+                        (false, false) => renderer.draw_rectangle::<OPAQUE, RAW>(
+                            *v,
+                            *side,
+                            *c,
+                            *clut,
+                            [*_u, *_v],
+                            *textured,
+                            ctx,
+                        ),
                     },
                     RendererMsg::DrawPolygon {
                         cs,
@@ -312,103 +310,51 @@ impl Renderer {
                         shaded,
                         textured,
                         ctx,
-                    } => match (*semi_transparent, *blend, *shaded, *textured) {
-                        (true, true, true, true) => renderer
-                            .draw_polygon_textured_shaded::<SEMI_TRANS, BLEND>(
-                                cs,
-                                *clut,
-                                *page,
-                                vs,
-                                uvs,
-                                *is_triangle,
-                                ctx,
-                            ),
-                        (true, false, true, true) => renderer
-                            .draw_polygon_textured_shaded::<SEMI_TRANS, RAW>(
-                                cs,
-                                *clut,
-                                *page,
-                                vs,
-                                uvs,
-                                *is_triangle,
-                                ctx,
-                            ),
-                        (false, true, true, true) => renderer
-                            .draw_polygon_textured_shaded::<OPAQUE, BLEND>(
-                                cs,
-                                *clut,
-                                *page,
-                                vs,
-                                uvs,
-                                *is_triangle,
-                                ctx,
-                            ),
-                        (false, false, true, true) => renderer
-                            .draw_polygon_textured_shaded::<OPAQUE, RAW>(
-                                cs,
-                                *clut,
-                                *page,
-                                vs,
-                                uvs,
-                                *is_triangle,
-                                ctx,
-                            ),
-
-                        (true, true, false, true) => renderer
-                            .draw_polygon_textured::<SEMI_TRANS, BLEND>(
-                                cs,
-                                *clut,
-                                *page,
-                                vs,
-                                uvs,
-                                *is_triangle,
-                                ctx,
-                            ),
-                        (true, false, false, true) => renderer
-                            .draw_polygon_textured::<SEMI_TRANS, RAW>(
-                                cs,
-                                *clut,
-                                *page,
-                                vs,
-                                uvs,
-                                *is_triangle,
-                                ctx,
-                            ),
-                        (false, true, false, true) => renderer
-                            .draw_polygon_textured::<OPAQUE, BLEND>(
-                                cs,
-                                *clut,
-                                *page,
-                                vs,
-                                uvs,
-                                *is_triangle,
-                                ctx,
-                            ),
-                        (false, false, false, true) => renderer
-                            .draw_polygon_textured::<OPAQUE, RAW>(
-                                cs,
-                                *clut,
-                                *page,
-                                vs,
-                                uvs,
-                                *is_triangle,
-                                ctx,
-                            ),
-
-                        (true, false, true, false) => {
-                            renderer.draw_polygon_shaded::<SEMI_TRANS>(vs, cs, *is_triangle, ctx)
-                        }
-                        (false, false, true, false) => {
-                            renderer.draw_polygon_shaded::<OPAQUE>(vs, cs, *is_triangle, ctx)
-                        }
-
-                        (true, false, false, false) => {
-                            renderer.draw_polygon_mono::<SEMI_TRANS>(cs, vs, *is_triangle, ctx)
-                        }
-                        (false, false, false, false) => {
-                            renderer.draw_polygon_mono::<OPAQUE>(cs, vs, *is_triangle, ctx)
-                        }
-                        _ => unreachable!("wrong combo"),
+                    } => match (*semi_transparent, *blend) {
+                        (true, true) => renderer.draw_polygon::<SEMI_TRANS, BLEND>(
+                            cs,
+                            *clut,
+                            *page,
+                            vs,
+                            uvs,
+                            *is_triangle,
+                            *textured,
+                            *shaded,
+                            ctx,
+                        ),
+                        (true, false) => renderer.draw_polygon::<SEMI_TRANS, RAW>(
+                            cs,
+                            *clut,
+                            *page,
+                            vs,
+                            uvs,
+                            *is_triangle,
+                            *textured,
+                            *shaded,
+                            ctx,
+                        ),
+                        (false, true) => renderer.draw_polygon::<OPAQUE, BLEND>(
+                            cs,
+                            *clut,
+                            *page,
+                            vs,
+                            uvs,
+                            *is_triangle,
+                            *textured,
+                            *shaded,
+                            ctx,
+                        ),
+                        (false, false) => renderer.draw_polygon::<OPAQUE, RAW>(
+                            cs,
+                            *clut,
+                            *page,
+                            vs,
+                            uvs,
+                            *is_triangle,
+                            *textured,
+                            *shaded,
+                            ctx,
+                        ),
                     },
                     RendererMsg::FillRect { v, side, c, .. } => renderer.fill_rect(*v, *side, *c),
                     RendererMsg::Vram2VramBlit {
@@ -513,6 +459,7 @@ impl Renderer {
         }
         Some((x0.max(l), y0.max(t), x1.min(r), y1.min(b)))
     }
+
 
     pub fn vram_write_color(&mut self, address: usize, color: Colour, ctx: &RenderingContext) {
         if ctx.preserve_masked_pixels && (self.vram[address + 1] & 0x80) != 0 {
@@ -742,487 +689,7 @@ impl Renderer {
             }
         }
     }
-    pub fn draw_polygon_mono<const SEMI_TRANS: bool>(
-        &mut self,
-        cs: &mut [Colour; 4],
-        vs: &mut [Vertex; 4],
-        is_triangle: bool,
-        ctx: &RenderingContext,
-    ) {
-        let mut vss = vs.clone();
-        self.render_triangle_mono::<SEMI_TRANS>(cs[0], &mut vss[0..3], ctx);
-        if !is_triangle {
-            self.render_triangle_mono::<SEMI_TRANS>(cs[0], &mut vs[1..4], ctx);
-        }
-    }
 
-    pub fn render_triangle_mono<const SEMI_TRANS: bool>(
-        &mut self,
-        mono: Colour,
-        vs: &mut [Vertex],
-        ctx: &RenderingContext,
-    ) {
-        #[cfg(target_arch = "x86_64")]
-        if is_x86_feature_detected!("avx2") {
-            unsafe {
-                self.render_triangle_mono_avx2::<SEMI_TRANS>(mono, vs, ctx);
-                return;
-            }
-        }
-
-        panic!("not impl")
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx2")]
-    pub fn render_triangle_mono_avx2<const SEMI_TRANS: bool>(
-        &mut self,
-        mono: Colour,
-        vs: &mut [Vertex],
-        ctx: &RenderingContext,
-    ) {
-        unsafe {
-            // println!("render triangle mono");
-
-            ensure_vertex_order(vs);
-            vs[0].x += ctx.drawing_x_offset as i32;
-            vs[0].y += ctx.drawing_y_offset as i32;
-            vs[1].x += ctx.drawing_x_offset as i32;
-            vs[1].y += ctx.drawing_y_offset as i32;
-            vs[2].x += ctx.drawing_x_offset as i32;
-            vs[2].y += ctx.drawing_y_offset as i32;
-
-            let vram_ptr = self.vram.as_mut_ptr() as *mut u16;
-
-            // let forced_mask_bit = i16::from(ctx.force_set_mask_bit) << 15;
-
-            // let [pixel_lsb, pixel_msb] = color;
-            let [v0, v1, v2] = vs else {
-                unreachable!("");
-            };
-
-            let color_r = _mm256_set1_epi16(mono.r as i16);
-            let color_g = _mm256_set1_epi16(mono.g as i16);
-            let color_b = _mm256_set1_epi16(mono.b as i16);
-            // let color = mono.to_u16();
-
-            // bounding box
-            let min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
-            let max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
-            let min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
-            let max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
-
-            let Some((min_x, min_y, max_x, max_y)) =
-                self.clip_rect(min_x, min_y, max_x, max_y, ctx)
-            else {
-                return;
-            };
-            let min_x_aligned = min_x & !0xF;
-            let max_x_aligned = (max_x + 15) & !0xF;
-
-            // println!("minx_aligned: {}, max_x_aligned: {}", min_x_aligned, max_x_aligned);
-
-            let x_bounds = (min_x, max_x);
-
-            let v01_is_not_bottom_right = is_not_bottom_right_edge(vs[0], vs[1]);
-            let v12_is_not_bottom_right = is_not_bottom_right_edge(vs[1], vs[2]);
-            let v20_is_not_bottom_right = is_not_bottom_right_edge(vs[2], vs[0]);
-
-            for y in min_y..=max_y {
-                let py = _mm256_set1_epi32(y);
-
-                for x in (min_x_aligned..=max_x_aligned).step_by(16) {
-                    // Determine which X coordinates are inside the triangle.
-                    // The 16 X coordinates are split up such that vectors can later be converted from
-                    // two i32x8 vectors to a single i16x16 vector using _mm256_packs_epi32
-
-                    let px1 =
-                        _mm256_setr_epi32(x, x + 1, x + 2, x + 3, x + 8, x + 9, x + 10, x + 11);
-                    let inside_mask_1 = compute_write_mask(
-                        vs,
-                        px1,
-                        py,
-                        x_bounds,
-                        v01_is_not_bottom_right,
-                        v12_is_not_bottom_right,
-                        v20_is_not_bottom_right,
-                    );
-
-                    let px2 = _mm256_setr_epi32(
-                        x + 4,
-                        x + 5,
-                        x + 6,
-                        x + 7,
-                        x + 12,
-                        x + 13,
-                        x + 14,
-                        x + 15,
-                    );
-                    let inside_mask_2 = compute_write_mask(
-                        vs,
-                        px2,
-                        py,
-                        x_bounds,
-                        v01_is_not_bottom_right,
-                        v12_is_not_bottom_right,
-                        v20_is_not_bottom_right,
-                    );
-
-                    let mut inside_mask = _mm256_packs_epi32(inside_mask_1, inside_mask_2);
-
-                    // If no points are inside the triangle, bail out early
-                    if _mm256_testz_si256(inside_mask, _mm256_set1_epi16(!0)) != 0 {
-                        continue;
-                    }
-
-                    let row_offset = y as usize * 1024 + x as usize;
-                    let vram_addr = vram_ptr.add(row_offset).cast::<__m256i>();
-
-                    let existing = _mm256_load_si256(vram_addr);
-
-                    let mut r = color_r;
-                    let mut g = color_g;
-                    let mut b = color_b;
-
-                    let mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
-                    let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
-
-                    // Truncate color from from 8-bit RGB components to 5-bit
-                    r = _mm256_srli_epi16::<3>(r);
-                    g = _mm256_srli_epi16::<3>(g);
-                    b = _mm256_srli_epi16::<3>(b);
-
-                    // If semi-transparency is enabled, blend existing colors with new colors
-                    if SEMI_TRANS {
-                        let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
-                        let semi_transparency_mask =
-                            _mm256_cmpeq_epi16(semi_transparency_bits, _mm256_setzero_si256());
-
-                        (r, g, b) = apply_semi_transparency(
-                            (existing_r, existing_g, existing_b),
-                            (r, g, b),
-                            semi_transparency_mask,
-                            ctx.semi_transparency,
-                        );
-                    }
-                    let x = x as i16;
-                    let px = _mm256_setr_epi16(
-                        x,
-                        x + 1,
-                        x + 2,
-                        x + 3,
-                        x + 4,
-                        x + 5,
-                        x + 6,
-                        x + 7,
-                        x + 8,
-                        x + 9,
-                        x + 10,
-                        x + 11,
-                        x + 12,
-                        x + 13,
-                        x + 14,
-                        x + 15,
-                    );
-
-                    // mask out padding pixels
-                    let mut write_mask = _mm256_and_si256(
-                        inside_mask,
-                        _mm256_andnot_si256(
-                            _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 - 1), px),
-                            _mm256_cmpgt_epi16(_mm256_set1_epi16((max_x + 1) as i16), px),
-                        ),
-                    );
-                    if ctx.preserve_masked_pixels {
-                        write_mask = _mm256_and_si256(
-                            write_mask,
-                            _mm256_cmpeq_epi16(
-                                _mm256_and_si256(existing, _mm256_set1_epi16(1 << 15)),
-                                _mm256_setzero_si256(),
-                            ),
-                        )
-                    };
-                    let color = _mm256_or_si256(combine_rgb_components(r, g, b), mask_bits);
-                    _mm256_storeu_si256(
-                        vram_addr,
-                        _mm256_or_si256(
-                            _mm256_and_si256(write_mask, color),
-                            _mm256_andnot_si256(write_mask, existing),
-                        ),
-                    );
-                    // _mm256_storeu_si256(
-                    //     vram_addr,
-                    //          color
-                    // );
-                }
-            }
-        }
-    }
-
-    pub fn draw_polygon_shaded<const SEMI_TRANS: bool>(
-        &mut self,
-        vs: &mut [Vertex; 4],
-        colors: &mut [Colour; 4],
-        is_triangle: bool,
-        ctx: &RenderingContext,
-    ) {
-        let mut vss = vs.clone();
-        let mut css = colors.clone();
-        self.draw_triangle_shaded::<SEMI_TRANS>(&mut vss[0..3], &mut css[0..3], ctx);
-        if !is_triangle {
-            self.draw_triangle_shaded::<SEMI_TRANS>(&mut vs[1..4], &mut colors[1..4], ctx);
-        }
-    }
-    pub fn draw_triangle_shaded<const SEMI_TRANS: bool>(
-        &mut self,
-        vs: &mut [Vertex],
-        colors: &mut [Colour],
-        ctx: &RenderingContext,
-    ) {
-        #[cfg(target_arch = "x86_64")]
-        if is_x86_feature_detected!("avx2") {
-            unsafe {
-                self.render_triangle_shaded_avx2::<SEMI_TRANS>(vs, colors, ctx);
-                return;
-            }
-        }
-
-        panic!("not impl")
-
-        // for y in min_y..max_y {
-        //     for x in min_x..max_x {
-        //         let p = Vertex { x, y };
-        //         if is_inside_triangle(p, *v0, *v1, *v2) {
-        //             let lambda = compute_barycentric_coordinates(p, *v0, *v1, *v2);
-        //             let color = interpolate_color(&lambda, &[*c0, *c1, *c2]);
-        //             let mut color = apply_dithering(color, p);
-        //             let vram_addr = 2 * (y * 1024 + x) as usize;
-        //
-        //             if SEMI_TRANS {
-        //                 let background_lsb = self.vram[vram_addr];
-        //                 let background_msb = self.vram[vram_addr + 1];
-        //
-        //                 let bg = Colour::from_bytes(background_msb, background_lsb);
-        //
-        //                 color.blend_with_background(bg, ctx.semi_transparency);
-        //             }
-        //
-        //             self.vram_write_color(vram_addr, color, ctx);
-        //         }
-        //     }
-        // }
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx2")]
-    pub fn render_triangle_shaded_avx2<const SEMI_TRANS: bool>(
-        &mut self,
-        vs: &mut [Vertex],
-        colors: &mut [Colour],
-        ctx: &RenderingContext,
-    ) {
-        unsafe {
-            // println!("render triangle shaded");
-
-            ensure_vertex_order2(vs, colors);
-            vs[0].x += ctx.drawing_x_offset as i32;
-            vs[0].y += ctx.drawing_y_offset as i32;
-            vs[1].x += ctx.drawing_x_offset as i32;
-            vs[1].y += ctx.drawing_y_offset as i32;
-            vs[2].x += ctx.drawing_x_offset as i32;
-            vs[2].y += ctx.drawing_y_offset as i32;
-
-            let vram_ptr = self.vram.as_mut_ptr() as *mut u16;
-
-            // let forced_mask_bit = i16::from(ctx.force_set_mask_bit) << 15;
-
-            // let [pixel_lsb, pixel_msb] = color;
-            let [v0, v1, v2] = vs else {
-                unreachable!("");
-            };
-
-            // bounding box
-            let min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
-            let max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
-            let min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
-            let max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
-
-            let Some((min_x, min_y, max_x, max_y)) =
-                self.clip_rect(min_x, min_y, max_x, max_y, ctx)
-            else {
-                return;
-            };
-            let min_x_aligned = min_x & !0xF;
-            let max_x_aligned = (max_x + 15) & !0xF;
-
-            let x_bounds = (min_x, max_x);
-
-            let interpolation_denominator = cross_product_z(vs[0], vs[1], vs[2]);
-
-            if interpolation_denominator == 0 {
-                // colinear points
-                return;
-            }
-
-            let v01_is_not_bottom_right = is_not_bottom_right_edge(vs[0], vs[1]);
-            let v12_is_not_bottom_right = is_not_bottom_right_edge(vs[1], vs[2]);
-            let v20_is_not_bottom_right = is_not_bottom_right_edge(vs[2], vs[0]);
-
-            let colors = [colors[0], colors[1], colors[2]];
-            let interpolator = Interpolator::new(vs, interpolation_denominator, true, colors, None);
-            for y in min_y..=max_y {
-                let py = _mm256_set1_epi32(y);
-
-                for x in (min_x_aligned..=max_x_aligned).step_by(16) {
-                    // Determine which X coordinates are inside the triangle.
-                    // The 16 X coordinates are split up such that vectors can later be converted from
-                    // two i32x8 vectors to a single i16x16 vector using _mm256_packs_epi32
-
-                    let px1 =
-                        _mm256_setr_epi32(x, x + 1, x + 2, x + 3, x + 8, x + 9, x + 10, x + 11);
-                    let inside_mask_1 = compute_write_mask(
-                        vs,
-                        px1,
-                        py,
-                        x_bounds,
-                        v01_is_not_bottom_right,
-                        v12_is_not_bottom_right,
-                        v20_is_not_bottom_right,
-                    );
-
-                    let px2 = _mm256_setr_epi32(
-                        x + 4,
-                        x + 5,
-                        x + 6,
-                        x + 7,
-                        x + 12,
-                        x + 13,
-                        x + 14,
-                        x + 15,
-                    );
-                    let inside_mask_2 = compute_write_mask(
-                        vs,
-                        px2,
-                        py,
-                        x_bounds,
-                        v01_is_not_bottom_right,
-                        v12_is_not_bottom_right,
-                        v20_is_not_bottom_right,
-                    );
-
-                    let inside_mask = _mm256_packs_epi32(inside_mask_1, inside_mask_2);
-
-                    // If no points are inside the triangle, bail out early
-                    if _mm256_testz_si256(inside_mask, _mm256_set1_epi16(!0)) != 0 {
-                        continue;
-                    }
-
-                    let row_offset = y as usize * 1024 + x as usize;
-                    let vram_addr = vram_ptr.add(row_offset).cast::<__m256i>();
-
-                    let existing = _mm256_load_si256(vram_addr);
-
-                    let (r1, g1, b1) = interpolator.interpolate_color(px1, py);
-                    let (r2, g2, b2) = interpolator.interpolate_color(px2, py);
-                    let mut r = _mm256_packs_epi32(r1, r2);
-                    let mut g = _mm256_packs_epi32(g1, g2);
-                    let mut b = _mm256_packs_epi32(b1, b2);
-
-                    let mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
-                    let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
-
-                    // Truncate color from from 8-bit RGB components to 5-bit
-                    // r = _mm256_srli_epi16::<3>(r);
-                    // g = _mm256_srli_epi16::<3>(g);
-                    // b = _mm256_srli_epi16::<3>(b);
-
-
-                    if ctx.dithering {
-                        (r, g, b) = apply_dithering_avx2(y, r, g, b);
-                    }
-                    r = _mm256_srli_epi16::<3>(r);
-                    g = _mm256_srli_epi16::<3>(g);
-                    b = _mm256_srli_epi16::<3>(b);
-                    // If semi-transparency is enabled, blend existing colors with new colors
-                    if SEMI_TRANS {
-                        let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
-                        let semi_transparency_mask =
-                            _mm256_cmpeq_epi16(semi_transparency_bits, _mm256_setzero_si256());
-
-                        (r, g, b) = apply_semi_transparency(
-                            (existing_r, existing_g, existing_b),
-                            (r, g, b),
-                            semi_transparency_mask,
-                            ctx.semi_transparency,
-                        );
-                    }
-                    let x = x as i16;
-                    let px = _mm256_setr_epi16(
-                        x,
-                        x + 1,
-                        x + 2,
-                        x + 3,
-                        x + 4,
-                        x + 5,
-                        x + 6,
-                        x + 7,
-                        x + 8,
-                        x + 9,
-                        x + 10,
-                        x + 11,
-                        x + 12,
-                        x + 13,
-                        x + 14,
-                        x + 15,
-                    );
-
-                    // mask out padding pixels
-                    let mut write_mask = _mm256_and_si256(
-                        inside_mask,
-                        _mm256_andnot_si256(
-                            _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 - 1), px),
-                            _mm256_cmpgt_epi16(_mm256_set1_epi16((max_x + 1) as i16), px),
-                        ),
-                    );
-                    if ctx.preserve_masked_pixels {
-                        write_mask = _mm256_and_si256(
-                            write_mask,
-                            _mm256_cmpeq_epi16(
-                                _mm256_and_si256(existing, _mm256_set1_epi16(1 << 15)),
-                                _mm256_setzero_si256(),
-                            ),
-                        )
-                    };
-                    let color = _mm256_or_si256(combine_rgb_components(r, g, b), mask_bits);
-                    _mm256_storeu_si256(
-                        vram_addr,
-                        _mm256_or_si256(
-                            _mm256_and_si256(write_mask, color),
-                            _mm256_andnot_si256(write_mask, existing),
-                        ),
-                    );
-                    // _mm256_storeu_si256(
-                    //     vram_addr,
-                    //          color
-                    // );
-                }
-            }
-        }
-    }
-
-    /* GP0(E1h)
-      0-3   Texture page X Base   (N*64) (ie. in 64-halfword steps)    ;GPUSTAT.0-3
-      4     Texture page Y Base 1 (N*256) (ie. 0, 256, 512 or 768)     ;GPUSTAT.4
-      5-6   Semi-transparency     (0=B/2+F/2, 1=B+F, 2=B-F, 3=B+F/4)   ;GPUSTAT.5-6
-      7-8   Texture page colors   (0=4bit, 1=8bit, 2=15bit, 3=Reserved);GPUSTAT.7-8
-      9     Dither 24bit to 15bit (0=Off/strip LSBs, 1=Dither Enabled) ;GPUSTAT.9
-      10    Drawing to display area (0=Prohibited, 1=Allowed)          ;GPUSTAT.10
-      11    Texture page Y Base 2 (N*512) (only for 2 MB VRAM)         ;GPUSTAT.15
-      12    Textured Rectangle X-Flip   (BIOS does set this bit on power-up...?)
-      13    Textured Rectangle Y-Flip   (BIOS does set it equal to GPUSTAT.13...?)
-      14-23 Not used (should be 0)
-      24-31 Command  (E1h)
-    */
     pub fn compute_texel_offset(&self, x: usize, y: usize, ctx: &RenderingContext) -> [usize; 2] {
         let x_mask = ctx.texture_window_x_mask as usize;
         let y_mask = ctx.texture_window_y_mask as usize;
@@ -1234,316 +701,7 @@ impl Renderer {
             (y & (!(y_mask * 8))) | ((y_offset & y_mask) * 8),
         ]
     }
-
-    pub fn draw_polygon_textured<const SEMI_TRANS: bool, const BLEND: bool>(
-        &mut self,
-        cs: &mut [Colour; 4],
-        clut: u16,
-        page: u16,
-        vs: &mut [Vertex; 4],
-        uv: &mut [[u16; 2]; 4],
-        is_triangle: bool,
-        ctx: &RenderingContext,
-    ) {
-        let mut vss = vs.clone();
-        let mut uvs = uv.clone();
-        self.draw_triangle_textured::<SEMI_TRANS, BLEND>(
-            cs[0],
-            clut,
-            page,
-            &mut vss[0..3],
-            &mut uvs[0..3],
-            ctx,
-        );
-        if !is_triangle {
-            self.draw_triangle_textured::<SEMI_TRANS, BLEND>(
-                cs[0],
-                clut,
-                page,
-                &mut vs[1..4],
-                &mut uv[1..4],
-                ctx,
-            );
-        }
-    }
-    pub fn draw_triangle_textured<const SEMI_TRANS: bool, const BLEND: bool>(
-        &mut self,
-        mono: Colour,
-        clut: u16,
-        page: u16,
-        vs: &mut [Vertex],
-        uv: &mut [[u16; 2]],
-        ctx: &RenderingContext,
-    ) {
-        #[cfg(target_arch = "x86_64")]
-        if is_x86_feature_detected!("avx2") {
-            unsafe {
-                self.render_triangle_textured_avx2::<SEMI_TRANS, BLEND>(
-                    mono, clut, page, vs, uv, ctx,
-                );
-                return;
-            }
-        }
-
-        panic!("not impl")
-    }
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx2")]
-    pub fn render_triangle_textured_avx2<const SEMI_TRANS: bool, const BLEND: bool>(
-        &mut self,
-        mono: Colour,
-        clut: u16,
-        page: u16,
-        vs: &mut [Vertex],
-        uv: &mut [[u16; 2]],
-        ctx: &RenderingContext,
-    ) {
-        unsafe {
-            // println!("render triangle textured");
-
-            ensure_vertex_order2(vs, uv);
-            vs[0].x += ctx.drawing_x_offset as i32;
-            vs[0].y += ctx.drawing_y_offset as i32;
-            vs[1].x += ctx.drawing_x_offset as i32;
-            vs[1].y += ctx.drawing_y_offset as i32;
-            vs[2].x += ctx.drawing_x_offset as i32;
-            vs[2].y += ctx.drawing_y_offset as i32;
-
-            let vram_ptr = self.vram.as_mut_ptr() as *mut u16;
-
-            // let forced_mask_bit = i16::from(ctx.force_set_mask_bit) << 15;
-
-            // let [pixel_lsb, pixel_msb] = color;
-            let [v0, v1, v2] = vs else {
-                unreachable!("");
-            };
-
-            let colors = [mono, mono, mono];
-
-            // let color_r = _mm256_set1_epi16(mono.r as i16);
-            // let color_g = _mm256_set1_epi16(mono.g as i16);
-            // let color_b = _mm256_set1_epi16(mono.b as i16);
-            // let color = mono.to_u16();
-
-            // bounding box
-            let min_x = cmp::min(v0.x, cmp::min(v1.x, v2.x));
-            let max_x = cmp::max(v0.x, cmp::max(v1.x, v2.x));
-            let min_y = cmp::min(v0.y, cmp::min(v1.y, v2.y));
-            let max_y = cmp::max(v0.y, cmp::max(v1.y, v2.y));
-
-            let Some((min_x, min_y, max_x, max_y)) =
-                self.clip_rect(min_x, min_y, max_x, max_y, ctx)
-            else {
-                return;
-            };
-            let min_x_aligned = min_x & !0xF;
-            let max_x_aligned = (max_x + 15) & !0xF;
-
-            let padding = min_x - min_x_aligned;
-
-            let x_bounds = (min_x, max_x);
-
-            let clut = Clut::new(clut);
-            let texture = Texture::new_avx2(page, clut);
-
-            let interpolation_denominator = cross_product_z(vs[0], vs[1], vs[2]);
-
-            if interpolation_denominator == 0 {
-                // colinear points
-                return;
-            }
-
-            let v01_is_not_bottom_right = is_not_bottom_right_edge(vs[0], vs[1]);
-            let v12_is_not_bottom_right = is_not_bottom_right_edge(vs[1], vs[2]);
-            let v20_is_not_bottom_right = is_not_bottom_right_edge(vs[2], vs[0]);
-
-            let colors = [colors[0], colors[1], colors[2]];
-            let uv = [uv[0], uv[1], uv[2]];
-            let interpolator =
-                Interpolator::new(vs, interpolation_denominator, false, colors, Some(uv));
-            for y in min_y..=max_y {
-                let py = _mm256_set1_epi32(y);
-
-                for x in (min_x_aligned..=max_x_aligned).step_by(16) {
-                    // Determine which X coordinates are inside the triangle.
-                    // The 16 X coordinates are split up such that vectors can later be converted from
-                    // two i32x8 vectors to a single i16x16 vector using _mm256_packs_epi32
-
-                    let x1 = x;
-                    let px1 = _mm256_setr_epi32(
-                        x1,
-                        x1 + 1,
-                        x1 + 2,
-                        x1 + 3,
-                        x1 + 8,
-                        x1 + 9,
-                        x1 + 10,
-                        x1 + 11,
-                    );
-                    let inside_mask_1 = compute_write_mask(
-                        vs,
-                        px1,
-                        py,
-                        x_bounds,
-                        v01_is_not_bottom_right,
-                        v12_is_not_bottom_right,
-                        v20_is_not_bottom_right,
-                    );
-
-                    let px2 = _mm256_setr_epi32(
-                        x1 + 4,
-                        x1 + 5,
-                        x1 + 6,
-                        x1 + 7,
-                        x1 + 12,
-                        x1 + 13,
-                        x1 + 14,
-                        x1 + 15,
-                    );
-                    let inside_mask_2 = compute_write_mask(
-                        vs,
-                        px2,
-                        py,
-                        x_bounds,
-                        v01_is_not_bottom_right,
-                        v12_is_not_bottom_right,
-                        v20_is_not_bottom_right,
-                    );
-
-                    let mut inside_mask = _mm256_packs_epi32(inside_mask_1, inside_mask_2);
-
-                    // If no points are inside the triangle, bail out early
-                    if _mm256_testz_si256(inside_mask, _mm256_set1_epi16(!0)) != 0 {
-                        continue;
-                    }
-
-                    let row_offset = y as usize * 1024 + x as usize;
-                    let vram_addr = vram_ptr.add(row_offset).cast::<__m256i>();
-
-                    let existing = _mm256_load_si256(vram_addr);
-
-                    // let (r1, g1, b1) = interpolator.interpolate_color(px1, py);
-                    // let (r2, g2, b2) = interpolator.interpolate_color(px2, py);
-                    let mut r = _mm256_set1_epi16(mono.r.into());
-                    let mut g = _mm256_set1_epi16(mono.g.into());
-                    let mut b = _mm256_set1_epi16(mono.b.into());
-
-                    let mut mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
-                    // let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
-
-                    // Interpolate U/V coordinates
-                    let (u1, v1) = interpolator.interpolate_uv(px1, py);
-                    let (u2, v2) = interpolator.interpolate_uv(px2, py);
-                    let (u, v) = (_mm256_packus_epi32(u1, u2), _mm256_packus_epi32(v1, v2));
-
-                    // Read 16 texels from the texture
-                    let texels = read_texture(vram_ptr, texture, u, v, ctx);
-
-                    // Mask out any pixels where the texel value is $0000
-                    inside_mask = _mm256_andnot_si256(
-                        _mm256_cmpeq_epi16(texels, _mm256_setzero_si256()),
-                        inside_mask,
-                    );
-
-                    // Texels are semi-transparent only if bit 15 is set
-                    let semi_transparency_bits =
-                        _mm256_and_si256(texels, _mm256_set1_epi16(1 << 15));
-                    mask_bits = _mm256_or_si256(mask_bits, semi_transparency_bits);
-
-                    let (tr, tg, tb) = convert_15bit_to_24bit(texels);
-
-                    if BLEND {
-                        r = modulate_texture_color(tr, r);
-                        g = modulate_texture_color(tg, g);
-                        b = modulate_texture_color(tb, b);
-                    } else {
-                        r = tr;
-                        g = tg;
-                        b = tb;
-                    }
-
-
-                    // Truncate color from from 8-bit RGB components to 5-bit
-                    // r = _mm256_srli_epi16::<3>(r);
-                    // g = _mm256_srli_epi16::<3>(g);
-                    // b = _mm256_srli_epi16::<3>(b);
-
-                    if ctx.dithering && BLEND {
-                        (r, g, b) = apply_dithering_avx2(y, r, g, b);
-                    }
-                    r = _mm256_srli_epi16::<3>(r);
-                    g = _mm256_srli_epi16::<3>(g);
-                    b = _mm256_srli_epi16::<3>(b);
-
-
-                    // If semi-transparency is enabled, blend existing colors with new colors
-                    if SEMI_TRANS {
-                        let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
-                        let semi_transparency_mask =
-                            _mm256_cmpeq_epi16(semi_transparency_bits, _mm256_setzero_si256());
-
-                        (r, g, b) = apply_semi_transparency(
-                            (existing_r, existing_g, existing_b),
-                            (r, g, b),
-                            semi_transparency_mask,
-                            ctx.semi_transparency,
-                        );
-                    }
-                    let x = x as i16;
-                    let px = _mm256_setr_epi16(
-                        x,
-                        x + 1,
-                        x + 2,
-                        x + 3,
-                        x + 4,
-                        x + 5,
-                        x + 6,
-                        x + 7,
-                        x + 8,
-                        x + 9,
-                        x + 10,
-                        x + 11,
-                        x + 12,
-                        x + 13,
-                        x + 14,
-                        x + 15,
-                    );
-
-                    // mask out padding pixels
-                    let mut write_mask = _mm256_and_si256(
-                        inside_mask,
-                        _mm256_andnot_si256(
-                            _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 - 1), px),
-                            _mm256_cmpgt_epi16(_mm256_set1_epi16((max_x + 1) as i16), px),
-                        ),
-                    );
-                    if ctx.preserve_masked_pixels {
-                        write_mask = _mm256_and_si256(
-                            write_mask,
-                            _mm256_cmpeq_epi16(
-                                _mm256_and_si256(existing, _mm256_set1_epi16(1 << 15)),
-                                _mm256_setzero_si256(),
-                            ),
-                        )
-                    };
-                    let color = _mm256_or_si256(combine_rgb_components(r, g, b), mask_bits);
-                    _mm256_storeu_si256(
-                        vram_addr,
-                        _mm256_or_si256(
-                            _mm256_and_si256(write_mask, color),
-                            _mm256_andnot_si256(write_mask, existing),
-                        ),
-                    );
-                    // _mm256_storeu_si256(
-                    //     vram_addr,
-                    //          color
-                    // );
-                }
-            }
-        }
-    }
-
-    pub fn draw_polygon_textured_shaded<const SEMI_TRANS: bool, const BLEND: bool>(
+    pub fn draw_polygon<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         colors: &mut [Colour; 4],
         clut: u16,
@@ -1551,44 +709,52 @@ impl Renderer {
         vs: &mut [Vertex; 4],
         uv: &mut [[u16; 2]; 4],
         is_triangle: bool,
+        textured: bool,
+        shaded: bool,
         ctx: &RenderingContext,
     ) {
         let mut vss = vs.clone();
         let mut uvs = uv.clone();
         let mut css = colors.clone();
-        self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
+        self.draw_triangle::<SEMI_TRANS, BLEND>(
             &mut css[0..3],
             clut,
             page,
             &mut vss[0..3],
             &mut uvs[0..3],
+            textured,
+            shaded,
             ctx,
         );
         if !is_triangle {
-            self.draw_triangle_textured_shaded::<SEMI_TRANS, BLEND>(
+            self.draw_triangle::<SEMI_TRANS, BLEND>(
                 &mut colors[1..4],
                 clut,
                 page,
                 &mut vs[1..4],
                 &mut uv[1..4],
+                textured,
+                shaded,
                 ctx,
             );
         }
     }
-    pub fn draw_triangle_textured_shaded<const SEMI_TRANS: bool, const BLEND: bool>(
+    pub fn draw_triangle<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         colors: &mut [Colour],
         clut: u16,
         page: u16,
         vs: &mut [Vertex],
         uv: &mut [[u16; 2]],
+        textured: bool,
+        shaded: bool,
         ctx: &RenderingContext,
     ) {
         #[cfg(target_arch = "x86_64")]
         if is_x86_feature_detected!("avx2") {
             unsafe {
-                self.render_triangle_textured_shaded_avx2::<SEMI_TRANS, BLEND>(
-                    colors, clut, page, vs, uv, ctx,
+                self.render_triangle_avx2::<SEMI_TRANS, BLEND>(
+                    colors, clut, page, vs, uv, textured, shaded, ctx,
                 );
                 return;
             }
@@ -1599,17 +765,19 @@ impl Renderer {
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    pub fn render_triangle_textured_shaded_avx2<const SEMI_TRANS: bool, const BLEND: bool>(
+    pub fn render_triangle_avx2<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         colors: &mut [Colour],
         clut: u16,
         page: u16,
         vs: &mut [Vertex],
         uv: &mut [[u16; 2]],
+        textured: bool,
+        shaded: bool,
         ctx: &RenderingContext,
     ) {
         unsafe {
-            // println!("render triangle textured shaded");
+            // println!("render triangle textured: {} shaded: {}", textured, shaded);
 
             ensure_vertex_order3(vs, uv, colors);
             vs[0].x += ctx.drawing_x_offset as i32;
@@ -1667,8 +835,9 @@ impl Renderer {
 
             let colors = [colors[0], colors[1], colors[2]];
             let uv = [uv[0], uv[1], uv[2]];
+            let texture_mapping = if textured {Some(uv)} else {None};
             let interpolator =
-                Interpolator::new(vs, interpolation_denominator, false, colors, Some(uv));
+                Interpolator::new(vs, interpolation_denominator, shaded, colors, texture_mapping);
             for y in min_y..=max_y {
                 let py = _mm256_set1_epi32(y);
 
@@ -1721,46 +890,55 @@ impl Renderer {
 
                     let existing = _mm256_load_si256(vram_addr);
 
-                    let (r1, g1, b1) = interpolator.interpolate_color(px1, py);
-                    let (r2, g2, b2) = interpolator.interpolate_color(px2, py);
-                    let mut r = _mm256_packs_epi32(r1, r2);
-                    let mut g = _mm256_packs_epi32(g1, g2);
-                    let mut b = _mm256_packs_epi32(b1, b2);
+                    let mut r = _mm256_set1_epi16(colors[0].r as i16);
+                    let mut g = _mm256_set1_epi16(colors[0].g as i16);
+                    let mut b = _mm256_set1_epi16(colors[0].b as i16);
 
-                    let mut mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
-                    // let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
-
-                    // Interpolate U/V coordinates
-                    let (u1, v1) = interpolator.interpolate_uv(px1, py);
-                    let (u2, v2) = interpolator.interpolate_uv(px2, py);
-                    let (u, v) = (_mm256_packus_epi32(u1, u2), _mm256_packus_epi32(v1, v2));
-
-                    // Read 16 texels from the texture
-                    let texels = read_texture(vram_ptr, texture, u, v, ctx);
-
-                    // Mask out any pixels where the texel value is $0000
-                    inside_mask = _mm256_andnot_si256(
-                        _mm256_cmpeq_epi16(texels, _mm256_setzero_si256()),
-                        inside_mask,
-                    );
-
-                    // Texels are semi-transparent only if bit 15 is set
-                    let semi_transparency_bits =
-                        _mm256_and_si256(texels, _mm256_set1_epi16(1 << 15));
-                    mask_bits = _mm256_or_si256(mask_bits, semi_transparency_bits);
-
-                    let (tr, tg, tb) = convert_15bit_to_24bit(texels);
-
-                    if BLEND {
-                        r = modulate_texture_color(tr, r);
-                        g = modulate_texture_color(tg, g);
-                        b = modulate_texture_color(tb, b);
-                    } else {
-                        r = tr;
-                        g = tg;
-                        b = tb;
+                    if shaded {
+                        let (r1, g1, b1) = interpolator.interpolate_color(px1, py);
+                        let (r2, g2, b2) = interpolator.interpolate_color(px2, py);
+                        r = _mm256_packs_epi32(r1, r2);
+                        g = _mm256_packs_epi32(g1, g2);
+                        b = _mm256_packs_epi32(b1, b2);
                     }
 
+                    let mut semi_transparency_bits = _mm256_set1_epi16(!0);
+                    let mut mask_bits =
+                            _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
+
+                    if textured {
+                        // let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
+
+                        // Interpolate U/V coordinates
+                        let (u1, v1) = interpolator.interpolate_uv(px1, py);
+                        let (u2, v2) = interpolator.interpolate_uv(px2, py);
+                        let (u, v) = (_mm256_packus_epi32(u1, u2), _mm256_packus_epi32(v1, v2));
+
+                        // Read 16 texels from the texture
+                        let texels = read_texture(vram_ptr, texture, u, v, ctx);
+
+                        // Mask out any pixels where the texel value is $0000
+                        inside_mask = _mm256_andnot_si256(
+                            _mm256_cmpeq_epi16(texels, _mm256_setzero_si256()),
+                            inside_mask,
+                        );
+                        // Texels are semi-transparent only if bit 15 is set
+                        semi_transparency_bits =
+                            _mm256_and_si256(texels, _mm256_set1_epi16(1 << 15));
+                        mask_bits = _mm256_or_si256(mask_bits, semi_transparency_bits);
+
+                        let (tr, tg, tb) = convert_15bit_to_24bit(texels);
+
+                        if BLEND {
+                            r = modulate_texture_color(tr, r);
+                            g = modulate_texture_color(tg, g);
+                            b = modulate_texture_color(tb, b);
+                        } else {
+                            r = tr;
+                            g = tg;
+                            b = tb;
+                        }
+                    }
 
                     // Truncate color from from 8-bit RGB components to 5-bit
 
@@ -1771,7 +949,6 @@ impl Renderer {
                     g = _mm256_srli_epi16::<3>(g);
                     b = _mm256_srli_epi16::<3>(b);
                     // If semi-transparency is enabled, blend existing colors with new colors
-                    // if false {
                     if SEMI_TRANS {
                         let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
                         let semi_transparency_mask =
@@ -1838,166 +1015,21 @@ impl Renderer {
         }
     }
 
-    pub fn draw_rectangle<const SEMI_TRANS: bool>(
-        &mut self,
-        mut v: Vertex,
-        side: Vertex,
-        color: Colour,
-        ctx: &RenderingContext,
-    ) {
-        v.x += ctx.drawing_x_offset as i32;
-        v.y += ctx.drawing_y_offset as i32;
-
-        let Some((min_x, min_y, max_x, max_y)) =
-            self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
-        else {
-            return;
-        };
-        #[cfg(target_arch = "x86_64")]
-        if is_x86_feature_detected!("avx2") {
-            unsafe {
-                self.draw_rectangle_avx2::<SEMI_TRANS>(
-                    min_x as usize,
-                    min_y as usize,
-                    max_x as usize,
-                    max_y as usize,
-                    color,
-                    ctx,
-                );
-                return;
-            }
-        }
-
-        panic!("not impl")
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx2")]
-    unsafe fn draw_rectangle_avx2<const SEMI_TRANS: bool>(
-        &mut self,
-        min_x: usize,
-        min_y: usize,
-        max_x: usize,
-        max_y: usize,
-        color: Colour,
-        ctx: &RenderingContext,
-    ) {
-        let vram_ptr = self.vram.as_mut_ptr() as *mut u16;
-
-        // let forced_mask_bit = i16::from(ctx.force_set_mask_bit) << 15;
-
-        let min_x_aligned = min_x & !0xF;
-        let max_x_aligned = (max_x + 15) & !0xF;
-
-        // println!(
-        //     "minx aligned {}, max x aligned: {}",
-        //     min_x_aligned, max_x_aligned
-        // );
-
-        // let color_vec = _mm256_set1_epi16(color.to_u16() as i16);
-        let color_r = _mm256_set1_epi16(color.r as i16);
-        let color_g = _mm256_set1_epi16(color.g as i16);
-        let color_b = _mm256_set1_epi16(color.b as i16);
-        let color = color.to_u16();
-
-        let span_width = max_x - min_x + 1;
-        // println!("draw rect: {}, semi-trans? {}", span_width, SEMI_TRANS);
-        for y in min_y..=max_y {
-            let row_offset = y * 1024 + min_x_aligned;
-            unsafe {
-                let mut ptr = vram_ptr.add(row_offset);
-
-                for x in (min_x_aligned..=max_x_aligned).step_by(16) {
-                    let x = x as i16;
-                    let px = _mm256_setr_epi16(
-                        x,
-                        x + 1,
-                        x + 2,
-                        x + 3,
-                        x + 4,
-                        x + 5,
-                        x + 6,
-                        x + 7,
-                        x + 8,
-                        x + 9,
-                        x + 10,
-                        x + 11,
-                        x + 12,
-                        x + 13,
-                        x + 14,
-                        x + 15,
-                    );
-                    use std::arch::x86_64::{_mm256_cmpgt_epi16, _mm256_setr_epi16};
-
-                    let existing = _mm256_load_si256(ptr as *const __m256i);
-
-                    // mask out padding pixels
-                    let mut write_mask = _mm256_andnot_si256(
-                        _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 - 1), px),
-                        _mm256_cmpgt_epi16(_mm256_set1_epi16((max_x + 1) as i16), px),
-                    );
-                    if ctx.preserve_masked_pixels {
-                        write_mask = _mm256_and_si256(
-                            write_mask,
-                            _mm256_cmpeq_epi16(
-                                _mm256_and_si256(existing, _mm256_set1_epi16(1 << 15)),
-                                _mm256_setzero_si256(),
-                            ),
-                        )
-                    };
-                    let mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
-                    let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
-
-                    let mut r = color_r;
-                    let mut g = color_g;
-                    let mut b = color_b;
-
-                    // Truncate color from from 8-bit RGB components to 5-bit
-                    r = _mm256_srli_epi16::<3>(r);
-                    g = _mm256_srli_epi16::<3>(g);
-                    b = _mm256_srli_epi16::<3>(b);
-
-                    if SEMI_TRANS {
-                        let semi_transparency_mask =
-                            _mm256_cmpeq_epi16(semi_transparency_bits, _mm256_setzero_si256());
-                        let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
-                        (r, g, b) = apply_semi_transparency(
-                            (existing_r, existing_g, existing_b),
-                            (r, g, b),
-                            semi_transparency_mask,
-                            ctx.semi_transparency,
-                        )
-                    }
-
-                    let color = _mm256_or_si256(combine_rgb_components(r, g, b), mask_bits);
-
-                    _mm256_storeu_si256(
-                        ptr as *mut __m256i,
-                        _mm256_or_si256(
-                            _mm256_and_si256(write_mask, color),
-                            _mm256_andnot_si256(write_mask, existing),
-                        ),
-                    );
-                    ptr = ptr.add(16);
-                }
-            }
-        }
-    }
-
-    pub fn draw_rectangle_textured<const SEMI_TRANS: bool, const BLEND: bool>(
+    pub fn draw_rectangle<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         v: Vertex,
         side: Vertex,
         color: Colour,
         clut: u16,
         uv: [u16; 2],
+        textured: bool,
         ctx: &RenderingContext,
     ) {
         #[cfg(target_arch = "x86_64")]
         if is_x86_feature_detected!("avx2") {
             unsafe {
-                self.draw_rectangle_textured_avx2::<SEMI_TRANS, BLEND>(
-                    v, side, color, clut, uv, ctx,
+                self.draw_rectangle_avx2::<SEMI_TRANS, BLEND>(
+                    v, side, color, clut, uv, textured, ctx,
                 );
                 return;
             }
@@ -2008,13 +1040,14 @@ impl Renderer {
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    unsafe fn draw_rectangle_textured_avx2<const SEMI_TRANS: bool, const BLEND: bool>(
+    unsafe fn draw_rectangle_avx2<const SEMI_TRANS: bool, const BLEND: bool>(
         &mut self,
         mut v: Vertex,
         side: Vertex,
         color: Colour,
         clut: u16,
         uv: [u16; 2],
+        textured: bool,
         ctx: &RenderingContext,
     ) {
         use std::arch::x86_64::{__m256i, _mm256_storeu_si256};
@@ -2024,10 +1057,17 @@ impl Renderer {
         v.y += ctx.drawing_y_offset as i32;
 
         let Some((min_x, min_y, max_x, max_y)) =
+            // Some((v.x, v.y, v.x + side.x - 1, v.y + side.y - 1))
             self.clip_rect(v.x, v.y, v.x + side.x - 1, v.y + side.y - 1, ctx)
         else {
             return;
         };
+            // if max_x - min_x > 1023 || max_y - min_y > 511 {
+            //     return;
+            // }
+        // if max_x > 1023 || max_y > 511 {
+        //     return
+        // } 
         let vram_ptr = self.vram.as_mut_ptr() as *mut u16;
 
         let min_x_aligned = min_x & !0xF;
@@ -2097,16 +1137,40 @@ impl Renderer {
                     let mask_bits = _mm256_set1_epi16((ctx.force_set_mask_bit as i16) << 15);
                     let semi_transparency_bits = _mm256_set1_epi16(1 << 15);
 
-                    let u = _mm256_and_si256(
-                        _mm256_set1_epi16(0x00FF),
-                        _mm256_add_epi16(
-                            px,
-                            _mm256_set1_epi16(
-                                uv[0].wrapping_sub(min_x_aligned as u16 + padding as u16) as i16,
-                            ), // TODO: investigate what's with this uv offsets
-                        ),
-                    );
-                    let v = _mm256_set1_epi16(uv[1].wrapping_add(y as u16 - min_y as u16) as i16);
+                    let mut r = color_r;
+                    let mut g = color_g;
+                    let mut b = color_b;
+
+                    if textured {
+                        let u = _mm256_and_si256(
+                            _mm256_set1_epi16(0x00FF),
+                            _mm256_add_epi16(
+                                px,
+                                _mm256_set1_epi16(
+                                    uv[0].wrapping_sub(min_x_aligned as u16 + padding as u16)
+                                        as i16,
+                                ), // TODO: investigate what's with this uv offsets
+                            ),
+                        );
+                        let v =
+                            _mm256_set1_epi16(uv[1].wrapping_add(y as u16 - min_y as u16) as i16);
+                        let texels = read_texture(vram_ptr, texture, u, v, ctx);
+                        // Mask out any pixels where the texel value is $0000
+                        write_mask = _mm256_andnot_si256(
+                            _mm256_cmpeq_epi16(texels, _mm256_setzero_si256()),
+                            write_mask,
+                        );
+                        let (tr, tg, tb) = convert_15bit_to_24bit(texels);
+                        if BLEND {
+                            r = modulate_texture_color(tr, r);
+                            g = modulate_texture_color(tg, g);
+                            b = modulate_texture_color(tb, b);
+                        } else {
+                            r = tr;
+                            g = tg;
+                            b = tb;
+                        }
+                    }
                     // let v = _mm256_set1_epi16(uv[1] as i16);
 
                     // {
@@ -2117,32 +1181,8 @@ impl Renderer {
                     // println!("vs: {:?}", arr);
                     // }
 
-                    let mut r = color_r;
-                    let mut g = color_g;
-                    let mut b = color_b;
-
-                    let texels = read_texture(vram_ptr, texture, u, v, ctx);
-                    // Mask out any pixels where the texel value is $0000
-                    write_mask = _mm256_andnot_si256(
-                        _mm256_cmpeq_epi16(texels, _mm256_setzero_si256()),
-                        write_mask,
-                    );
-
                     // let arr: [u16; 16] = std::mem::transmute(texels);
                     // println!("texels: {:?}", arr);
-
-                    let (tr, tg, tb) = convert_15bit_to_24bit(texels);
-
-                    // Optionally apply texture color modulation
-                    if BLEND {
-                        r = modulate_texture_color(tr, r);
-                        g = modulate_texture_color(tg, g);
-                        b = modulate_texture_color(tb, b);
-                    } else {
-                        r = tr;
-                        g = tg;
-                        b = tb;
-                    }
 
                     // Truncate color from from 8-bit RGB components to 5-bit
                     r = _mm256_srli_epi16::<3>(r);
@@ -3022,7 +2062,6 @@ unsafe fn cross_prod_z(v0: Vertex, v1: Vertex, px: __m256i, py: __m256i) -> __m2
     )
 }
 
-
 #[derive(Debug, Clone, Copy)]
 struct Step {
     x: i32,
@@ -3208,7 +2247,12 @@ unsafe fn mask_epi32_to_u8(v: __m256i) -> __m256i {
 }
 
 #[target_feature(enable = "avx2")]
-unsafe fn apply_dithering_avx2(y: i32, r: __m256i, g: __m256i, b: __m256i) -> (__m256i, __m256i, __m256i) {
+unsafe fn apply_dithering_avx2(
+    y: i32,
+    r: __m256i,
+    g: __m256i,
+    b: __m256i,
+) -> (__m256i, __m256i, __m256i) {
     unsafe {
         let dither_vector: __m256i = mem::transmute(VECTOR_DITHER_TABLE[(y & 3) as usize]);
 

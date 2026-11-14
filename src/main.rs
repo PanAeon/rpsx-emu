@@ -124,6 +124,8 @@ pub struct Cli {
     gamepad2: bool,
     #[arg(long)]
     softergpu: bool,
+    #[arg(long)]
+    computegpu: bool,
 }
 
 fn main() {
@@ -707,32 +709,34 @@ impl State {
         scheduler.init(video_standard);
         let timers = timers::Timers::new();
 
-        let software_render = cli.softgpu || cli.softergpu;
+        let mut software_render = cli.softgpu || cli.softergpu;
 
         let (sender, receiver, handle) = if cli.softgpu {
             renderer::Renderer::create(cli.profilegpu)
+        } else if cli.hw_renderer {
+            crate::hw_renderer::HWRenderer::create(
+                device.clone(),
+                queue.clone(),
+                config.format,
+                render_texture.clone(),
+                cli.profilegpu,
+                scale,
+            )
+        } else if cli.softergpu {
+            softer_renderer::SofterRenderer::create(cli.profilegpu)
+        } else if cli.computegpu {
+            compute_renderer::ComputeRenderer::create(
+                device.clone(),
+                queue.clone(),
+                config.format,
+                render_texture.clone(),
+                cli.profilegpu,
+            )
         } else {
-            if cli.hw_renderer {
-                crate::hw_renderer::HWRenderer::create(
-                    device.clone(),
-                    queue.clone(),
-                    config.format,
-                    render_texture.clone(),
-                    cli.profilegpu,
-                    scale,
-                )
-            } else if cli.softergpu {
-                softer_renderer::SofterRenderer::create(cli.profilegpu)
-            } else {
-                compute_renderer::ComputeRenderer::create(
-                    device.clone(),
-                    queue.clone(),
-                    config.format,
-                    render_texture.clone(),
-                    cli.profilegpu,
-                )
-            }
+            software_render = true;
+            renderer::Renderer::create(cli.profilegpu)
         };
+
         let gpu = gpu::Gpu::new(video_standard, sender, receiver, handle, scale);
         let block_cache = block_cache::BlockCache::new();
         let cpu = dynarec::Dynarec::new();
@@ -1170,8 +1174,8 @@ impl State {
         let num_cycles = 1;
         // let num_cycles = 8;
         // for _ in 1..num_cycles {
-            self.interpreter.run_next_instruction(&mut self.system);
-            // self.interpreter.check_for_tty_output();
+        self.interpreter.run_next_instruction(&mut self.system);
+        // self.interpreter.check_for_tty_output();
         // }
         cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
         self.system.scheduler.advance(2 * num_cycles); // 40???
@@ -1730,7 +1734,10 @@ impl State {
             display_lines - current_line + line
         };
         let total = ticks as u64 + lines as u64 * ticks_per_line;
-        let system_cycles = self.system.gpu.gpu_ticks_to_system_cycles(total, fractional_ticks);
+        let system_cycles = self
+            .system
+            .gpu
+            .gpu_ticks_to_system_cycles(total, fractional_ticks);
         system_cycles
     }
     pub fn schedule_justifier_irq(&mut self) {
@@ -2226,14 +2233,14 @@ impl State {
                     _ => {} // ignore..
                 },
                 gilrs::EventType::AxisChanged(axis, value, _) => {
-                        let pad = if self.gamepad2 {
-                            &mut self.system.sio.gamepad2
-                        } else {
-                            &mut self.system.sio.gamepad1
-                        };
+                    let pad = if self.gamepad2 {
+                        &mut self.system.sio.gamepad2
+                    } else {
+                        &mut self.system.sio.gamepad1
+                    };
                     let axes = pad.get_stick_axis();
                     let byte = value.mul_add(127.5, 127.5) as u8;
-                    let rev_byte = (byte as i8).mul(-1) as u8; // FIXME: -128?
+                    let rev_byte = (byte as i8).clamp(-127, 127).mul(-1) as u8; // FIXME: -128?
                     // let rev_byte = value.mul_add(-127.5, -127.5) as u8;
                     if axis == Axis::LeftStickX {
                         axes[2] = byte;

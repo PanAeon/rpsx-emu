@@ -149,9 +149,8 @@ fn maybe_schedule_process_dma(system: &mut System) {
 }
 
 pub fn dma_event(system: &mut System) {
-    // TODO: in priority order
     system.dma.cpu_wait_cycles = 0;
-    for i in 0..system.dma.channels.len() {
+    for i in system.dma.dpcr.channels_in_priority_order() {
         let port = Port::from_index(i as u8);
         if !system.dma.dpcr.channel_enabled(port) {
             continue;
@@ -754,6 +753,20 @@ impl Control {
             Port::Pio => self.pio_enabled(),
             Port::Otc => self.otc_enabled(),
         }
+    }
+
+    pub fn channels_in_priority_order(&self) -> [u8;7] {
+        let mut priorities = 
+        [(6,self.otc_prio()),
+         (5,self.pio_prio()),
+         (4, self.spu_prio()),
+         (3, self.cdrom_prio()),
+         (2, self.gpu_prio()),
+         (1, self.mdecout_prio()),
+         (0, self.mdecin_prio())];
+        priorities.sort_by(|a, b| a.1.cmp(&b.1));
+        let priorities = priorities.map(|x| x.0);
+        priorities
     }
 }
 

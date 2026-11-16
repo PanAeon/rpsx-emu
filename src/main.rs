@@ -1918,6 +1918,7 @@ impl State {
             }
             (KeyCode::Enter, false) => {
                 load_state(1, &mut self.system);
+                self.interpreter.next_pc = self.system.cpu.pc();
             }
             (KeyCode::KeyA, true) => {
                 let buttons = self.system.sio.gamepad1.get_buttons();
@@ -2254,6 +2255,18 @@ impl State {
                         axes[0] = byte;
                     } else if axis == Axis::RightStickY {
                         axes[1] = rev_byte; // correct
+                    } else if axis == Axis::LeftZ {
+                        if value > 0.5 {
+                            prev_buttons &= !(0x1 << (crate::sio::Button::L2 as usize));
+                        } else if value < - 0.5 {
+                            prev_buttons |= 0x1 << (crate::sio::Button::L2 as usize);
+                        }
+                    } else if axis == Axis::RightZ {
+                        if value > 0.5 {
+                            prev_buttons &= !(0x1 << (crate::sio::Button::R2 as usize));
+                        } else if value < - 0.5 {
+                            prev_buttons |= 0x1 << (crate::sio::Button::R2 as usize);
+                        }
                     }
                     // self.system.sio.gamepad1.set_stick_axis(left, right);
                 }

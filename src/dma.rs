@@ -1,6 +1,9 @@
 use std::ops::{Index, IndexMut};
 
-use crate::system::{AccessWidth, Addressable, System};
+use crate::{
+    scheduler::Event,
+    system::{AccessWidth, Addressable, System},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -8,6 +11,8 @@ pub struct Dma {
     dpcr: Control,
     dicr: InterruptReg,
     channels: [Channel; 7],
+    pub cpu_wait_cycles: u64,
+    global_next_active_cycles: u64,
 }
 
 impl IndexMut<Port> for Dma {
@@ -26,7 +31,7 @@ impl Index<Port> for Dma {
 
 pub fn load<T: Addressable>(system: &mut System, offset: u32) -> T {
     // if T::width() != AccessWidth::Word {
-        // println!("Unhandled {:?} DMA load", T::width())
+    // println!("Unhandled {:?} DMA load", T::width())
     // }
     let align = offset & 3;
     let offset = offset & !3;
@@ -34,7 +39,7 @@ pub fn load<T: Addressable>(system: &mut System, offset: u32) -> T {
     let minor = offset & 0xf;
     let r = match major {
         0..7 => {
-            let channel = system.dma[Port::from_index(major as u8)];
+            let channel = &system.dma[Port::from_index(major as u8)];
             match minor {
                 0 => channel.maddr,
                 4 => channel.block_control(),
@@ -76,15 +81,8 @@ pub fn store<T: Addressable>(system: &mut System, offset: u32, val: T) {
                     // println!("channel ctrl, channel: {}, ctrl: {:?}", major, ChanControl(val.as_u32()));
                     // println!("0b{:b}", val.as_u32());
                     channel.ctrl.0 = partial_write(channel.ctrl.0, offset, val);
-                    match port {
-                        Port::MdecIn => do_mdec_in(system),
-                        Port::MdecOut => do_mdec_out(system),
-                        Port::Gpu => do_gpu(system),
-                        Port::CdRom => do_cdrom(system),
-                        Port::Spu => do_spu(system),
-                        Port::Pio => unimplemented!(),
-                        Port::Otc => do_otc(system),
-                    };
+
+                    maybe_schedule_process_dma(system);
                     //set_channel_control(system, port, value),
                 }
                 _ => panic!("Unhandled DMA write at {:x} offset", offset),
@@ -128,8 +126,97 @@ pub fn partial_write<T: Addressable>(base: u32, addr: u32, value: T) -> u32 {
         AccessWidth::Word => value.as_u32(),
     }
 }
+fn maybe_schedule_process_dma(system: &mut System) {
+    if let Some(next_active_cycles) = system
+        .dma
+        .channels
+        .iter()
+        .enumerate()
+        .filter_map(|(i, chan)| {
+            let port = Port::from_index(i as u8);
+            (chan.ctrl.start() && system.dma.dpcr.channel_enabled(port))
+                .then_some(chan.next_active_cycles)
+        })
+        .min()
+    {
+        let schedule_cycles = std::cmp::max(
+            system.scheduler.cycle,
+            std::cmp::max(system.dma.global_next_active_cycles, next_active_cycles),
+        );
+        let cycles = schedule_cycles - system.scheduler.cycle;
+        system.scheduler.schedule(Event::Dma, cycles, None);
+    }
+}
 
 pub fn dma_event(system: &mut System) {
+    // TODO: in priority order
+    system.dma.cpu_wait_cycles = 0;
+    for i in 0..system.dma.channels.len() {
+        let port = Port::from_index(i as u8);
+        if !system.dma.dpcr.channel_enabled(port) {
+            continue;
+        }
+
+        let chan = &system.dma[port];
+        if !chan.ctrl.start() {
+            continue;
+        }
+        match port {
+            Port::MdecIn => {
+                // if !system.mdec.dma_can_write() {
+                //     continue;
+                // }
+                system.dma.cpu_wait_cycles = do_mdec_in(system);
+                if !system.dma[port].ctrl.is_active() {
+                    set_channel_irq(system, port, true);
+                }
+                break;
+            }
+            Port::MdecOut => {
+                // if !system.mdec.dma_can_read() {
+                //     continue;
+                // }
+                system.dma.cpu_wait_cycles = do_mdec_out(system);
+                if !system.dma[port].ctrl.is_active() {
+                    set_channel_irq(system, port, true);
+                }
+                break;
+            }
+            Port::Gpu => {
+                // println!("dma gpu");
+                system.dma.cpu_wait_cycles = do_gpu(system);
+                if !system.dma[port].ctrl.is_active() {
+                    set_channel_irq(system, port, true);
+                }
+                break;
+            }
+            Port::CdRom => {
+                let cdrom = &system.dma[port];
+                system.dma.cpu_wait_cycles = cdrom.block_size() as u64 * 24;
+                do_cdrom(system);
+                set_channel_irq(system, port, true);
+                break;
+            }
+            Port::Spu => {
+                system.dma.cpu_wait_cycles = do_spu(system);
+                if !system.dma[port].ctrl.is_active() {
+                    set_channel_irq(system, port, true);
+                }
+                break;
+            }
+            Port::Pio => todo!(),
+            Port::Otc => {
+                let otc = &system.dma[port];
+                system.dma.cpu_wait_cycles = otc.block_size() as u64 * 17 / 16;
+                do_otc(system);
+                break;
+            }
+        }
+    }
+
+    system.dma.global_next_active_cycles = system.scheduler.cycle + system.dma.cpu_wait_cycles;
+
+    maybe_schedule_process_dma(system);
 }
 
 fn set_channel_irq(system: &mut System, port: Port, is_full_transfer: bool) {
@@ -157,137 +244,177 @@ fn set_channel_irq(system: &mut System, port: Port, is_full_transfer: bool) {
     }
 }
 
-fn do_mdec_in(system: &mut System) {
-    let chan = system.dma[Port::MdecIn];
-    if !chan.ctrl.start() {
-        return;
-    }
-    if !system.mdec.dma_can_write() {
-        return;
-    }
-    if !system.dma.dpcr.mdecin_enabled() {
-        return;
-    }
+fn do_mdec_in(system: &mut System) -> u64 {
+    let chan = &system.dma[Port::MdecIn];
     let block_size = chan.block_size();
     let step = chan.addr_step();
 
-    while system.dma[Port::MdecIn].block.count > 0 {
-        for _ in 0..block_size {
-            let chan = system.dma[Port::MdecIn];
-            let v = system.load::<u32>(chan.maddr);
-            let chan = &mut system.dma[Port::MdecIn];
-            chan.maddr = chan.maddr.wrapping_add(step);
-            system.mdec.store(0, v);
-        }
-        system.dma[Port::MdecIn].block.count -= 1;
+    // while system.dma[Port::MdecIn].block.count > 0 {
+    for _ in 0..block_size {
+        let chan = &system.dma[Port::MdecIn];
+        let v = system.load::<u32>(chan.maddr);
+        let chan = &mut system.dma[Port::MdecIn];
+        chan.maddr = chan.maddr.wrapping_add(step);
+        system.mdec.store(0, v);
     }
-    system.dma[Port::MdecIn].ctrl.reset_active();
-    set_channel_irq(system, Port::MdecIn, true);
+    system.dma[Port::MdecIn].block.count -= 1;
+    // }
+    if system.dma[Port::MdecIn].block.count == 0 {
+        system.dma[Port::MdecIn].ctrl.reset_active();
+    }
+
+    let cpu_wait_cycles = block_size as u64 * 17 / 16;
+
+    let chan = &mut system.dma[Port::MdecIn];
+    chan.next_active_cycles = system.scheduler.cycle + cpu_wait_cycles;
+
+    cpu_wait_cycles
 }
 
-fn do_mdec_out(system: &mut System) {
-    let chan = system.dma[Port::MdecOut];
-    if !chan.ctrl.start() {
-        return;
-    }
-    if !system.mdec.dma_can_read() {
-        return;
-    }
-    if !system.dma.dpcr.mdecout_enabled() {
-        return;
-    }
+fn do_mdec_out(system: &mut System) -> u64 {
+    let chan = &system.dma[Port::MdecOut];
+    // if !chan.ctrl.start() {
+    //     return;
+    // }
+    // if !system.mdec.dma_can_read() {
+    //     return;
+    // }
+    // if !system.dma.dpcr.mdecout_enabled() {
+    //     return;
+    // }
     let block_size = chan.block_size();
     let step = chan.addr_step();
 
-    while system.dma[Port::MdecOut].block.count > 0 {
-        for _ in 0..block_size {
-            let chan = system.dma[Port::MdecOut];
-            let v = system.mdec.load::<u32>(0);
-            system.store::<u32>(chan.maddr, v);
-            let chan = &mut system.dma[Port::MdecOut];
-            chan.maddr = chan.maddr.wrapping_add(step);
-        }
-        system.dma[Port::MdecOut].block.count -= 1;
+    // while system.dma[Port::MdecOut].block.count > 0 {
+    for _ in 0..block_size {
+        let chan = &system.dma[Port::MdecOut];
+        let v = system.mdec.load::<u32>(0);
+        system.store::<u32>(chan.maddr, v);
+        let chan = &mut system.dma[Port::MdecOut];
+        chan.maddr = chan.maddr.wrapping_add(step);
     }
-    system.dma[Port::MdecOut].ctrl.reset_active();
-    set_channel_irq(system, Port::MdecOut, true);
+    system.dma[Port::MdecOut].block.count -= 1;
+    // }
+    if system.dma[Port::MdecOut].block.count == 0 {
+        system.dma[Port::MdecOut].ctrl.reset_active();
+    }
+    let cpu_wait_cycles = block_size as u64 * 17 / 16;
+    let chan = &mut system.dma[Port::MdecOut];
+    chan.next_active_cycles = system.scheduler.cycle + cpu_wait_cycles + 256;
+
+    cpu_wait_cycles
+
+    // set_channel_irq(system, Port::MdecOut, true);
 }
 
-fn do_gpu(system: &mut System) {
-    let chan = system.dma[Port::Gpu];
-    if !chan.ctrl.is_active() {
-        return;
-    }
+fn do_gpu(system: &mut System) -> u64 {
+    let chan = &system.dma[Port::Gpu];
+    // if !chan.ctrl.is_active() {
+    //     return;
+    // }
     match chan.ctrl.sync_mode() {
         Sync::Burst => {
             panic!("burst for gpu is not supported");
-        },
+        }
         Sync::Slice => do_gpu_sync_mode_slice(system),
         Sync::LinkedList => do_gpu_sync_mode_linked_list(system),
     }
 }
 
-pub fn do_gpu_sync_mode_slice(system: &mut System) {
-    let chan = system.dma[Port::Gpu];
+pub fn do_gpu_sync_mode_slice(system: &mut System) -> u64 {
+    let chan = &system.dma[Port::Gpu];
 
     let addr_inc = chan.addr_step();
     let block_size = chan.block_size();
     let block_count = chan.block_count();
 
+    if block_count == 0 {
+        system.dma[Port::Gpu].ctrl.reset_active();
+        return 0;
+    }
+
     match chan.ctrl.get_direction() {
         Direction::ToRam => {
-            for _ in 0..block_count {
-                for _ in 0..block_size {
-                    let v = system.gpu.read();
-                    let chan = system.dma[Port::Gpu];
-                    system.store(chan.maddr, v);
-                    let chan = &mut system.dma[Port::Gpu];
-                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
-                }
-                set_channel_irq(system, Port::Gpu, false);
+            // for _ in 0..block_count {
+            for _ in 0..block_size {
+                let v = system.gpu.read();
+                let chan = &system.dma[Port::Gpu];
+                system.store(chan.maddr, v);
+                let chan = &mut system.dma[Port::Gpu];
+                chan.maddr = chan.maddr.wrapping_add(addr_inc);
             }
+
+            system.dma[Port::Gpu].dec_block_count();
+
+            set_channel_irq(system, Port::Gpu, false);
+            // }
         }
         Direction::FromRam => {
-            for _ in 0..block_count {
-                for _ in 0..block_size {
-                    let chan = system.dma[Port::Gpu];
-                    let v = system.load::<u32>(chan.maddr);
-                    system.gpu.gp0(v);
-                    let chan = &mut system.dma[Port::Gpu];
-                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
-                }
-                set_channel_irq(system, Port::Gpu, false);
+            // for _ in 0..block_count {
+            for _ in 0..block_size {
+                let chan = &system.dma[Port::Gpu];
+                let v = system.load::<u32>(chan.maddr);
+                system.gpu.gp0(v);
+                let chan = &mut system.dma[Port::Gpu];
+                chan.maddr = chan.maddr.wrapping_add(addr_inc);
             }
+            system.dma[Port::Gpu].dec_block_count();
+            set_channel_irq(system, Port::Gpu, false);
+            // }
         }
     };
 
-    let chan = system.dma[Port::Gpu].ctrl.reset_active();
-    set_channel_irq(system, Port::Gpu, true);
+    if system.dma[Port::Gpu].block_count() == 0 {
+        system.dma[Port::Gpu].ctrl.reset_active();
+    }
+    let cpu_wait_cycles = block_size as u64 * 17 / 16;
+    let chan = &mut system.dma[Port::Gpu];
+    chan.next_active_cycles = system.scheduler.cycle + cpu_wait_cycles;
+
+    cpu_wait_cycles
+    // set_channel_irq(system, Port::Gpu, true);
 }
 
-pub fn do_gpu_sync_mode_linked_list(system: &mut System) {
-    let chan = system.dma[Port::Gpu];
+pub fn do_gpu_sync_mode_linked_list(system: &mut System) -> u64 {
+    let chan = &system.dma[Port::Gpu];
 
-    let mut addr = chan.maddr & 0x1ffffc;
-    while addr != 0xffffff {
-        let hdr = system.load::<u32>(addr);
-        let word_count = hdr >> 24;
-
-        for i in 0..word_count {
-            let data_addr = addr + 4 * (i + 1);
-            let v = system.load::<u32>(data_addr);
-            system.gpu.gp0(v);
-        }
-
-        set_channel_irq(system, Port::Gpu, false);
-        addr = hdr & 0xffffff;
+    let mut addr = chan.maddr & !3; //0x1ffffc;
+    if addr & (1 << 23) != 0 {
+        system.dma[Port::Gpu].ctrl.reset_active();
+        return 0;
     }
-    let chan = system.dma[Port::Gpu].ctrl.reset_active();
-    set_channel_irq(system, Port::Gpu, true);
+    // while addr != 0xffffff {
+    let hdr = system.load::<u32>(addr);
+    let word_count = hdr >> 24;
+
+    for i in 0..word_count {
+        let data_addr = addr + 4 * (i + 1);
+        let v = system.load::<u32>(data_addr);
+        system.gpu.gp0(v);
+    }
+
+    set_channel_irq(system, Port::Gpu, false);
+    addr = hdr & 0xffffff;
+    // }
+    system.dma[Port::Gpu].maddr = addr;
+    if addr & (1 << 23) != 0 {
+        system.dma[Port::Gpu].ctrl.reset_active();
+    }
+    let (cpu_wait_cycles, next_active_cycles) = if word_count == 0 {
+        (0, system.scheduler.cycle + 16)
+    } else {
+        let cpu_wait_cycles = word_count as u64 * 17 / 16;
+        let next_active_cycles = system.scheduler.cycle + u64::from(cpu_wait_cycles) + 128;
+        (cpu_wait_cycles, next_active_cycles)
+    };
+    let chan = &mut system.dma[Port::Gpu];
+    chan.next_active_cycles = next_active_cycles;
+
+    cpu_wait_cycles
 }
 
 fn do_cdrom(system: &mut System) {
-    let chan = system.dma[Port::CdRom];
+    let chan = &system.dma[Port::CdRom];
     if !chan.ctrl.is_active() {
         return;
     }
@@ -300,7 +427,7 @@ fn do_cdrom(system: &mut System) {
             for _ in 0..block_count {
                 for _ in 0..block_size {
                     let v = system.cdrom.read_sector_data::<u32>();
-                    let chan = system.dma[Port::CdRom];
+                    let chan = &system.dma[Port::CdRom];
                     system.store(chan.maddr, v);
                     let chan = &mut system.dma[Port::CdRom];
                     chan.maddr = chan.maddr.wrapping_add(addr_inc);
@@ -313,64 +440,79 @@ fn do_cdrom(system: &mut System) {
         }
     };
 
-
     system.dma[Port::CdRom].ctrl.reset_active();
-    set_channel_irq(system, Port::CdRom, true);
+    // set_channel_irq(system, Port::CdRom, true);
 }
-fn do_spu(system: &mut System) {
-    let chan = system.dma[Port::Spu];
-    if !chan.ctrl.is_active() {
-        return;
+fn do_spu(system: &mut System) -> u64 {
+    let chan = &system.dma[Port::Spu];
+    if system.dma[Port::Spu].block_count() == 0 {
+        system.dma[Port::Spu].ctrl.reset_active();
+        return 0;
     }
+    // if !chan.ctrl.is_active() {
+    //     return;
+    // }
     let addr_inc = chan.addr_step();
     let block_size = chan.block_size();
     let block_count = chan.block_count();
 
     match chan.ctrl.get_direction() {
         Direction::ToRam => {
-            for _ in 0..block_count {
-                for _ in 0..block_size {
-                    let v = system.spu.ram_read::<4>();
-                    let chan = system.dma[Port::Spu];
-                    system.store(chan.maddr, v);
-                    let chan = &mut system.dma[Port::Spu];
-                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
-                }
-                set_channel_irq(system, Port::Spu, false);
+            // for _ in 0..block_count {
+            for _ in 0..block_size {
+                let v = system.spu.ram_read::<4>();
+                let chan = &system.dma[Port::Spu];
+                system.store(chan.maddr, v);
+                let chan = &mut system.dma[Port::Spu];
+                chan.maddr = chan.maddr.wrapping_add(addr_inc);
             }
+            set_channel_irq(system, Port::Spu, false);
+            // }
+            system.dma[Port::Spu].dec_block_count();
         }
         Direction::FromRam => {
-            for _ in 0..block_count {
-                for _ in 0..block_size {
-                    let chan = system.dma[Port::Spu];
-                    let v = system.load::<u32>(chan.maddr);
-                    system.spu.ram_write::<4>(v);
-                    let chan = &mut system.dma[Port::Spu];
-                    chan.maddr = chan.maddr.wrapping_add(addr_inc);
-                }
-                set_channel_irq(system, Port::Spu, false);
+            // for _ in 0..block_count {
+            for _ in 0..block_size {
+                let chan = &system.dma[Port::Spu];
+                let v = system.load::<u32>(chan.maddr);
+                system.spu.ram_write::<4>(v);
+                let chan = &mut system.dma[Port::Spu];
+                chan.maddr = chan.maddr.wrapping_add(addr_inc);
             }
+            set_channel_irq(system, Port::Spu, false);
+            // }
+            system.dma[Port::Spu].dec_block_count();
         }
     };
 
-    system.dma[Port::Spu].ctrl.reset_active();
-    set_channel_irq(system, Port::Spu, true);
+    if system.dma[Port::Spu].block_count() == 0 {
+        system.dma[Port::Spu].ctrl.reset_active();
+    }
+    let cpu_wait_cycles = 4 * block_size as u64;
+    system.dma[Port::Spu].next_active_cycles = system.scheduler.cycle + cpu_wait_cycles + 64;
+    cpu_wait_cycles
+
+    // set_channel_irq(system, Port::Spu, true);
 }
 fn do_otc(system: &mut System) {
-    let chan = system.dma[Port::Otc];
-    if !chan.ctrl.is_active() {
-        return;
-    }
-    if !system.dma.dpcr.otc_enabled() {
-        return;
-    }
+    let chan = &system.dma[Port::Otc];
+    // if !chan.ctrl.is_active() {
+    //     return;
+    // }
+    // if !system.dma.dpcr.otc_enabled() {
+    //     return;
+    // }
     let transfer_len = chan.block_size() * chan.block_count();
 
     let mut addr = chan.maddr;
 
     for i in 0..transfer_len {
         let next_addr = (addr - 4) & 0xffffff;
-        let hdr = if i == transfer_len - 1 {0xffffff} else {next_addr};
+        let hdr = if i == transfer_len - 1 {
+            0xffffff
+        } else {
+            next_addr
+        };
         system.store::<u32>(addr, hdr);
         addr = next_addr;
     }
@@ -383,7 +525,17 @@ impl Dma {
         Dma {
             dpcr: Control(0x07654321),
             dicr: InterruptReg(0),
-            channels: [Channel::new(); 7],
+            channels: [
+                Channel::new(),
+                Channel::new(),
+                Channel::new(),
+                Channel::new(),
+                Channel::new(),
+                Channel::new(),
+                Channel::new(),
+            ],
+            cpu_wait_cycles: 0,
+            global_next_active_cycles: 0,
         }
     }
 
@@ -458,11 +610,12 @@ impl Dma {
     // }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Channel {
     pub maddr: u32,
     ctrl: ChanControl,
     block: BlockCtrl,
+    next_active_cycles: u64,
 }
 impl Channel {
     pub fn new() -> Channel {
@@ -470,6 +623,7 @@ impl Channel {
             maddr: 0,
             ctrl: ChanControl(0),
             block: BlockCtrl { size: 0, count: 0 },
+            next_active_cycles: 0,
         }
     }
     pub fn block_control(&self) -> u32 {
@@ -503,6 +657,14 @@ impl Channel {
             Sync::Burst => 1,
             Sync::Slice => self.block.count as u32,
             Sync::LinkedList => 0,
+        }
+    }
+
+    pub fn dec_block_count(&mut self) {
+        match self.ctrl.sync_mode() {
+            Sync::Burst => panic!("impossible"),
+            Sync::Slice => self.block.count = self.block.count.saturating_sub(1),
+            Sync::LinkedList => panic!("impossible"),
         }
     }
 
@@ -581,6 +743,20 @@ bitfield::bitfield! {
     mem_access_prio, _: 28,30;
 }
 
+impl Control {
+    pub fn channel_enabled(&self, p: Port) -> bool {
+        match p {
+            Port::MdecIn => self.mdecin_enabled(),
+            Port::MdecOut => self.mdecout_enabled(),
+            Port::Gpu => self.gpu_enabled(),
+            Port::CdRom => self.cdrom_enabled(),
+            Port::Spu => self.spu_enabled(),
+            Port::Pio => self.pio_enabled(),
+            Port::Otc => self.otc_enabled(),
+        }
+    }
+}
+
 bitfield::bitfield! {
     #[derive(Default, Serialize, Deserialize, Clone, Copy)]
     struct ChanControl(u32);
@@ -656,7 +832,7 @@ impl From<Direction> for u8 {
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub enum Sync {
-    Burst = 0,  // burst
+    Burst = 0, // burst
     Slice = 1, // slice
     LinkedList = 2,
 }

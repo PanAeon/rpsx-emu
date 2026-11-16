@@ -1466,6 +1466,10 @@ impl State {
             // check_dynarec(pc, interpreter_pc, &self.cpu, &self.interpreter);
             cdrom::CDRom::tick(&mut self.system, 2 * num_cycles);
             self.system.scheduler.advance(2 * num_cycles); // 40???
+            if self.system.dma.cpu_wait_cycles > 0 {
+                let cycles = std::mem::take(&mut self.system.dma.cpu_wait_cycles);
+                self.system.scheduler.advance(cycles);
+            }
             // if self.justifier {
             //     // TODO: check timers, it must work somehow..
             //     crate::timers::Timers::update_value(&mut self.system, 0);
@@ -2517,7 +2521,7 @@ impl ApplicationHandler<State> for App {
 pub fn run(cli: Cli) -> anyhow::Result<()> {
     env_logger::Builder::new()
         .filter_level(LevelFilter::Warn)
-        // .filter_module("rpsx_emu::cdrom", LevelFilter::Info)
+        .filter_module("rpsx_emu::cdrom", LevelFilter::Info)
         .init();
     // env_logger::init();
 

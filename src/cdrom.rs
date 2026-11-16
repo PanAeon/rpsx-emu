@@ -19,7 +19,6 @@ pub enum TrackType {
     Mode2352,
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Track {
     pub id: u8,
@@ -151,8 +150,6 @@ impl Image {
             .map(|x| x.to_vec())
         // self.data[start..self.read_head].to_vec()
     }
-
-
 
     pub fn first_track_id(&self) -> u8 {
         self.tracks.first().expect("first track").id
@@ -287,9 +284,7 @@ impl Image {
         sector >= current_track.end_sector - 1 //2 * 75
     }
     fn is_at_valid_location(&self) -> bool {
-        let track = self.tracks.iter().find(|x| {
-            x.end_sector >= self.read_head
-        });
+        let track = self.tracks.iter().find(|x| x.end_sector >= self.read_head);
         track.is_some()
     }
 }
@@ -327,14 +322,13 @@ pub struct CDRom {
     // audio_muted: bool,
     // filter_file: u8,
     // filter_channel: u8,
-    audio_buffer: VecDeque<[i16;2]>,
+    audio_buffer: VecDeque<[i16; 2]>,
 
     xa: XaState,
-    last_sample: [i16;2]
-    // Left, Right, Mono
-    // adpcm_history: [AdpcmHistory; 3],
-    // high_res_resamplers: [HighResResampler; 3],
-    // low_res_resamplers: [LowResResampler; 3],
+    last_sample: [i16; 2], // Left, Right, Mono
+                           // adpcm_history: [AdpcmHistory; 3],
+                           // high_res_resamplers: [HighResResampler; 3],
+                           // low_res_resamplers: [LowResResampler; 3],
 }
 
 impl CDRom {
@@ -383,22 +377,20 @@ impl CDRom {
             // filter_channel: 0,
             audio_buffer: VecDeque::default(),
             xa: XaState::new(),
-            last_sample: [0, 0]
-            // adpcm_history: Default::default(),
-            // high_res_resamplers: Default::default(),
-            // low_res_resamplers: Default::default(),
+            last_sample: [0, 0], // adpcm_history: Default::default(),
+                                 // high_res_resamplers: Default::default(),
+                                 // low_res_resamplers: Default::default(),
         }
     }
 
     pub fn get_region(&mut self) -> Region {
         let region = if let Some(disk) = self.disk.as_mut() {
-            let serial = extract_serial_number( disk.cache.as_mut().unwrap());
+            let serial = extract_serial_number(disk.cache.as_mut().unwrap());
             if let Some(serial) = serial {
                 serial.region()
             } else {
                 None
             }
-            
         } else {
             None
         };
@@ -597,7 +589,7 @@ impl CDRom {
                 cdrom.push_error(DriveError::InvalidCommand);
                 cdrom.finish_command();
                 Self::set_interrupt(system, 5);
-            },
+            }
         };
     }
 
@@ -824,7 +816,9 @@ impl CDRom {
                 // if cdrom.mode.auto_pause() {
                 //     warn!("auto pause not implemented");
                 // }
-                cdrom.xa.set_mode(cdrom.mode.xa_adpcm(), cdrom.mode.xa_filter());
+                cdrom
+                    .xa
+                    .set_mode(cdrom.mode.xa_adpcm(), cdrom.mode.xa_filter());
                 Self::set_interrupt(system, 3);
                 system.cdrom.finish_command();
             }
@@ -965,7 +959,7 @@ impl CDRom {
                 // TODO: if no disk present fail with int5(stat,80h)
                 let cdrom = &mut system.cdrom;
                 info!("cmd motoron");
-                let already_on =  cdrom.stat.spindle_motor();
+                let already_on = cdrom.stat.spindle_motor();
                 if already_on {
                     cdrom.push_error(DriveError::WrongParameterCount);
                     // cdrom.push_result_byte(cdrom.stat.0);
@@ -1139,6 +1133,9 @@ impl CDRom {
                     Speed::Double => CDROM_PAUSE_2X_DELAY_CYCLES,
                 };
                 cdrom.cmd_state = CmdState::Resp2;
+                // cdrom.stat.set_seek(false);
+                // cdrom.stat.set_read(false);
+                // cdrom.stat.set_play(false);
 
                 Self::set_interrupt(system, 3);
             }
@@ -1301,10 +1298,7 @@ impl CDRom {
         cdrom.push_result_byte(cdrom.stat.0);
         cdrom.push_result_byte(first_track);
         cdrom.push_result_byte(last_track);
-        info!(
-            "gettn, first: {}, last: {}",
-            first_track, last_track
-        );
+        info!("gettn, first: {}, last: {}", first_track, last_track);
         Self::set_interrupt(system, 3);
         system.cdrom.finish_command();
     }
@@ -1500,7 +1494,10 @@ impl CDRom {
     pub fn begin_reading(&mut self) {
         self.read_state = ReadState::Reading;
         if self.mode.xa_adpcm() {
-            self.xa.begin_at(self.seekloc.unwrap_or(self.disk.as_ref().unwrap().read_head));
+            self.xa.begin_at(
+                self.seekloc
+                    .unwrap_or(self.disk.as_ref().unwrap().read_head),
+            );
         }
         if self.seekloc.is_some() {
             self.stat.set_seek(true);
@@ -1542,36 +1539,40 @@ impl CDRom {
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
-        let samples: Vec<[i16;2]> = samples.chunks_exact(2)
-            .map(|c| [c[0], c[1]]).collect();
+        let samples: Vec<[i16; 2]> = samples.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
         self.audio_buffer.extend(samples);
     }
 
-    pub fn apply_volume(&self, sample: [i16;2]) -> [i16;2] {
+    pub fn apply_volume(&self, sample: [i16; 2]) -> [i16; 2] {
         let l = sample[0] as i32;
         let r = sample[1] as i32;
         let out_l = (l * self.volume.l2l_volume as i32 + r * self.volume.r2l_volume as i32) >> 7;
         let out_r = (r * self.volume.r2r_volume as i32 + l * self.volume.l2r_volume as i32) >> 7;
-        [out_l.clamp(-0x8000, 0x7fff) as i16,
-        out_r.clamp(-0x8000, 0x7fff) as i16]
-
+        [
+            out_l.clamp(-0x8000, 0x7fff) as i16,
+            out_r.clamp(-0x8000, 0x7fff) as i16,
+        ]
     }
 
-    pub fn consume_audio_sample(&mut self) -> [i16;2] {
+    pub fn consume_audio_sample(&mut self) -> [i16; 2] {
         if self.read_state == ReadState::Playing && self.mode.cdda() {
             // let sample = self.audio_buffer.pop_front().unwrap_or(self.last_sample);
             let sample = self.audio_buffer.pop_back().unwrap_or(self.last_sample);
-            if self.mute { return [0,0]; }
+            if self.mute {
+                return [0, 0];
+            }
             self.last_sample = sample;
             return self.apply_volume(sample);
         }
 
         if self.read_state == ReadState::Reading && self.mode.xa_adpcm() {
             let sample = self.xa.consume_sample(self.disk.as_mut().unwrap());
-            if self.mute { return [0,0]; }
+            if self.mute {
+                return [0, 0];
+            }
             return self.apply_volume(sample);
         }
-        return [0,0];
+        return [0, 0];
     }
 
     fn step_reading(system: &mut System) {
@@ -2118,8 +2119,8 @@ const CDROM_INIT_DELAY_CYCLES: u32 = 81_102;
 const CDROM_SEEKL_DELAY_CYCLES: u32 = 450_000;
 const CDROM_READ_DELAY_CYCLES: u32 = 33_868_800 / 75;
 const CDROM_READ_2X_DELAY_CYCLES: u32 = 33_868_800 / 150;
-const CDROM_PAUSE_DELAY_CYCLES: u32 = 2_168_860;
-const CDROM_PAUSE_2X_DELAY_CYCLES: u32 = 1_097_107;
+const CDROM_PAUSE_DELAY_CYCLES: u32 = 588; //2_168_860;
+const CDROM_PAUSE_2X_DELAY_CYCLES: u32 = 294; //1_097_107;
 // const CDROM_SPINUP_DELAY_CYCLES: u32 = 33_868_800; // 1 second
 
 const CDROM_GETID_NODISK: [u8; 8] = [0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];

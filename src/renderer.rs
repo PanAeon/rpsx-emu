@@ -918,27 +918,7 @@ impl Renderer {
                         }
                     }
 
-                    // Truncate color from from 8-bit RGB components to 5-bit
 
-                    if ctx.dithering && BLEND {
-                        (r, g, b) = apply_dithering_avx2(y, r, g, b);
-                    }
-                    r = _mm256_srli_epi16::<3>(r);
-                    g = _mm256_srli_epi16::<3>(g);
-                    b = _mm256_srli_epi16::<3>(b);
-                    // If semi-transparency is enabled, blend existing colors with new colors
-                    if SEMI_TRANS {
-                        let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
-                        let semi_transparency_mask =
-                            _mm256_cmpeq_epi16(semi_transparency_bits, _mm256_setzero_si256());
-
-                        (r, g, b) = apply_semi_transparency(
-                            (existing_r, existing_g, existing_b),
-                            (r, g, b),
-                            semi_transparency_mask,
-                            ctx.semi_transparency,
-                        );
-                    }
                     let x = x as i16;
                     let px = _mm256_setr_epi16(
                         x,
@@ -958,30 +938,54 @@ impl Renderer {
                         x + 14,
                         x + 15,
                     );
-
                     // mask out padding pixels
-                    let mut write_mask = _mm256_and_si256(
+                    inside_mask = _mm256_and_si256(
                         inside_mask,
                         _mm256_andnot_si256(
-                            _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 - 1), px),
+                            _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 ), px),
                             _mm256_cmpgt_epi16(_mm256_set1_epi16((max_x + 1) as i16), px),
                         ),
                     );
                     if ctx.preserve_masked_pixels {
-                        write_mask = _mm256_and_si256(
-                            write_mask,
+                        inside_mask = _mm256_and_si256(
+                            inside_mask,
                             _mm256_cmpeq_epi16(
                                 _mm256_and_si256(existing, _mm256_set1_epi16(1 << 15)),
                                 _mm256_setzero_si256(),
                             ),
                         )
                     };
+
+                    // Truncate color from from 8-bit RGB components to 5-bit
+
+                    if ctx.dithering && BLEND {
+                        (r, g, b) = apply_dithering_avx2(y, r, g, b);
+                    }
+                    r = _mm256_srli_epi16::<3>(r);
+                    g = _mm256_srli_epi16::<3>(g);
+                    b = _mm256_srli_epi16::<3>(b);
+                    // If semi-transparency is enabled, blend existing colors with new colors
+                    if SEMI_TRANS 
+                            && _mm256_testz_si256(semi_transparency_bits, _mm256_set1_epi16(!0)) == 0
+                    {
+                        let (existing_r, existing_g, existing_b) = split_15bit_color(existing);
+                        let semi_transparency_mask =
+                            _mm256_cmpeq_epi16(semi_transparency_bits, _mm256_setzero_si256());
+
+                        (r, g, b) = apply_semi_transparency(
+                            (existing_r, existing_g, existing_b),
+                            (r, g, b),
+                            semi_transparency_mask,
+                            ctx.semi_transparency,
+                        );
+                    }
+
                     let color = _mm256_or_si256(combine_rgb_components(r, g, b), mask_bits);
                     _mm256_storeu_si256(
                         vram_addr,
                         _mm256_or_si256(
-                            _mm256_and_si256(write_mask, color),
-                            _mm256_andnot_si256(write_mask, existing),
+                            _mm256_and_si256(inside_mask, color),
+                            _mm256_andnot_si256(inside_mask, existing),
                         ),
                     );
                     // _mm256_storeu_si256(
@@ -1040,6 +1044,7 @@ impl Renderer {
         else {
             return;
         };
+        let u_offset = min_x - v.x;
         // if max_x - min_x > 1023 || max_y - min_y > 511 {
         //     return;
         // }
@@ -1099,7 +1104,7 @@ impl Renderer {
 
                     // mask out padding pixels
                     let mut write_mask = _mm256_andnot_si256(
-                        _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 - 1), px),
+                        _mm256_cmpgt_epi16(_mm256_set1_epi16(min_x as i16 ), px),
                         _mm256_cmpgt_epi16(_mm256_set1_epi16((max_x + 1) as i16), px),
                     );
                     if ctx.preserve_masked_pixels {
@@ -1124,7 +1129,7 @@ impl Renderer {
                             _mm256_add_epi16(
                                 px,
                                 _mm256_set1_epi16(
-                                    uv[0].wrapping_sub(min_x_aligned as u16 + padding as u16)
+                                    uv[0].wrapping_sub(min_x_aligned as u16 + padding as u16).wrapping_add(u_offset as u16)
                                         as i16,
                                 ), // TODO: investigate what's with this uv offsets
                             ),

@@ -248,7 +248,12 @@ fn do_mdec_in(system: &mut System) -> u64 {
     let block_size = chan.block_size();
     let step = chan.addr_step();
 
-    // while system.dma[Port::MdecIn].block.count > 0 {
+    if system.dma[Port::MdecIn].block.count == 0 {
+        system.dma[Port::MdecIn].ctrl.reset_active();
+        return 0;
+    }
+
+    while system.dma[Port::MdecIn].block.count > 0 {
     for _ in 0..block_size {
         let chan = &system.dma[Port::MdecIn];
         let v = system.load::<u32>(chan.maddr);
@@ -257,10 +262,10 @@ fn do_mdec_in(system: &mut System) -> u64 {
         system.mdec.store(0, v);
     }
     system.dma[Port::MdecIn].block.count -= 1;
-    // }
-    if system.dma[Port::MdecIn].block.count == 0 {
-        system.dma[Port::MdecIn].ctrl.reset_active();
     }
+    // if system.dma[Port::MdecIn].block.count == 0 {
+        system.dma[Port::MdecIn].ctrl.reset_active();
+    // }
 
     let cpu_wait_cycles = block_size as u64 * 17 / 16;
 
@@ -283,8 +288,12 @@ fn do_mdec_out(system: &mut System) -> u64 {
     // }
     let block_size = chan.block_size();
     let step = chan.addr_step();
+    if system.dma[Port::MdecOut].block.count == 0 {
+        system.dma[Port::MdecOut].ctrl.reset_active();
+        return 0;
+    }
 
-    // while system.dma[Port::MdecOut].block.count > 0 {
+    while system.dma[Port::MdecOut].block.count > 0 {
     for _ in 0..block_size {
         let chan = &system.dma[Port::MdecOut];
         let v = system.mdec.load::<u32>(0);
@@ -293,10 +302,10 @@ fn do_mdec_out(system: &mut System) -> u64 {
         chan.maddr = chan.maddr.wrapping_add(step);
     }
     system.dma[Port::MdecOut].block.count -= 1;
-    // }
-    if system.dma[Port::MdecOut].block.count == 0 {
-        system.dma[Port::MdecOut].ctrl.reset_active();
     }
+    // if system.dma[Port::MdecOut].block.count == 0 {
+        system.dma[Port::MdecOut].ctrl.reset_active();
+    // }
     let cpu_wait_cycles = block_size as u64 * 17 / 16;
     let chan = &mut system.dma[Port::MdecOut];
     chan.next_active_cycles = system.scheduler.cycle + cpu_wait_cycles + 256;

@@ -976,7 +976,7 @@ impl Renderer {
                             (existing_r, existing_g, existing_b),
                             (r, g, b),
                             semi_transparency_mask,
-                            ctx.semi_transparency,
+                            texture.semi_transparency,
                         );
                     }
 

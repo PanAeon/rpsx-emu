@@ -7,6 +7,8 @@ use gilrs::ff::Replay;
 use gilrs::ff::Ticks;
 use log::LevelFilter;
 use log::info;
+use serde::Deserialize;
+use serde::Serialize;
 use wgpu::hal::vulkan::conv::map_filter_mode;
 use wgpu_profiler::GpuProfiler;
 use winit::window::CustomCursor;
@@ -229,7 +231,9 @@ pub struct TextureBuffer {
     width: u32,
     height: u32,
 }
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(
+    Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Serialize, Deserialize, Default,
+)]
 #[repr(C)]
 pub struct Color {
     r: u8,
@@ -865,7 +869,7 @@ impl State {
                 .then(|| cli.filename.expect("sideload binary to be present")),
             ctrl_pressed: false,
             negcon: cli.negcon,
-            use_interpreter: cli.justifier || cli.interpreter,
+            use_interpreter:  cli.interpreter,
             scale,
             mouse1: cli.mouse1,
             mouse2: cli.mouse2,
@@ -1867,6 +1871,25 @@ impl State {
         }
     }
 
+    fn save_state(&mut self, idx: u32) {
+        if self.use_interpreter {
+            self.interpreter.finish_block(&mut self.system);
+        }
+
+        save_state(idx, &mut self.system);
+    }
+
+    fn load_state(&mut self, idx: u32) {
+        load_state(idx, &mut self.system);
+
+        if self.use_interpreter {
+            self.interpreter.next_pc = self.system.cpu.regs.pc.wrapping_add(4);
+            self.interpreter.branch = false;
+            self.interpreter.delay_slot = false;
+            self.interpreter.interrupt = false;
+        }
+    }
+
     fn handle_key(
         &mut self,
         _event_loop: &ActiveEventLoop,
@@ -1883,42 +1906,41 @@ impl State {
             (KeyCode::KeyV, false) => self.display_vram = !self.display_vram,
             (KeyCode::Digit1, false) => {
                 if self.ctrl_pressed {
-                    load_state(1, &mut self.system);
+                    self.load_state(1);
                 } else {
-                    save_state(1, &mut self.system);
+                    self.save_state(1);
                 }
             }
             (KeyCode::Digit2, false) => {
                 if self.ctrl_pressed {
-                    load_state(2, &mut self.system);
+                    self.load_state(2);
                 } else {
-                    save_state(2, &mut self.system);
+                    self.save_state(2);
                 }
             }
             (KeyCode::Digit3, false) => {
                 if self.ctrl_pressed {
-                    load_state(3, &mut self.system);
+                    self.load_state(3);
                 } else {
-                    save_state(3, &mut self.system);
+                    self.save_state(3);
                 }
             }
             (KeyCode::Digit4, false) => {
                 if self.ctrl_pressed {
-                    load_state(4, &mut self.system);
+                    self.load_state(4);
                 } else {
-                    save_state(4, &mut self.system);
+                    self.save_state(4);
                 }
             }
             (KeyCode::Digit5, false) => {
                 if self.ctrl_pressed {
-                    load_state(5, &mut self.system);
+                    self.load_state(5);
                 } else {
-                    save_state(5, &mut self.system);
+                    self.save_state(5);
                 }
             }
             (KeyCode::Enter, false) => {
-                load_state(1, &mut self.system);
-                self.interpreter.next_pc = self.system.cpu.pc();
+                self.load_state(1);
             }
             (KeyCode::KeyA, true) => {
                 let buttons = self.system.sio.gamepad1.get_buttons();
@@ -2258,13 +2280,13 @@ impl State {
                     } else if axis == Axis::LeftZ {
                         if value > 0.5 {
                             prev_buttons &= !(0x1 << (crate::sio::Button::L2 as usize));
-                        } else if value < - 0.5 {
+                        } else if value < -0.5 {
                             prev_buttons |= 0x1 << (crate::sio::Button::L2 as usize);
                         }
                     } else if axis == Axis::RightZ {
                         if value > 0.5 {
                             prev_buttons &= !(0x1 << (crate::sio::Button::R2 as usize));
-                        } else if value < - 0.5 {
+                        } else if value < -0.5 {
                             prev_buttons |= 0x1 << (crate::sio::Button::R2 as usize);
                         }
                     }
@@ -2535,6 +2557,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     env_logger::Builder::new()
         .filter_level(LevelFilter::Warn)
         .filter_module("rpsx_emu::cdrom", LevelFilter::Info)
+        .filter_module("rpsx_emu::mdec", LevelFilter::Debug)
         .init();
     // env_logger::init();
 

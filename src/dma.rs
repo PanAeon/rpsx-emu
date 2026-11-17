@@ -5,7 +5,6 @@ use crate::{
     system::{AccessWidth, Addressable, System},
 };
 use serde::{Deserialize, Serialize};
-
 #[derive(Serialize, Deserialize)]
 pub struct Dma {
     dpcr: Control,
@@ -172,6 +171,11 @@ pub fn dma_event(system: &mut System) {
                 break;
             }
             Port::MdecOut => {
+                if !system.mdec.data_out_request() && system.dma[port].block.count != 0 {
+                    system.dma[port].next_active_cycles = system.scheduler.cycle + 16;
+                    continue;
+                }
+
                 // if !system.mdec.dma_can_read() {
                 //     continue;
                 // }
@@ -263,9 +267,9 @@ fn do_mdec_in(system: &mut System) -> u64 {
     }
     system.dma[Port::MdecIn].block.count -= 1;
     }
-    // if system.dma[Port::MdecIn].block.count == 0 {
+    if system.dma[Port::MdecIn].block.count == 0 {
         system.dma[Port::MdecIn].ctrl.reset_active();
-    // }
+    }
 
     let cpu_wait_cycles = block_size as u64 * 17 / 16;
 
@@ -303,9 +307,9 @@ fn do_mdec_out(system: &mut System) -> u64 {
     }
     system.dma[Port::MdecOut].block.count -= 1;
     }
-    // if system.dma[Port::MdecOut].block.count == 0 {
+    if system.dma[Port::MdecOut].block.count == 0 {
         system.dma[Port::MdecOut].ctrl.reset_active();
-    // }
+    }
     let cpu_wait_cycles = block_size as u64 * 17 / 16;
     let chan = &mut system.dma[Port::MdecOut];
     chan.next_active_cycles = system.scheduler.cycle + cpu_wait_cycles + 256;
@@ -764,15 +768,16 @@ impl Control {
         }
     }
 
-    pub fn channels_in_priority_order(&self) -> [u8;7] {
-        let mut priorities = 
-        [(6,self.otc_prio()),
-         (5,self.pio_prio()),
-         (4, self.spu_prio()),
-         (3, self.cdrom_prio()),
-         (2, self.gpu_prio()),
-         (1, self.mdecout_prio()),
-         (0, self.mdecin_prio())];
+    pub fn channels_in_priority_order(&self) -> [u8; 7] {
+        let mut priorities = [
+            (6, self.otc_prio()),
+            (5, self.pio_prio()),
+            (4, self.spu_prio()),
+            (3, self.cdrom_prio()),
+            (2, self.gpu_prio()),
+            (1, self.mdecout_prio()),
+            (0, self.mdecin_prio()),
+        ];
         priorities.sort_by(|a, b| a.1.cmp(&b.1));
         let priorities = priorities.map(|x| x.0);
         priorities

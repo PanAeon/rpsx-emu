@@ -9,9 +9,9 @@ pub struct Interpreter {
     pub next_pc: u32,
     pub current_pc: u32,
 
-    branch: bool,     // set by the current instruction if the branch occurred
-    delay_slot: bool, // set if the current instruction executes in the delay slot
-    interrupt: bool,
+    pub branch: bool,     // set by the current instruction if the branch occurred
+    pub delay_slot: bool, // set if the current instruction executes in the delay slot
+    pub interrupt: bool,
 }
 
 #[allow(dead_code)]
@@ -42,6 +42,12 @@ impl Interpreter {
            num_instr += 1;
         }
         num_instr
+    }
+
+    pub fn finish_block(&mut self, system: &mut System) {
+        if self.delay_slot {
+           self.run_next_instruction_no_interrupts(system);
+        }
     }
 
     pub fn run_next_instruction_no_interrupts(&mut self, system: &mut System) {
